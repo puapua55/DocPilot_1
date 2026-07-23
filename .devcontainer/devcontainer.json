@@ -1,0 +1,21 @@
+{
+  "name": "docpilot-java21",
+  "image": "mcr.microsoft.com/devcontainers/java:1-21-bullseye",
+  "features": {},
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "vscjava.vscode-java-pack",
+        "vmware.vscode-spring-boot"
+      ]
+    }
+  },
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "Spring Boot App",
+      "onAutoForward": "openBrowser",
+      "visibility": "private"
+    }
+  }
+}
