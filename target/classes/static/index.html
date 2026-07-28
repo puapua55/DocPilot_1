@@ -26,17 +26,35 @@
 
       <main class="main-layout">
         <section class="document-panel">
-          <div class="upload-card" id="dropZone">
-            <div class="upload-icon">📄</div>
-            <h2 id="uploadTitle">파일을 업로드하세요</h2>
-            <p id="uploadSubtitle">PDF, DOCX 파일을 드래그하거나 클릭해 추가</p>
-            <label class="upload-button" for="fileInput">＋ 파일 선택</label>
-            <input id="fileInput" type="file" accept=".pdf,.docx" />
-            <div class="upload-meta" id="uploadMeta">
-              <span>🔒 모든 파일은 로컬 환경에서 처리됩니다.</span>
-              <span>데이터는 외부로 전송되지 않습니다.</span>
+          <section id="documentWorkspace" class="document-workspace">
+            <div id="documentPreviewArea" class="upload-view">
+              <div class="upload-card drop-zone" id="dropZone">
+                <div class="upload-icon">📄</div>
+                <h2 id="uploadTitle">파일을 업로드하세요</h2>
+                <p id="uploadSubtitle">PDF, DOC, DOCX 파일을 드래그하거나 클릭해 추가</p>
+                <label
+                  id="selectFileButton"
+                  for="fileInput"
+                  class="upload-button select-file-button"
+                >
+                  ＋ 파일 선택
+                </label>
+                <input
+                  id="fileInput"
+                  name="file"
+                  type="file"
+                  accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  class="file-input-hidden"
+                />
+
+                <div class="upload-meta" id="uploadMeta">
+                  <span>🔒 모든 파일은 로컬 환경에서 처리됩니다.</span>
+                  <span>데이터는 외부로 전송되지 않습니다.</span>
+                </div>
+              </div>
             </div>
-          </div>
+
+          </section>
 
           <div class="feature-section">
             <div class="file-types">
@@ -101,6 +119,8 @@
       </main>
     </div>
 
-    <script src="/js/main.js"></script>
+    <script src="/vendor/mammoth/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.js"></script>
+    <script type="module" src="/js/main.js"></script>
   </body>
 </html>
