@@ -5,6 +5,7 @@ const FEATURES = [
 ];
 
 function FeatureButtons({ onFeatureClick }) {
+  // TODO: Currently unused. Keep this component available in case document action buttons return later.
   return (
     <div className="feature-buttons">
       {FEATURES.map((feature) => (

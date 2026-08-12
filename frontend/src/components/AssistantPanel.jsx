@@ -15,7 +15,43 @@ const CARDS = [
   }
 ];
 
-function AssistantPanel({ messages, onSendMessage }) {
+function AssistantPanel({ messages, onSendMessage, onSearchCardClick, onHighlightCardClick }) {
+  const getCardActionProps = (index) => {
+    if (index === 0) {
+      return {
+        className: 'feature-card feature-card-actionable',
+        onClick: onSearchCardClick,
+        role: 'button',
+        tabIndex: 0,
+        onKeyDown: (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onSearchCardClick?.();
+          }
+        }
+      };
+    }
+
+    if (index === 1) {
+      return {
+        className: 'feature-card feature-card-actionable',
+        onClick: onHighlightCardClick,
+        role: 'button',
+        tabIndex: 0,
+        onKeyDown: (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onHighlightCardClick?.();
+          }
+        }
+      };
+    }
+
+    return {
+      className: 'feature-card'
+    };
+  };
+
   return (
     <aside className="panel assistant-panel">
       <div className="assistant-head">
@@ -24,8 +60,11 @@ function AssistantPanel({ messages, onSendMessage }) {
       </div>
 
       <div className="assistant-grid">
-        {CARDS.map((card) => (
-          <div key={card.title} className="feature-card">
+        {CARDS.map((card, index) => (
+          <div
+            key={card.title}
+            {...getCardActionProps(index)}
+          >
             <h3>{card.title}</h3>
             <p>{card.description}</p>
           </div>

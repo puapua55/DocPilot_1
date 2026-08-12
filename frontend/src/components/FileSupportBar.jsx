@@ -1,4 +1,5 @@
 function FileSupportBar() {
+  // TODO: Currently unused. Keep this component available in case supported-file UI returns later.
   return (
     <div className="support-bar" aria-label="supported file types">
       <span className="support-chip">PDF .pdf</span>

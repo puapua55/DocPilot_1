@@ -1,28 +1,34 @@
-import FileSupportBar from './FileSupportBar';
-import SearchPanel from './SearchPanel';
-import UploadPanel from './UploadPanel';
 import DocumentViewer from './DocumentViewer';
+import UploadPanel from './UploadPanel';
 
 function DocumentWorkspace({
   selectedDocument,
   previewModel,
+  highlightKeyword,
+  highlightStatusMessage,
   errorMessage,
-  statusMessage,
   onDocumentSelect,
-  onFeatureClick
+  onDocumentClear,
+  onDocumentReselect
 }) {
   return (
     <section className="panel document-panel">
-      <UploadPanel
-        selectedFile={selectedDocument}
-        errorMessage={errorMessage}
-        onFileSelect={onDocumentSelect}
-      />
-      <FileSupportBar />
-      <SearchPanel statusMessage={statusMessage} onFeatureClick={onFeatureClick} />
-      <div className="preview-stage">
-        <DocumentViewer previewModel={previewModel} />
-      </div>
+      {selectedDocument ? (
+        <DocumentViewer
+          file={selectedDocument.file}
+          previewModel={previewModel}
+          highlightKeyword={highlightKeyword}
+          highlightStatusMessage={highlightStatusMessage}
+          onClose={onDocumentClear}
+          onChangeFile={onDocumentSelect}
+          onReselect={onDocumentReselect}
+        />
+      ) : (
+        <UploadPanel
+          errorMessage={errorMessage}
+          onFileSelect={onDocumentSelect}
+        />
+      )}
     </section>
   );
 }

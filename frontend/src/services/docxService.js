@@ -1,5 +1,7 @@
+import { isWordFile } from '../utils/fileUtils';
+
 export function isWordDocument(documentFile) {
-  return documentFile?.extension === 'doc' || documentFile?.extension === 'docx';
+  return isWordFile(documentFile?.file);
 }
 
 export function getWordPreviewModel(documentFile) {

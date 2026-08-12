@@ -1,9 +1,7 @@
-import FeatureButtons from './FeatureButtons';
-
-function SearchPanel({ statusMessage, onFeatureClick }) {
+function SearchPanel({ statusMessage }) {
+  // TODO: Currently unused. Keep this wrapper in case document action notices return later.
   return (
     <>
-      <FeatureButtons onFeatureClick={onFeatureClick} />
       {statusMessage ? (
         <div className="inline-notice" role="status">
           {statusMessage}

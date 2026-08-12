@@ -5,6 +5,7 @@ import { getFeatureMessage } from '../services/searchService';
 export function useDocument() {
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [previewModel, setPreviewModel] = useState(null);
+  const [documentText, setDocumentText] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
 
@@ -18,18 +19,28 @@ export function useDocument() {
     if (!result.ok) {
       setSelectedDocument(null);
       setPreviewModel(null);
+      setDocumentText([]);
       setErrorMessage(result.errorMessage);
       return;
     }
 
     setSelectedDocument(result.documentFile);
     setPreviewModel(result.preview);
+    setDocumentText(result.documentText || []);
     setErrorMessage('');
     setStatusMessage('');
   };
 
   const handleFeatureClick = (featureKey) => {
     setStatusMessage(getFeatureMessage(featureKey));
+  };
+
+  const clearSelectedDocument = () => {
+    setSelectedDocument(null);
+    setPreviewModel(null);
+    setDocumentText([]);
+    setErrorMessage('');
+    setStatusMessage('');
   };
 
   const handleSave = async () => {
@@ -43,9 +54,11 @@ export function useDocument() {
   return {
     selectedDocument,
     previewModel,
+    documentText,
     errorMessage,
     statusMessage,
     handleDocumentSelect,
+    clearSelectedDocument,
     handleFeatureClick,
     handleSave
   };

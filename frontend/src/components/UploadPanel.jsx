@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
-import { formatFileSize } from '../utils/fileUtils';
 
-function UploadPanel({ selectedFile, errorMessage, onFileSelect }) {
+function UploadPanel({ errorMessage, onFileSelect }) {
   const inputRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -59,14 +58,6 @@ function UploadPanel({ selectedFile, errorMessage, onFileSelect }) {
             event.target.value = '';
           }}
         />
-
-        {selectedFile ? (
-          <div className="file-summary">
-            <strong>{selectedFile.name}</strong>
-            <span>{formatFileSize(selectedFile.size)}</span>
-          </div>
-        ) : null}
-
         <div className="secondary-meta">
           <span>현재 단계에서는 브라우저에서 문서를 임시로 엽니다.</span>
           <span>최종 Electron에서는 로컬 파일 열기와 저장 흐름으로 전환됩니다.</span>

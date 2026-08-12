@@ -5,6 +5,30 @@ export function getFileExtension(fileName = '') {
   return parts.length > 1 ? parts.pop().toLowerCase() : '';
 }
 
+export function isPdfFile(file) {
+  if (!file) {
+    return false;
+  }
+
+  const name = file.name?.toLowerCase?.() ?? '';
+  return file.type === 'application/pdf' || name.endsWith('.pdf');
+}
+
+export function isWordFile(file) {
+  if (!file) {
+    return false;
+  }
+
+  const name = file.name?.toLowerCase?.() ?? '';
+  return (
+    file.type === 'application/msword' ||
+    file.type ===
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    name.endsWith('.doc') ||
+    name.endsWith('.docx')
+  );
+}
+
 export function formatFileSize(bytes = 0) {
   if (bytes <= 0) {
     return '0 B';

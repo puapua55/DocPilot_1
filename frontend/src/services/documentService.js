@@ -4,7 +4,7 @@ import {
   validateDocumentFile
 } from './fileService';
 import { extractWordContentForDev, getWordPreviewModel, isWordDocument } from './docxService';
-import { getPdfPreviewModel, isPdfDocument } from './pdfService';
+import { extractPdfTextByPages, getPdfPreviewModel, isPdfDocument } from './pdfService';
 import { saveDocumentForDev } from './storageService';
 
 export async function openDocument(file) {
@@ -23,22 +23,41 @@ export async function openDocument(file) {
   await uploadDocumentForDev(file);
 
   if (isPdfDocument(documentFile)) {
+    const documentText = await extractPdfTextByPages(file);
+
+    console.log('[documentText]', documentText);
+    console.log('[documentText pages]', documentText.length);
+
     return {
       ok: true,
       errorMessage: '',
-      documentFile,
-      preview: getPdfPreviewModel(documentFile)
+      documentFile: {
+        ...documentFile,
+        documentText
+      },
+      preview: {
+        ...getPdfPreviewModel(documentFile),
+        documentText
+      },
+      documentText
     };
   }
 
   if (isWordDocument(documentFile)) {
-    await extractWordContentForDev(file);
+    const documentText = (await extractWordContentForDev(file)) || [];
 
     return {
       ok: true,
       errorMessage: '',
-      documentFile,
-      preview: getWordPreviewModel(documentFile)
+      documentFile: {
+        ...documentFile,
+        documentText
+      },
+      preview: {
+        ...getWordPreviewModel(documentFile),
+        documentText
+      },
+      documentText
     };
   }
 

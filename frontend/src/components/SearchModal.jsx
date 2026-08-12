@@ -1,0 +1,138 @@
+import { useState } from 'react';
+import { searchKeywordInDocument } from '../services/searchService';
+
+function SearchModal({ documentText, selectedDocument, onClose }) {
+  const [mode, setMode] = useState('input');
+  const [keyword, setKeyword] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [results, setResults] = useState([]);
+  const [emptyMessage, setEmptyMessage] = useState('');
+
+  const handleSearch = async () => {
+    const normalizedKeyword = keyword.trim();
+
+    if (!normalizedKeyword) {
+      setErrorMessage('검색어를 입력해주세요.');
+      setEmptyMessage('');
+      return;
+    }
+
+    if (!selectedDocument) {
+      setErrorMessage('먼저 문서를 선택해주세요.');
+      setEmptyMessage('');
+      return;
+    }
+
+    if (!Array.isArray(documentText) || documentText.length === 0) {
+      setErrorMessage('문서 텍스트를 아직 읽지 못했습니다.');
+      setEmptyMessage('');
+      return;
+    }
+
+    setErrorMessage('');
+    const searchResults = await searchKeywordInDocument(documentText, normalizedKeyword);
+    setResults(searchResults);
+    setEmptyMessage(searchResults.length === 0 ? '검색 결과가 없습니다.' : '');
+    setMode('result');
+  };
+
+  const handleBack = () => {
+    setMode('input');
+    setErrorMessage('');
+    setEmptyMessage('');
+  };
+
+  const handleClose = () => {
+    setMode('input');
+    setKeyword('');
+    setErrorMessage('');
+    setResults([]);
+    setEmptyMessage('');
+    onClose();
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={handleClose}>
+      <div
+        className="search-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="search-modal-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="search-modal-header">
+          {mode === 'result' ? (
+            <button type="button" className="search-modal-back" onClick={handleBack}>
+              뒤로가기
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="search-modal-close"
+            onClick={handleClose}
+            aria-label="검색 모달 닫기"
+          >
+            x
+          </button>
+        </div>
+
+        <div className="search-modal-body">
+          {mode === 'input' ? (
+            <>
+              <h2 id="search-modal-title" className="search-modal-title">
+                찾을 단어 검색
+              </h2>
+              {errorMessage ? <p className="search-modal-error">{errorMessage}</p> : null}
+              <div className="search-modal-input-row">
+                <input
+                  className="search-modal-input"
+                  type="text"
+                  value={keyword}
+                  onChange={(event) => setKeyword(event.target.value)}
+                  placeholder="검색어를 입력하세요"
+                />
+                <button type="button" className="search-modal-button" onClick={handleSearch}>
+                  검색
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h2 id="search-modal-title" className="search-modal-title">
+                검색 결과
+              </h2>
+              <table className="search-result-table">
+                <thead>
+                  <tr>
+                    <th>페이지</th>
+                    <th>줄</th>
+                    <th>검색어</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.length > 0 ? (
+                    results.map((result, index) => (
+                      <tr key={`${result.page}-${result.line}-${result.keyword}-${index}`}>
+                        <td>{result.page}</td>
+                        <td>{result.line}</td>
+                        <td>{result.keyword}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="3" className="search-result-empty">
+                        {emptyMessage}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default SearchModal;
