@@ -8,17 +8,21 @@ DocPilot은 React 기반 문서 작업 화면을 중심으로 정리 중이며, 
 
 ```bash
 cd frontend
-npm install
+## 현재는 불필요
+## npm install
 npm run dev
 ```
+실행 후 Codespaces의 PORTS 탭에서 5173 포트를 Open in Browser로 열면 정적 리소스 기반 화면을 확인할 수 있습니다.
 
+--현재는 불필요--------------------------------
 ## Spring Boot 실행 방법
-
 ```bash
 mvn spring-boot:run
 ```
 
 실행 후 Codespaces의 PORTS 탭에서 8080 포트를 Open in Browser로 열면 정적 리소스 기반 화면을 확인할 수 있습니다.
+
+-----------------------------------------------
 
 ## 현재 포함 기능
 
@@ -26,4 +30,4 @@ mvn spring-boot:run
 - 좌우 분할 레이아웃
 - 문서 선택 및 드래그 앤 드롭
 - 채팅 입력창과 예시 메시지
-- Electron 전환을 고려한 서비스 분리 구조
+- Electron 전환을 고려한 서비스 분리 구조(현재는 SpringBoot 서버로만 테스트)
