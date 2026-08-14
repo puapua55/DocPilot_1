@@ -716,6 +716,35 @@ input {
   border-bottom: none;
 }
 
+.search-result-row {
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.search-result-row:hover {
+  background: #f4f7ff;
+}
+
+.search-result-keyword {
+  display: inline;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.search-result-keyword:hover {
+  color: #3758a8;
+}
+
+.search-result-keyword:focus-visible {
+  outline: 2px solid rgba(78, 124, 255, 0.28);
+  border-radius: 4px;
+}
+
 .search-result-empty {
   text-align: center;
   color: var(--muted);

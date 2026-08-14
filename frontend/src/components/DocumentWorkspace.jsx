@@ -6,6 +6,7 @@ function DocumentWorkspace({
   previewModel,
   highlightKeyword,
   highlightStatusMessage,
+  selectedSearchResult,
   errorMessage,
   onDocumentSelect,
   onDocumentClear,
@@ -19,6 +20,7 @@ function DocumentWorkspace({
           previewModel={previewModel}
           highlightKeyword={highlightKeyword}
           highlightStatusMessage={highlightStatusMessage}
+          selectedSearchResult={selectedSearchResult}
           onClose={onDocumentClear}
           onChangeFile={onDocumentSelect}
           onReselect={onDocumentReselect}

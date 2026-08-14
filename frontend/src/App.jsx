@@ -12,6 +12,7 @@ function App() {
   const [isHighlightModalOpen, setIsHighlightModalOpen] = useState(false);
   const [highlightKeyword, setHighlightKeyword] = useState('');
   const [highlightStatusMessage, setHighlightStatusMessage] = useState('');
+  const [selectedSearchResult, setSelectedSearchResult] = useState(null);
   const {
     selectedDocument,
     previewModel,
@@ -30,12 +31,26 @@ function App() {
     console.log('[App] selectedFile:', selectedDocument?.file ?? null);
   }, [selectedDocument]);
 
+  useEffect(() => {
+    console.log('[App] selectedSearchResult:', selectedSearchResult);
+  }, [selectedSearchResult]);
+
   const resetDocumentViewState = () => {
     setIsSearchModalOpen(false);
     setIsHighlightModalOpen(false);
     setHighlightKeyword('');
     setHighlightStatusMessage('');
+    setSelectedSearchResult(null);
     clearSelectedDocument();
+  };
+
+  const handleSearchResultClick = (result) => {
+    console.log('[SearchResult] clicked:', result);
+    setSelectedSearchResult({
+      ...result,
+      clickedAt: Date.now()
+    });
+    setIsSearchModalOpen(false);
   };
 
   const handleHighlightSearch = (keyword) => {
@@ -84,6 +99,7 @@ function App() {
             previewModel={previewModel}
             highlightKeyword={highlightKeyword}
             highlightStatusMessage={highlightStatusMessage}
+            selectedSearchResult={selectedSearchResult}
             errorMessage={errorMessage}
             onDocumentSelect={handleDocumentSelect}
             onDocumentClear={resetDocumentViewState}
@@ -101,6 +117,7 @@ function App() {
         <SearchModal
           documentText={documentText}
           selectedDocument={selectedDocument}
+          onResultClick={handleSearchResultClick}
           onClose={() => setIsSearchModalOpen(false)}
         />
       ) : null}

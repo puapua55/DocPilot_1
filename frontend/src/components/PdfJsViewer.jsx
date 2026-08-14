@@ -3,17 +3,23 @@ import PdfPage from './PdfPage';
 import { loadPdfDocument } from '../services/pdfService';
 import { isPdfFile } from '../utils/fileUtils';
 
-function PdfJsViewer({ file, highlightKeyword, scale = 1 }) {
+function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, scale = 1 }) {
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumbers, setPageNumbers] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
   const loadingTaskRef = useRef(null);
+  const viewerRef = useRef(null);
+  const pageRefs = useRef({});
 
   console.log('[PdfJsViewer] file:', file);
 
   useEffect(() => {
     console.log('[PdfJsViewer] highlightKeyword:', highlightKeyword);
   }, [highlightKeyword]);
+
+  useEffect(() => {
+    console.log('[PdfJsViewer] selectedSearchResult:', selectedSearchResult);
+  }, [selectedSearchResult]);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,6 +69,7 @@ function PdfJsViewer({ file, highlightKeyword, scale = 1 }) {
       cancelled = true;
       setPdfDocument(null);
       setPageNumbers([]);
+      pageRefs.current = {};
 
       if (loadingTaskRef.current && typeof loadingTaskRef.current.destroy === 'function') {
         loadingTaskRef.current.destroy();
@@ -70,6 +77,49 @@ function PdfJsViewer({ file, highlightKeyword, scale = 1 }) {
       }
     };
   }, [file]);
+
+  useEffect(() => {
+    if (!selectedSearchResult) {
+      return;
+    }
+
+    const result = selectedSearchResult;
+    const pageElement = pageRefs.current[result.page];
+
+    console.log('[PdfJsViewer] target page element:', pageElement);
+    console.log('[PdfJsViewer] scroll target:', {
+      page: result.page,
+      x: result.x,
+      y: result.y
+    });
+
+    if (!pageElement) {
+      return;
+    }
+
+    const viewerElement = viewerRef.current;
+
+    if (
+      viewerElement &&
+      Number.isFinite(result.x) &&
+      Number.isFinite(result.y)
+    ) {
+      const targetTop =
+        pageElement.offsetTop + result.y - viewerElement.clientHeight / 2;
+
+      viewerElement.scrollTo({
+        top: Math.max(targetTop, 0),
+        behavior: 'smooth'
+      });
+
+      return;
+    }
+
+    pageElement.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center'
+    });
+  }, [selectedSearchResult, scale, pageNumbers]);
 
   if (errorMessage) {
     return <div className="pdf-loading">{errorMessage}</div>;
@@ -81,7 +131,7 @@ function PdfJsViewer({ file, highlightKeyword, scale = 1 }) {
 
   return (
     <div className="pdf-viewer-shell">
-      <div className="pdf-viewer pdf-viewer-scroll">
+      <div ref={viewerRef} className="pdf-viewer pdf-viewer-scroll">
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (
             <PdfPage
@@ -90,6 +140,14 @@ function PdfJsViewer({ file, highlightKeyword, scale = 1 }) {
               pageNumber={pageNumber}
               scale={scale}
               highlightKeyword={highlightKeyword}
+              onPageReady={(element) => {
+                if (element) {
+                  pageRefs.current[pageNumber] = element;
+                  return;
+                }
+
+                delete pageRefs.current[pageNumber];
+              }}
             />
           ))}
         </div>

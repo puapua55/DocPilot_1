@@ -15,6 +15,7 @@ function DocumentViewer({
   previewModel,
   highlightKeyword,
   highlightStatusMessage,
+  selectedSearchResult,
   onClose,
   onChangeFile,
   onReselect
@@ -44,7 +45,14 @@ function DocumentViewer({
     }
 
     if (previewModel.type === 'pdf') {
-      return <PdfViewer file={file} highlightKeyword={highlightKeyword} scale={scale} />;
+      return (
+        <PdfViewer
+          file={file}
+          highlightKeyword={highlightKeyword}
+          selectedSearchResult={selectedSearchResult}
+          scale={scale}
+        />
+      );
     }
 
     if (previewModel.type === 'word') {

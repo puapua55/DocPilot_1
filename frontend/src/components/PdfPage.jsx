@@ -7,7 +7,7 @@ import {
   createViewportTextSpans
 } from '../services/highlightService';
 
-function PdfPage({ pdf, pageNumber, scale, highlightKeyword }) {
+function PdfPage({ pdf, pageNumber, scale, highlightKeyword, onPageReady }) {
   const canvasRef = useRef(null);
   const pageRef = useRef(null);
   const renderTaskRef = useRef(null);
@@ -140,10 +140,23 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword }) {
     };
   }, [fallbackBoxes, highlightKeyword, pageNumber, textSpans]);
 
+  useEffect(() => {
+    if (!onPageReady) {
+      return undefined;
+    }
+
+    onPageReady(pageRef.current);
+
+    return () => {
+      onPageReady(null);
+    };
+  }, [onPageReady, pageNumber, pageSize.height, pageSize.width]);
+
   return (
     <div
       ref={pageRef}
       className="pdf-page"
+      data-page-number={pageNumber}
       style={{
         width: pageSize.width ? `${pageSize.width}px` : undefined,
         height: pageSize.height ? `${pageSize.height}px` : undefined,

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { searchKeywordInDocument } from '../services/searchService';
 
-function SearchModal({ documentText, selectedDocument, onClose }) {
+function SearchModal({ documentText, selectedDocument, onClose, onResultClick }) {
   const [mode, setMode] = useState('input');
   const [keyword, setKeyword] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
@@ -49,6 +49,14 @@ function SearchModal({ documentText, selectedDocument, onClose }) {
     setResults([]);
     setEmptyMessage('');
     onClose();
+  };
+
+  const handleResultClick = (result) => {
+    if (onResultClick) {
+      onResultClick(result);
+    }
+
+    handleClose();
   };
 
   return (
@@ -112,10 +120,25 @@ function SearchModal({ documentText, selectedDocument, onClose }) {
                 <tbody>
                   {results.length > 0 ? (
                     results.map((result, index) => (
-                      <tr key={`${result.page}-${result.line}-${result.keyword}-${index}`}>
+                      <tr
+                        key={`${result.page}-${result.line}-${result.keyword}-${index}`}
+                        className="search-result-row"
+                        onClick={() => handleResultClick(result)}
+                      >
                         <td>{result.page}</td>
                         <td>{result.line}</td>
-                        <td>{result.keyword}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="search-result-keyword"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleResultClick(result);
+                            }}
+                          >
+                            {result.keyword}
+                          </button>
+                        </td>
                       </tr>
                     ))
                   ) : (

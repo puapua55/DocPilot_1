@@ -57,9 +57,15 @@ export function searchKeywordInDocument(documentText, keyword) {
         }
 
         results.push({
+          id: `search-result-${pageNumber}-${index + 1}-${foundIndex}-${results.length}`,
           page: pageNumber,
           line: index + 1,
-          keyword: extractMatchedWord(rawLineText, foundIndex, normalizedKeyword)
+          keyword: extractMatchedWord(rawLineText, foundIndex, normalizedKeyword),
+          fullText: rawLineText,
+          x: null,
+          y: null,
+          width: null,
+          height: null
         });
 
         startIndex = foundIndex + loweredKeyword.length;
