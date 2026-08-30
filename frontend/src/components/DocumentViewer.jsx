@@ -15,6 +15,7 @@ function DocumentViewer({
   previewModel,
   highlightKeyword,
   highlightStatusMessage,
+  replacePreview,
   selectedSearchResult,
   onClose,
   onChangeFile,
@@ -49,6 +50,7 @@ function DocumentViewer({
         <PdfViewer
           file={file}
           highlightKeyword={highlightKeyword}
+          replacePreview={replacePreview}
           selectedSearchResult={selectedSearchResult}
           scale={scale}
         />

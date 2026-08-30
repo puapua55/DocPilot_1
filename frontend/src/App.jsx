@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import AppErrorBoundary from './components/AppErrorBoundary';
 import AssistantPanel from './components/AssistantPanel';
 import DocumentWorkspace from './components/DocumentWorkspace';
 import HighlightModal from './components/HighlightModal';
+import ReplaceModal from './components/ReplaceModal';
 import SearchModal from './components/SearchModal';
 import { useChat } from './hooks/useChat';
 import { useDocument } from './hooks/useDocument';
@@ -10,8 +12,10 @@ import { countKeywordMatches } from './services/highlightService';
 function App() {
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [isHighlightModalOpen, setIsHighlightModalOpen] = useState(false);
+  const [isReplaceModalOpen, setIsReplaceModalOpen] = useState(false);
   const [highlightKeyword, setHighlightKeyword] = useState('');
   const [highlightStatusMessage, setHighlightStatusMessage] = useState('');
+  const [replacePreview, setReplacePreview] = useState(null);
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
   const {
     selectedDocument,
@@ -38,8 +42,10 @@ function App() {
   const resetDocumentViewState = () => {
     setIsSearchModalOpen(false);
     setIsHighlightModalOpen(false);
+    setIsReplaceModalOpen(false);
     setHighlightKeyword('');
     setHighlightStatusMessage('');
+    setReplacePreview(null);
     setSelectedSearchResult(null);
     clearSelectedDocument();
   };
@@ -88,7 +94,7 @@ function App() {
     };
   };
 
-  return (
+  const appContent = (
     <div className="app-page">
       <div className="ambient ambient-left" />
       <div className="ambient ambient-right" />
@@ -99,6 +105,7 @@ function App() {
             previewModel={previewModel}
             highlightKeyword={highlightKeyword}
             highlightStatusMessage={highlightStatusMessage}
+            replacePreview={replacePreview}
             selectedSearchResult={selectedSearchResult}
             errorMessage={errorMessage}
             onDocumentSelect={handleDocumentSelect}
@@ -110,6 +117,7 @@ function App() {
             onSendMessage={handleSendMessage}
             onSearchCardClick={() => setIsSearchModalOpen(true)}
             onHighlightCardClick={() => setIsHighlightModalOpen(true)}
+            onReplaceCardClick={() => setIsReplaceModalOpen(true)}
           />
         </main>
       </div>
@@ -126,8 +134,17 @@ function App() {
         onClose={() => setIsHighlightModalOpen(false)}
         onSearch={handleHighlightSearch}
       />
+      <ReplaceModal
+        isOpen={isReplaceModalOpen}
+        selectedDocument={selectedDocument}
+        previewModel={previewModel}
+        onApplyPreview={setReplacePreview}
+        onClose={() => setIsReplaceModalOpen(false)}
+      />
     </div>
   );
+
+  return <AppErrorBoundary>{appContent}</AppErrorBoundary>;
 }
 
 export default App;

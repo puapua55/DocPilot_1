@@ -3,7 +3,7 @@ import PdfPage from './PdfPage';
 import { loadPdfDocument } from '../services/pdfService';
 import { isPdfFile } from '../utils/fileUtils';
 
-function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, scale = 1 }) {
+function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1 }) {
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumbers, setPageNumbers] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
@@ -140,6 +140,7 @@ function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, scale = 1 }
               pageNumber={pageNumber}
               scale={scale}
               highlightKeyword={highlightKeyword}
+              replacePreview={replacePreview}
               onPageReady={(element) => {
                 if (element) {
                   pageRefs.current[pageNumber] = element;

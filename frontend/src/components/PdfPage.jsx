@@ -4,10 +4,11 @@ import PdfTextLayer from './PdfTextLayer';
 import {
   calculateHighlightBoxes,
   createHighlightBoxesFromTextLayer,
+  createReplacementPreviewFromTextLayer,
   createViewportTextSpans
 } from '../services/highlightService';
 
-function PdfPage({ pdf, pageNumber, scale, highlightKeyword, onPageReady }) {
+function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onPageReady }) {
   const canvasRef = useRef(null);
   const pageRef = useRef(null);
   const renderTaskRef = useRef(null);
@@ -15,6 +16,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, onPageReady }) {
   const [textSpans, setTextSpans] = useState([]);
   const [highlightBoxes, setHighlightBoxes] = useState([]);
   const [fallbackBoxes, setFallbackBoxes] = useState([]);
+  const [replacementPreviewItems, setReplacementPreviewItems] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +89,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, onPageReady }) {
       if (!cancelled) {
         setTextSpans(nextTextSpans);
         setFallbackBoxes(nextBoxes);
+        setReplacementPreviewItems([]);
       }
     }
 
@@ -101,6 +104,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, onPageReady }) {
         setTextSpans([]);
         setFallbackBoxes([]);
         setHighlightBoxes([]);
+        setReplacementPreviewItems([]);
       }
     });
 
@@ -140,6 +144,27 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, onPageReady }) {
     };
   }, [fallbackBoxes, highlightKeyword, pageNumber, textSpans]);
 
+  useLayoutEffect(() => {
+    if (!pageRef.current || !replacePreview?.originalText) {
+      setReplacementPreviewItems([]);
+      return undefined;
+    }
+
+    let frameId = 0;
+
+    const updateReplacementPreview = () => {
+      setReplacementPreviewItems(
+        createReplacementPreviewFromTextLayer(pageRef.current, replacePreview)
+      );
+    };
+
+    frameId = window.requestAnimationFrame(updateReplacementPreview);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [pageNumber, replacePreview, textSpans]);
+
   useEffect(() => {
     if (!onPageReady) {
       return undefined;
@@ -166,7 +191,48 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, onPageReady }) {
       <div className="pdf-page-debug-label">page {pageNumber}</div>
       <canvas ref={canvasRef} className="pdf-canvas" />
       <PdfTextLayer spans={textSpans} width={pageSize.width} height={pageSize.height} />
+      <ReplacementPreviewLayer items={replacementPreviewItems} width={pageSize.width} height={pageSize.height} />
       <HighlightLayer boxes={highlightBoxes} width={pageSize.width} height={pageSize.height} />
+    </div>
+  );
+}
+
+function ReplacementPreviewLayer({ items, width, height }) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <div
+      className="replacement-layer"
+      style={{
+        width: `${width}px`,
+        height: `${height}px`
+      }}
+    >
+      {items.map((item) => (
+        <div key={item.id}>
+          <div
+            className="replacement-cover"
+            style={{
+              left: `${item.cover.x}px`,
+              top: `${item.cover.y}px`,
+              width: `${item.cover.width}px`,
+              height: `${item.cover.height}px`
+            }}
+          />
+          <div
+            className="replacement-text"
+            style={{
+              left: `${item.text.x}px`,
+              top: `${item.text.y}px`,
+              fontSize: `${item.text.fontSize}px`
+            }}
+          >
+            {item.text.value}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

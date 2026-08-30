@@ -11,11 +11,17 @@ const CARDS = [
   },
   {
     title: '즉시 텍스트 교체',
-    description: '선택한 내용을 바꾸고 저장하는 편집 기능은 추후 단계에서 구현 예정입니다.'
+    description: 'PDF를 절대좌표 HTML 구조로 분석한 뒤 텍스트를 바꿔 새 PDF로 저장합니다.'
   }
 ];
 
-function AssistantPanel({ messages, onSendMessage, onSearchCardClick, onHighlightCardClick }) {
+function AssistantPanel({
+  messages,
+  onSendMessage,
+  onSearchCardClick,
+  onHighlightCardClick,
+  onReplaceCardClick
+}) {
   const getCardActionProps = (index) => {
     if (index === 0) {
       return {
@@ -48,7 +54,16 @@ function AssistantPanel({ messages, onSendMessage, onSearchCardClick, onHighligh
     }
 
     return {
-      className: 'feature-card'
+      className: 'feature-card feature-card-actionable',
+      onClick: onReplaceCardClick,
+      role: 'button',
+      tabIndex: 0,
+      onKeyDown: (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onReplaceCardClick?.();
+        }
+      }
     };
   };
 

@@ -39,6 +39,11 @@ input {
   font: inherit;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .app-page {
   position: relative;
   min-height: 100vh;
@@ -221,6 +226,125 @@ input {
   border: 1px solid #d9e4ff;
   background: #f3f7ff;
   color: #3758a8;
+}
+
+.replace-modal {
+  max-width: 560px;
+}
+
+.replace-field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.replace-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.replace-field span {
+  font-size: 0.92rem;
+}
+
+.replace-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.replace-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #d9e4ff;
+  border-radius: 14px;
+  background: #f8fbff;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.converted-preview-root {
+  position: relative;
+  margin: 24px;
+  padding: 16px;
+  border: 2px dashed #4f6bff;
+  background: #f5f7fb;
+  z-index: 9999;
+}
+
+.converted-pdf-export-root {
+  position: fixed;
+  left: -100000px;
+  top: 0;
+  background: #ffffff;
+  z-index: -1;
+}
+
+.converted-pdf-page {
+  position: relative;
+  overflow: hidden;
+  background: #ffffff;
+  margin: 0 auto 20px;
+}
+
+.converted-page-bg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.converted-replacement-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.converted-cover-box {
+  position: absolute;
+  background: #ffffff;
+}
+
+.converted-new-text {
+  position: absolute;
+  color: #111827;
+  white-space: pre;
+  line-height: 1;
+  font-weight: 400;
+}
+
+.debug-captured-canvas-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 24px;
+}
+
+.debug-captured-canvas {
+  padding: 16px;
+  border: 2px solid #d92d20;
+  background: #ffffff;
+}
+
+.debug-captured-canvas-title {
+  margin-bottom: 12px;
+  color: #8b1e14;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.debug-captured-canvas canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
 }
 
 .document-viewer {
@@ -428,6 +552,28 @@ input {
   height: 100%;
   z-index: 3;
   pointer-events: none;
+}
+
+.replacement-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.replacement-cover {
+  position: absolute;
+  background: #ffffff;
+}
+
+.replacement-text {
+  position: absolute;
+  color: #111111;
+  white-space: nowrap;
+  line-height: 1;
+  font-family: 'Helvetica', 'Arial', sans-serif;
 }
 
 .highlight-box {

@@ -3,6 +3,14 @@ import * as pdfjsLib from 'pdfjs-dist';
 const DEFAULT_PADDING_X = 1;
 const DEFAULT_PADDING_Y = 1;
 const MIN_BOX_SIZE = 2;
+const REPLACE_PREVIEW_TUNING = {
+  xOffset: 0,
+  yOffset: 3,
+  coverTopExtra: 3,
+  coverBottomExtra: 5,
+  coverXExtra: 2,
+  fontSizeRatio: 0.95
+};
 
 export function createViewportTextSpans(textItems, viewport) {
   if (!Array.isArray(textItems) || !viewport) {
@@ -294,6 +302,183 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword) {
   console.log('[Highlight] boxes:', boxes);
 
   return boxes;
+}
+
+export function createReplacementPreviewFromTextLayer(pageElement, replaceState) {
+  const originalText = String(replaceState?.originalText || '').trim();
+  const newText = String(replaceState?.newText ?? '');
+
+  if (!pageElement || !originalText) {
+    return [];
+  }
+
+  const textLayer = pageElement.querySelector('.textLayer');
+
+  if (!textLayer) {
+    return [];
+  }
+
+  const spans = Array.from(textLayer.querySelectorAll('span')).filter(
+    (span) => (span.textContent || '').length > 0
+  );
+  const lineGroups = buildTextLayerLineGroups(spans);
+  const loweredKeyword = originalText.toLowerCase();
+  const previewItems = [];
+
+  lineGroups.forEach((lineGroup, lineIndex) => {
+    const lineText = lineGroup.text || '';
+    const loweredText = lineText.toLowerCase();
+    let startIndex = 0;
+
+    while (true) {
+      const foundIndex = loweredText.indexOf(loweredKeyword, startIndex);
+
+      if (foundIndex === -1) {
+        break;
+      }
+
+      const endIndex = foundIndex + originalText.length;
+      const matchedRects = [];
+      let cursor = 0;
+
+      lineGroup.spans.forEach(({ span, text }) => {
+        const spanStart = cursor;
+        const spanEnd = cursor + text.length;
+        const overlapStart = Math.max(foundIndex, spanStart);
+        const overlapEnd = Math.min(endIndex, spanEnd);
+
+        cursor = spanEnd;
+
+        if (overlapStart >= overlapEnd) {
+          return;
+        }
+
+        const textNode = Array.from(span.childNodes).find((node) => node.nodeType === Node.TEXT_NODE);
+
+        if (!textNode) {
+          return;
+        }
+
+        const range = document.createRange();
+        range.setStart(textNode, overlapStart - spanStart);
+        range.setEnd(textNode, overlapEnd - spanStart);
+        matchedRects.push(...Array.from(range.getClientRects()));
+        range.detach?.();
+      });
+
+      const lineBox = mergeLineRects(matchedRects, pageElement);
+
+      if (lineBox) {
+        const sourceSpan = findSourceSpanForPreview(lineGroup.spans, matchedRects[0]);
+        const computedStyle = sourceSpan ? window.getComputedStyle(sourceSpan) : null;
+        const sourceFontSize = Number.parseFloat(computedStyle?.fontSize || '') || lineBox.height;
+        const fontSize = Math.max(sourceFontSize * REPLACE_PREVIEW_TUNING.fontSizeRatio, 8);
+
+        previewItems.push({
+          id: `${lineIndex}-${foundIndex}-${newText}`,
+          cover: {
+            x: lineBox.x - REPLACE_PREVIEW_TUNING.coverXExtra,
+            y: lineBox.y - REPLACE_PREVIEW_TUNING.coverTopExtra,
+            width: Math.max(
+              lineBox.width + REPLACE_PREVIEW_TUNING.coverXExtra * 2,
+              estimateReplacementWidth(newText, fontSize)
+            ),
+            height:
+              lineBox.height +
+              REPLACE_PREVIEW_TUNING.coverTopExtra +
+              REPLACE_PREVIEW_TUNING.coverBottomExtra
+          },
+          text: {
+            x: lineBox.x + REPLACE_PREVIEW_TUNING.xOffset,
+            y: lineBox.y + REPLACE_PREVIEW_TUNING.yOffset,
+            value: newText,
+            fontSize
+          }
+        });
+      }
+
+      startIndex = foundIndex + originalText.length;
+    }
+  });
+
+  return previewItems;
+}
+
+function buildTextLayerLineGroups(spans) {
+  const LINE_Y_TOLERANCE = 5;
+  const lineGroups = [];
+
+  spans.forEach((span) => {
+    const rect = span.getBoundingClientRect();
+
+    if (!rect.width && !rect.height) {
+      return;
+    }
+
+    const lineGroup = lineGroups.find((line) => Math.abs(rect.top - line.top) <= LINE_Y_TOLERANCE);
+
+    if (lineGroup) {
+      lineGroup.spans.push({ span, rect, text: span.textContent || '' });
+      return;
+    }
+
+    lineGroups.push({
+      top: rect.top,
+      spans: [{ span, rect, text: span.textContent || '' }]
+    });
+  });
+
+  lineGroups.forEach((line) => {
+    line.spans.sort((a, b) => a.rect.left - b.rect.left);
+    line.text = line.spans.map((entry) => entry.text).join('');
+  });
+
+  return lineGroups;
+}
+
+function mergeLineRects(rects, pageElement) {
+  if (!rects.length) {
+    return null;
+  }
+
+  const pageRect = pageElement.getBoundingClientRect();
+  const bounds = rects.reduce(
+    (acc, rect) => ({
+      left: Math.min(acc.left, rect.left),
+      top: Math.min(acc.top, rect.top),
+      right: Math.max(acc.right, rect.right),
+      bottom: Math.max(acc.bottom, rect.bottom)
+    }),
+    {
+      left: Infinity,
+      top: Infinity,
+      right: -Infinity,
+      bottom: -Infinity
+    }
+  );
+
+  return {
+    x: bounds.left - pageRect.left,
+    y: bounds.top - pageRect.top,
+    width: bounds.right - bounds.left,
+    height: bounds.bottom - bounds.top
+  };
+}
+
+function findSourceSpanForPreview(spans, firstRect) {
+  if (!firstRect) {
+    return null;
+  }
+
+  return spans.find(({ rect }) => (
+    rect.left - 1 <= firstRect.left &&
+    rect.right + 1 >= firstRect.left &&
+    Math.abs(rect.top - firstRect.top) <= 3
+  ))?.span || null;
+}
+
+function estimateReplacementWidth(text, fontSize) {
+  return Math.max(String(text || '').length * fontSize * 0.62, MIN_BOX_SIZE);
 }
 
 function clamp(value, min, max) {
