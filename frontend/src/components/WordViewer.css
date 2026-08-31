@@ -56,6 +56,24 @@
   overflow-wrap: anywhere;
 }
 
+.docx-content {
+  position: relative;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+.docx-highlight {
+  background: rgba(255, 230, 0, 0.75);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.docx-search-current {
+  outline: 2px solid rgba(99, 102, 241, 0.8);
+  background: rgba(99, 102, 241, 0.08);
+  scroll-margin-block: 40px;
+}
+
 .word-document > :first-child {
   margin-top: 0;
 }
