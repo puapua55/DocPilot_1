@@ -2,8 +2,8 @@ import { useRef, useState } from 'react';
 import { formatFileSize, isPdfFile } from '../utils/fileUtils';
 import PdfViewer from './PdfViewer';
 import PreviewInfoBox from './PreviewInfoBox';
+import WordViewer from './WordViewer';
 import ZoomControls from './ZoomControls';
-import WordPreviewPlaceholder from './WordPreviewPlaceholder';
 
 const DEFAULT_SCALE = 1;
 const MIN_SCALE = 0.5;
@@ -58,12 +58,7 @@ function DocumentViewer({
     }
 
     if (previewModel.type === 'word') {
-      return (
-        <WordPreviewPlaceholder
-          fileName={previewModel.fileName}
-          fileSize={formatFileSize(previewModel.fileSize)}
-        />
-      );
+      return <WordViewer previewModel={previewModel} />;
     }
 
     return (
