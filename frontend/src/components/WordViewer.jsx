@@ -1,3 +1,5 @@
+import './WordViewer.css';
+
 function WordViewer({ previewModel }) {
   const { html, renderError, messages = [] } = previewModel || {};
 
