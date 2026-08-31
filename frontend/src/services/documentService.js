@@ -44,7 +44,11 @@ export async function openDocument(file) {
   }
 
   if (isWordDocument(documentFile)) {
-    const documentText = (await extractWordContentForDev(file)) || [];
+    const docxPreview = await extractWordContentForDev(file);
+    const documentText = docxPreview.documentText || [];
+
+    console.log('[DOCX] text pages:', documentText.length);
+    console.log('[DOCX] conversion messages:', docxPreview.messages);
 
     return {
       ok: true,
@@ -54,7 +58,7 @@ export async function openDocument(file) {
         documentText
       },
       preview: {
-        ...getWordPreviewModel(documentFile),
+        ...getWordPreviewModel(documentFile, docxPreview),
         documentText
       },
       documentText
