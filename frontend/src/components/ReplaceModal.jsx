@@ -8,7 +8,14 @@ import {
   replaceTextInHtmlText
 } from '../services/pdfHtmlTextConvertService';
 
-function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, onClose }) {
+function ReplaceModal({
+  isOpen,
+  selectedDocument,
+  previewModel,
+  onDocxReplace,
+  onApplyPreview,
+  onClose
+}) {
   const [originalText, setOriginalText] = useState('');
   const [newText, setNewText] = useState('');
   const [message, setMessage] = useState('');
@@ -29,10 +36,33 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
     return null;
   }
 
+  const isDocx = previewModel?.type === 'word';
   const summaryPageCount = lastSummary?.pages ?? 0;
   const summaryTextCount = lastSummary?.texts ?? 0;
   const summaryLineCount = lastSummary?.lines ?? 0;
   const summaryReplacementCount = lastSummary?.replacements ?? 0;
+
+  const applyDocxReplacement = (target, replacement) => {
+    const result = onDocxReplace?.(target, replacement) || {
+      replaceCount: 0,
+      html: ''
+    };
+    const replaceCount = result.replaceCount ?? 0;
+
+    setLastSummary({
+      kind: 'docx',
+      replacements: replaceCount,
+      outputFileName: selectedDocument?.file?.name || '',
+      modifiedHtmlAvailable: Boolean(result.html)
+    });
+    setMessage(
+      replaceCount > 0
+        ? `DOCX 텍스트 치환 ${replaceCount}건이 현재 뷰어에 반영되었습니다.`
+        : '교체할 텍스트를 찾을 수 없습니다.'
+    );
+
+    return result;
+  };
 
   const handleConvert = async () => {
     try {
@@ -43,17 +73,13 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
       console.log('[ConvertTrace] selectedFile:', selectedDocument?.file?.name);
       console.log('[ConvertTrace] originalText:', target);
       console.log('[ConvertTrace] newText:', replacement);
-      console.log('[ConvertTrace] handler file: ReplaceModal.jsx');
-      console.log('[ConvertTrace] extractPdfToHtmlText function:', extractPdfToHtmlText);
-      console.log('[ConvertTrace] replaceTextInHtmlText function:', replaceTextInHtmlText);
-      console.log('[ConvertTrace] renderPdfFromHtmlText function:', renderPdfFromHtmlText);
 
       setIsConverting(true);
       setMessage('');
       setLastSummary(null);
 
-      if (!selectedDocument || previewModel?.type !== 'pdf' || !selectedDocument.file) {
-        setMessage('먼저 PDF 파일을 선택해주세요.');
+      if (!selectedDocument || !selectedDocument.file) {
+        setMessage('먼저 문서를 선택해주세요.');
         return;
       }
 
@@ -66,6 +92,21 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
         setMessage('변경 단어를 입력해주세요.');
         return;
       }
+
+      if (isDocx) {
+        applyDocxReplacement(target, replacement);
+        return;
+      }
+
+      if (previewModel?.type !== 'pdf') {
+        setMessage('지원하는 문서 형식이 아닙니다.');
+        return;
+      }
+
+      console.log('[ConvertTrace] handler file: ReplaceModal.jsx');
+      console.log('[ConvertTrace] extractPdfToHtmlText function:', extractPdfToHtmlText);
+      console.log('[ConvertTrace] replaceTextInHtmlText function:', replaceTextInHtmlText);
+      console.log('[ConvertTrace] renderPdfFromHtmlText function:', renderPdfFromHtmlText);
 
       setMessage('PDF를 HTML 형식 텍스트 구조로 변환 중입니다...');
 
@@ -107,6 +148,7 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
       if (replacementCount === 0) {
         setMessage('교체할 텍스트를 찾을 수 없습니다.');
         setLastSummary({
+          kind: 'pdf',
           pages: parsedStructure.pages.length,
           texts: totalTextCount,
           lines: totalLineCount,
@@ -123,6 +165,7 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
       await renderPdfFromHtmlText(replacedHtmlText, outputFileName);
 
       setLastSummary({
+        kind: 'pdf',
         pages: parsedStructure.pages.length,
         texts: totalTextCount,
         lines: totalLineCount,
@@ -133,7 +176,7 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
       setMessage('변환된 PDF가 다운로드되었습니다.');
     } catch (error) {
       console.error('[Convert] failed:', error);
-      setMessage(error?.message || 'PDF 변환 중 오류가 발생했습니다.');
+      setMessage(error?.message || '문서 변환 중 오류가 발생했습니다.');
     } finally {
       setIsConverting(false);
     }
@@ -141,14 +184,30 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
 
   const handleApplyPreview = () => {
     const target = originalText.trim();
+    const replacement = newText.trim();
 
-    if (!selectedDocument || previewModel?.type !== 'pdf') {
-      setMessage('먼저 PDF 문서를 선택해주세요.');
+    if (!selectedDocument) {
+      setMessage('먼저 문서를 선택해주세요.');
       return;
     }
 
     if (!target) {
       setMessage('기존 단어를 입력해주세요.');
+      return;
+    }
+
+    if (!replacement) {
+      setMessage('변경 단어를 입력해주세요.');
+      return;
+    }
+
+    if (isDocx) {
+      applyDocxReplacement(target, replacement);
+      return;
+    }
+
+    if (previewModel?.type !== 'pdf') {
+      setMessage('지원하는 문서 형식이 아닙니다.');
       return;
     }
 
@@ -233,12 +292,26 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
           ) : null}
           {lastSummary ? (
             <div className="replace-summary" role="status">
-              <span>{lastSummary.outputFileName}</span>
-              <span>
-                {summaryPageCount}페이지 / 텍스트 {summaryTextCount}개 / 선 {summaryLineCount}개
-              </span>
-              <span>텍스트 치환 {summaryReplacementCount}건</span>
-              {lastSummary.warning ? <span>{lastSummary.warning}</span> : null}
+              {lastSummary.kind === 'docx' ? (
+                <>
+                  <span>{lastSummary.outputFileName}</span>
+                  <span>DOCX 텍스트 치환 {summaryReplacementCount}건</span>
+                  <span>
+                    {lastSummary.modifiedHtmlAvailable
+                      ? '수정된 HTML 구조를 현재 상태에 보관했습니다.'
+                      : '수정된 HTML 구조를 가져오지 못했습니다.'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>{lastSummary.outputFileName}</span>
+                  <span>
+                    {summaryPageCount}페이지 / 텍스트 {summaryTextCount}개 / 선 {summaryLineCount}개
+                  </span>
+                  <span>텍스트 치환 {summaryReplacementCount}건</span>
+                  {lastSummary.warning ? <span>{lastSummary.warning}</span> : null}
+                </>
+              )}
             </div>
           ) : null}
         </div>
