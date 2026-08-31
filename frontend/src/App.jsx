@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import AppErrorBoundary from './components/AppErrorBoundary';
 import AssistantPanel from './components/AssistantPanel';
 import DocumentWorkspace from './components/DocumentWorkspace';
@@ -10,6 +10,7 @@ import { useDocument } from './hooks/useDocument';
 import { countKeywordMatches } from './services/highlightService';
 
 function App() {
+  const documentViewerRef = useRef(null);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [isHighlightModalOpen, setIsHighlightModalOpen] = useState(false);
   const [isReplaceModalOpen, setIsReplaceModalOpen] = useState(false);
@@ -17,6 +18,7 @@ function App() {
   const [highlightStatusMessage, setHighlightStatusMessage] = useState('');
   const [replacePreview, setReplacePreview] = useState(null);
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
+  const [, setModifiedDocxHtml] = useState('');
   const {
     selectedDocument,
     previewModel,
@@ -47,11 +49,31 @@ function App() {
     setHighlightStatusMessage('');
     setReplacePreview(null);
     setSelectedSearchResult(null);
+    setModifiedDocxHtml('');
     clearSelectedDocument();
+  };
+
+  const handleDocxSearch = (keyword) => {
+    if (previewModel?.type !== 'word') {
+      return [];
+    }
+
+    return documentViewerRef.current?.searchDocument?.(keyword) ?? [];
   };
 
   const handleSearchResultClick = (result) => {
     console.log('[SearchResult] clicked:', result);
+
+    if (result?.type === 'docx') {
+      documentViewerRef.current?.scrollToSearchResult?.(result.index);
+      setSelectedSearchResult({
+        ...result,
+        clickedAt: Date.now()
+      });
+      setIsSearchModalOpen(false);
+      return;
+    }
+
     setSelectedSearchResult({
       ...result,
       clickedAt: Date.now()
@@ -67,10 +89,26 @@ function App() {
       };
     }
 
+    if (previewModel?.type === 'word') {
+      const matchCount = documentViewerRef.current?.highlightText?.(keyword) ?? 0;
+
+      setHighlightKeyword('');
+      setHighlightStatusMessage(
+        matchCount === 0
+          ? '검색 결과가 없습니다.'
+          : `${matchCount}개의 DOCX 검색 결과를 표시했습니다.`
+      );
+
+      return {
+        ok: true,
+        closeModal: true
+      };
+    }
+
     if (previewModel?.type !== 'pdf') {
       return {
         ok: false,
-        message: '위치 하이라이트는 현재 PDF 문서에서만 지원됩니다.'
+        message: '지원하는 문서 형식이 아닙니다.'
       };
     }
 
@@ -94,6 +132,29 @@ function App() {
     };
   };
 
+  const handleDocxReplace = (originalText, newText) => {
+    if (previewModel?.type !== 'word') {
+      return {
+        replaceCount: 0,
+        html: ''
+      };
+    }
+
+    const replaceCount = documentViewerRef.current?.replaceText?.(originalText, newText) ?? 0;
+    const html = documentViewerRef.current?.getModifiedHtml?.() ?? '';
+    setModifiedDocxHtml(html);
+    setHighlightStatusMessage(
+      replaceCount > 0
+        ? `DOCX 텍스트 치환 ${replaceCount}건`
+        : '교체할 텍스트를 찾을 수 없습니다.'
+    );
+
+    return {
+      replaceCount,
+      html
+    };
+  };
+
   const appContent = (
     <div className="app-page">
       <div className="ambient ambient-left" />
@@ -101,6 +162,7 @@ function App() {
       <div className="app-shell">
         <main className="main-layout">
           <DocumentWorkspace
+            ref={documentViewerRef}
             selectedDocument={selectedDocument}
             previewModel={previewModel}
             highlightKeyword={highlightKeyword}
@@ -125,6 +187,8 @@ function App() {
         <SearchModal
           documentText={documentText}
           selectedDocument={selectedDocument}
+          previewModel={previewModel}
+          onDocxSearch={handleDocxSearch}
           onResultClick={handleSearchResultClick}
           onClose={() => setIsSearchModalOpen(false)}
         />
@@ -138,6 +202,7 @@ function App() {
         isOpen={isReplaceModalOpen}
         selectedDocument={selectedDocument}
         previewModel={previewModel}
+        onDocxReplace={handleDocxReplace}
         onApplyPreview={setReplacePreview}
         onClose={() => setIsReplaceModalOpen(false)}
       />
