@@ -1,0 +1,99 @@
+.word-viewer-shell {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.word-viewer,
+.word-viewer-scroll {
+  width: 100%;
+  min-height: 620px;
+}
+
+.word-viewer-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #d7e2ff;
+  border-radius: 16px;
+  background: #ffffff;
+  color: #6b7697;
+  padding: 24px;
+  text-align: center;
+}
+
+.word-viewer-warning {
+  padding: 10px 14px;
+  border: 1px solid #f0dfad;
+  border-radius: 12px;
+  background: #fffaf0;
+  color: #755c1a;
+  font-size: 0.9rem;
+}
+
+.word-viewer-scroll {
+  max-height: 700px;
+  overflow: auto;
+  border: 1px solid #d7e2ff;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f9fbff 0%, #eef3ff 100%);
+  padding: 18px;
+}
+
+.word-document {
+  width: min(794px, 100%);
+  min-height: 1123px;
+  margin: 0 auto;
+  padding: 72px 68px;
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 16px 36px rgba(51, 71, 132, 0.12);
+  font-family: 'Malgun Gothic', '맑은 고딕', Arial, sans-serif;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.word-document > :first-child {
+  margin-top: 0;
+}
+
+.word-document img {
+  max-width: 100%;
+  height: auto;
+}
+
+.word-document table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+
+.word-document th,
+.word-document td {
+  border: 1px solid #9ca3af;
+  padding: 6px 8px;
+  vertical-align: top;
+}
+
+.word-document a {
+  color: #315fc7;
+  text-decoration: underline;
+}
+
+.word-document pre {
+  white-space: pre-wrap;
+}
+
+@media (max-width: 720px) {
+  .word-viewer-scroll {
+    padding: 10px;
+  }
+
+  .word-document {
+    min-height: 0;
+    padding: 36px 24px;
+  }
+}
