@@ -79,7 +79,7 @@ function ReplaceModal({
       setLastSummary(null);
 
       if (!selectedDocument || !selectedDocument.file) {
-        setMessage('먼저 문서를 선택해주세요.');
+        setMessage(isDocx ? '먼저 DOCX 파일을 선택해주세요.' : '먼저 PDF 파일을 선택해주세요.');
         return;
       }
 
@@ -184,10 +184,9 @@ function ReplaceModal({
 
   const handleApplyPreview = () => {
     const target = originalText.trim();
-    const replacement = newText.trim();
 
     if (!selectedDocument) {
-      setMessage('먼저 문서를 선택해주세요.');
+      setMessage(isDocx ? '먼저 DOCX 문서를 선택해주세요.' : '먼저 PDF 문서를 선택해주세요.');
       return;
     }
 
@@ -196,12 +195,13 @@ function ReplaceModal({
       return;
     }
 
-    if (!replacement) {
-      setMessage('변경 단어를 입력해주세요.');
-      return;
-    }
-
     if (isDocx) {
+      const replacement = newText.trim();
+      if (!replacement) {
+        setMessage('변경 단어를 입력해주세요.');
+        return;
+      }
+
       applyDocxReplacement(target, replacement);
       return;
     }
