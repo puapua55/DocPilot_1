@@ -26,9 +26,6 @@ const FONT_DEFINITIONS = [
     ]
   }
 ];
-const registeredFonts = new Set();
-let preferredFontRegistrationAttempted = false;
-let selectedKoreanFontName = null;
 
 function parsePx(value) {
   return Number(String(value || '').replace('px', '').trim()) || 0;
@@ -49,7 +46,7 @@ function normalizeHtmlFontToPdfFont(fontFamily) {
     return 'NotoSansKR';
   }
 
-  return 'MalgunGothic';
+  return null;
 }
 
 function downloadBlob(blob, outputFileName) {
@@ -68,6 +65,22 @@ function makeHtmlStructureFileName(fileName = 'document.pdf') {
   return `${baseName}_html_structure.txt`;
 }
 
+export function wrapHtmlTextDocument(pageHtml) {
+  return [
+    '<!doctype html>',
+    '<html lang="ko">',
+    '<head>',
+    '<meta charset="UTF-8">',
+    '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">',
+    '<title>DocPilot HTML Text Structure</title>',
+    '</head>',
+    '<body>',
+    String(pageHtml ?? ''),
+    '</body>',
+    '</html>'
+  ].join('');
+}
+
 export async function convertPdfViaHtmlText(file, originalText, newText) {
   const htmlText = await extractPdfToHtmlText(file);
 
@@ -75,16 +88,22 @@ export async function convertPdfViaHtmlText(file, originalText, newText) {
 
   const replaceResult = replaceTextInHtmlText(htmlText, originalText, newText);
   const replacedHtmlText = replaceResult.htmlText;
+  const replaceCount = replaceResult.replaceCount;
 
   console.log('[HtmlTextConvert] replacedHtmlText:', replacedHtmlText);
 
   const outputFileName = makeHtmlConvertedFileName(file?.name);
+
+  // The structure file must contain the post-replacement HTML and must be
+  // readable as UTF-8 in Windows editors as well as browsers.
+  downloadHtmlTextFile(replacedHtmlText, file?.name);
+
   await renderPdfFromHtmlText(replacedHtmlText, outputFileName);
 
   return {
     htmlText,
     replacedHtmlText,
-    replaceCount: replaceResult.replaceCount,
+    replaceCount,
     outputFileName,
     parsed: parseHtmlTextStructure(replacedHtmlText)
   };
@@ -92,12 +111,15 @@ export async function convertPdfViaHtmlText(file, originalText, newText) {
 
 export async function extractPdfToHtmlText(file) {
   const htmlStructure = await extractPdfToHtmlStructure(file);
-  const htmlText = String(htmlStructure?.html ?? '');
+  const pageHtml = String(htmlStructure?.html ?? '');
 
-  if (!htmlText.includes('pdf-page') || !htmlText.includes('pdf-text')) {
+  if (!pageHtml.includes('pdf-page') || !pageHtml.includes('pdf-text')) {
     throw new Error('PDF에서 HTML 텍스트 구조를 생성하지 못했습니다.');
   }
 
+  const htmlText = wrapHtmlTextDocument(pageHtml);
+
+  console.log('[HtmlTextConvert] htmlText includes charset:', htmlText.includes('charset="UTF-8"'));
   console.log('[HtmlTextConvert] htmlText includes Malgun:', htmlText.includes('Malgun'));
   console.log('[HtmlTextConvert] htmlText includes right edge line:', htmlText.includes('left:595'));
 
@@ -132,8 +154,7 @@ export function replaceTextInHtmlText(htmlText, originalText, newText) {
     textElement.textContent = after;
   });
 
-  const pageElements = Array.from(docHtml.querySelectorAll('.pdf-page'));
-  const replacedHtmlText = pageElements.map((pageElement) => pageElement.outerHTML).join('');
+  const replacedHtmlText = wrapHtmlTextDocument(docHtml.body.innerHTML);
 
   return {
     htmlText: replacedHtmlText,
@@ -166,7 +187,7 @@ export function parseHtmlTextStructure(htmlText) {
           fontSize: getStylePx(textElement, 'fontSize'),
           fontFamily: textElement.getAttribute('data-font-family') ||
             textElement.style.fontFamily ||
-            'MalgunGothic'
+            ''
         };
 
         console.log('[HtmlTextConvert] parsed text:', index, {
@@ -192,7 +213,11 @@ export function parseHtmlTextStructure(htmlText) {
             width: getStylePx(lineElement, 'width'),
             height: getStylePx(lineElement, 'height')
           }))
-          .filter((line) => !isPageEdgeArtifactLine(line, getStylePx(pageElement, 'width'), getStylePx(pageElement, 'height'))),
+          .filter((line) => !isPageEdgeArtifactLine(
+            line,
+            getStylePx(pageElement, 'width'),
+            getStylePx(pageElement, 'height')
+          )),
         texts: parsedTexts
       };
     })
@@ -200,9 +225,16 @@ export function parseHtmlTextStructure(htmlText) {
 }
 
 export async function renderPdfFromHtmlText(htmlText, outputFileName) {
-  console.log('[HtmlTextConvert] renderPdfFromHtmlText input:', htmlText);
+  const normalizedHtmlText = String(htmlText ?? '');
 
-  const parsedStructure = parseHtmlTextStructure(htmlText);
+  console.log(
+    '[HtmlTextConvert] render input includes charset:',
+    normalizedHtmlText.includes('charset="UTF-8"') || normalizedHtmlText.includes('charset=UTF-8')
+  );
+  console.log('[HtmlTextConvert] render input includes 시험:', normalizedHtmlText.includes('시험'));
+  console.log('[HtmlTextConvert] render input sample:', normalizedHtmlText.slice(0, 500));
+
+  const parsedStructure = parseHtmlTextStructure(normalizedHtmlText);
   const pages = parsedStructure.pages;
   const firstPage = pages[0];
 
@@ -216,12 +248,15 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
     compress: true
   });
 
-  const selectedFontName = await registerPreferredKoreanFont(doc);
+  const fontRegistration = await registerPreferredKoreanFont(doc);
+  const selectedFontName = fontRegistration.selectedFontName;
+  const registeredFonts = fontRegistration.registeredFonts;
 
   console.log('[PdfFont] selected font:', selectedFontName);
+  console.log('[PdfFont] registered fonts:', Array.from(registeredFonts));
 
   if (!selectedFontName) {
-    console.warn('[HtmlTextConvert] Korean font not registered. doc.text will still run with fallback font.');
+    console.warn('[PdfFont] No Korean font registered. jsPDF default font will be used and text drawing will continue.');
   }
 
   pages.forEach((page, pageIndex) => {
@@ -248,30 +283,34 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
     page.texts.forEach((textItem, textIndex) => {
       const textValue = String(textItem.text ?? '');
       const fontSize = textItem.fontSize || 10;
-      const drawX = textItem.left || 0;
-      const drawY = (textItem.top || 0) + fontSize * TEXT_BASELINE_RATIO;
+      const drawX = Number.isFinite(textItem.left) ? textItem.left : 0;
+      const drawY = (Number.isFinite(textItem.top) ? textItem.top : 0) + fontSize * TEXT_BASELINE_RATIO;
       const requestedFontName = normalizeHtmlFontToPdfFont(textItem.fontFamily);
-      const drawFontName = registeredFonts.has(requestedFontName)
+      const drawFontName = requestedFontName && registeredFonts.has(requestedFontName)
         ? requestedFontName
         : selectedFontName;
 
       console.log('[PdfText] draw:', {
-        text: textValue,
-        x: drawX,
-        y: drawY,
+        textValue,
+        drawX,
+        drawY,
         fontSize,
-        font: drawFontName,
+        requestedFontName,
+        selectedFontName,
+        drawFontName,
         index: textIndex
       });
 
-      if (drawFontName) {
-        doc.setFont(drawFontName, 'normal');
-      } else {
-        doc.setFont('helvetica', 'normal');
-      }
-
       doc.setTextColor(0, 0, 0);
       doc.setFontSize(fontSize);
+
+      if (drawFontName && registeredFonts.has(drawFontName)) {
+        doc.setFont(drawFontName, 'normal');
+      } else {
+        console.warn('[PdfFont] no registered Korean font selected. text draw continues with jsPDF default font.');
+      }
+
+      // Font registration failure must never suppress text drawing.
       doc.text(textValue, drawX, drawY);
     });
   });
@@ -280,10 +319,12 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
 }
 
 export function downloadHtmlTextFile(htmlText, fileName = 'document.pdf') {
-  downloadBlob(
-    new Blob([String(htmlText ?? '')], { type: 'text/plain;charset=utf-8' }),
-    makeHtmlStructureFileName(fileName)
-  );
+  const utf8Bom = '\uFEFF';
+  const blob = new Blob([utf8Bom, String(htmlText ?? '')], {
+    type: 'text/html;charset=utf-8'
+  });
+
+  downloadBlob(blob, makeHtmlStructureFileName(fileName));
 }
 
 export function makeHtmlConvertedFileName(fileName = 'document.pdf') {
@@ -293,46 +334,52 @@ export function makeHtmlConvertedFileName(fileName = 'document.pdf') {
 }
 
 async function registerPreferredKoreanFont(doc) {
-  if (selectedKoreanFontName) {
-    doc.setFont(selectedKoreanFontName, 'normal');
-    return selectedKoreanFontName;
-  }
-
-  if (preferredFontRegistrationAttempted) {
-    return null;
-  }
-
-  preferredFontRegistrationAttempted = true;
+  // Font registrations in jsPDF belong to each document instance. Never carry
+  // a successful registration flag from a previous jsPDF instance into a new one.
+  const registeredFonts = new Set();
 
   for (const fontDefinition of FONT_DEFINITIONS) {
-    try {
-      const fontBase64 = await loadFontBase64(fontDefinition.candidates);
+    const registered = await tryRegisterFont(doc, fontDefinition, registeredFonts);
 
-      if (!fontBase64) {
-        console.warn('[PdfFont] font base64 missing:', fontDefinition.pdfFontName);
-        continue;
-      }
-
-      doc.addFileToVFS(fontDefinition.fileName, fontBase64);
-      doc.addFont(fontDefinition.fileName, fontDefinition.pdfFontName, 'normal');
-      doc.setFont(fontDefinition.pdfFontName, 'normal');
-      registeredFonts.add(fontDefinition.pdfFontName);
-      selectedKoreanFontName = fontDefinition.pdfFontName;
-
+    if (registered) {
       if (fontDefinition.pdfFontName === 'MalgunGothic') {
-        console.log('[PdfFont] MalgunGothic registered and selected');
+        console.log('[PdfFont] MalgunGothic registered');
       } else {
-        console.log('[PdfFont] fallback NotoSansKR registered and selected');
+        console.log('[PdfFont] fallback NotoSansKR registered');
       }
 
-      return selectedKoreanFontName;
-    } catch (error) {
-      console.warn(`[PdfFont] failed to register ${fontDefinition.pdfFontName}:`, error);
+      return {
+        selectedFontName: fontDefinition.pdfFontName,
+        registeredFonts
+      };
     }
   }
 
-  console.warn('[PdfFont] no Korean font registered. Use default font.');
-  return null;
+  console.warn('[PdfFont] No Korean font registered. Use jsPDF default font.');
+
+  return {
+    selectedFontName: null,
+    registeredFonts
+  };
+}
+
+async function tryRegisterFont(doc, fontDefinition, registeredFonts) {
+  try {
+    const fontBase64 = await loadFontBase64(fontDefinition.candidates);
+
+    if (!fontBase64) {
+      console.warn('[PdfFont] font base64 missing:', fontDefinition.pdfFontName);
+      return false;
+    }
+
+    doc.addFileToVFS(fontDefinition.fileName, fontBase64);
+    doc.addFont(fontDefinition.fileName, fontDefinition.pdfFontName, 'normal');
+    registeredFonts.add(fontDefinition.pdfFontName);
+    return true;
+  } catch (error) {
+    console.warn(`[PdfFont] failed to register ${fontDefinition.pdfFontName}:`, error);
+    return false;
+  }
 }
 
 async function loadFontBase64(candidates) {
