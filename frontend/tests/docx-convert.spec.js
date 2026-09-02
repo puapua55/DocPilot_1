@@ -2,18 +2,19 @@ import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import PizZip from 'pizzip';
+import JSZip from 'jszip';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURE_PATH = path.join(__dirname, 'fixtures', '테스트1.docx');
 
-function openDocx(buffer) {
-  return new PizZip(buffer);
+async function openDocx(buffer) {
+  return JSZip.loadAsync(buffer, { checkCRC32: true });
 }
 
-function getXml(zip, xmlPath) {
-  return zip.file(xmlPath)?.asText() || '';
+async function getXml(zip, xmlPath) {
+  const entry = zip.file(xmlPath);
+  return entry ? entry.async('string') : '';
 }
 
 function countMatches(source, pattern) {
@@ -64,14 +65,22 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
     readFile(downloadedPath)
   ]);
 
-  // PizZip으로 실제 생성 ZIP을 다시 연다. 손상된 엔트리는 asText() 시점에 실패해야 한다.
-  const originalZip = openDocx(originalBuffer);
-  const convertedZip = openDocx(convertedBuffer);
+  const [originalZip, convertedZip] = await Promise.all([
+    openDocx(originalBuffer),
+    openDocx(convertedBuffer)
+  ]);
 
-  const originalDocumentXml = getXml(originalZip, 'word/document.xml');
-  const convertedDocumentXml = getXml(convertedZip, 'word/document.xml');
-  const originalStylesXml = getXml(originalZip, 'word/styles.xml');
-  const convertedStylesXml = getXml(convertedZip, 'word/styles.xml');
+  const [
+    originalDocumentXml,
+    convertedDocumentXml,
+    originalStylesXml,
+    convertedStylesXml
+  ] = await Promise.all([
+    getXml(originalZip, 'word/document.xml'),
+    getXml(convertedZip, 'word/document.xml'),
+    getXml(originalZip, 'word/styles.xml'),
+    getXml(convertedZip, 'word/styles.xml')
+  ]);
 
   expect(originalDocumentXml).not.toBe('');
   expect(convertedDocumentXml).not.toBe('');
@@ -97,13 +106,11 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
   expect(after.trCount).toBeGreaterThan(0);
   expect(after.tcCount).toBeGreaterThan(0);
 
-  // 표 테두리의 근거가 되는 스타일 파일 자체가 읽히고 Table Grid/표 테두리 정보가 남아 있어야 한다.
   expect(hasTableGridStyle(originalStylesXml)).toBe(true);
   expect(hasTableGridStyle(convertedStylesXml)).toBe(true);
   expect(convertedStylesXml.length).toBe(originalStylesXml.length);
   expect(convertedStylesXml).toBe(originalStylesXml);
 
-  // 수정 금지 대상의 대표 엔트리가 그대로 존재하는지 확인한다.
   [
     'word/styles.xml',
     'word/fontTable.xml',
