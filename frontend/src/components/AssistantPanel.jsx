@@ -1,3 +1,4 @@
+import AiActionCard from './AiActionCard';
 import ChatInput from './ChatInput';
 import './ChatPanel.css';
 
@@ -8,7 +9,7 @@ const CARDS = [
 ];
 
 function AssistantPanel({
-  messages, loading, error, selectedDocument, onSendMessage,
+  messages, loading, error, selectedDocument, runningActionId, onSendMessage,
   onSearchCardClick, onHighlightCardClick, onReplaceCardClick,
   onExecuteSearchAction, onExecuteHighlightAction,
   onExecuteReplaceApplyAction, onExecuteReplaceConvertAction
@@ -23,27 +24,8 @@ function AssistantPanel({
     };
   };
 
-  const documentName = selectedDocument?.file?.name ?? selectedDocument?.name ?? '';
-
-  const renderAction = (message) => {
-    const action = message.action;
-    if (!action) return null;
-    if (action.type === 'search') {
-      return <button type="button" className="chat-action-button" onClick={() => onExecuteSearchAction?.(action)}>검색 실행</button>;
-    }
-    if (action.type === 'highlight') {
-      return <button type="button" className="chat-action-button" onClick={() => onExecuteHighlightAction?.(action)}>하이라이트 실행</button>;
-    }
-    if (action.type === 'replace') {
-      return (
-        <div className="chat-action-group">
-          <button type="button" className="chat-action-button" onClick={() => onExecuteReplaceApplyAction?.(action)}>화면에 적용</button>
-          <button type="button" className="chat-action-button" onClick={() => onExecuteReplaceConvertAction?.(action)}>변환 파일 다운로드</button>
-        </div>
-      );
-    }
-    return null;
-  };
+  const selectedFile = selectedDocument?.file ?? null;
+  const documentName = selectedFile?.name ?? selectedDocument?.name ?? '';
 
   return (
     <aside className="panel assistant-panel">
@@ -53,14 +35,28 @@ function AssistantPanel({
           <p>{documentName ? `${documentName} 문서가 열려 있습니다. 일반 질문부터 시작할 수 있습니다.` : '문서를 선택하거나 일반 질문을 입력하세요.'}</p>
         </div>
         <div className="chat-feed" aria-label="assistant conversation" aria-live="polite">
-          {messages.map((message) => (
-            <div key={message.id} className={`chat-row ${message.role === 'user' ? 'user' : 'assistant'}`}>
-              <div className="chat-bubble">
-                {message.text}
-                {message.role === 'assistant' ? renderAction(message) : null}
+          {messages.map((message) => {
+            const runningType = runningActionId?.startsWith(`${message.id}:`) ? runningActionId.slice(message.id.length + 1) : '';
+            return (
+              <div key={message.id} className={`chat-row ${message.role === 'user' ? 'user' : 'assistant'}`}>
+                <div className="chat-bubble">
+                  {message.text}
+                  {message.role === 'assistant' && message.action ? (
+                    <AiActionCard
+                      action={message.action}
+                      selectedFile={selectedFile}
+                      disabled={!selectedFile}
+                      runningType={runningType}
+                      onSearch={(action) => onExecuteSearchAction?.(message.id, action)}
+                      onHighlight={(action) => onExecuteHighlightAction?.(message.id, action)}
+                      onReplaceApply={(action) => onExecuteReplaceApplyAction?.(message.id, action)}
+                      onReplaceConvert={(action) => onExecuteReplaceConvertAction?.(message.id, action)}
+                    />
+                  ) : null}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {loading ? <div className="chat-row assistant"><div className="chat-bubble chat-loading">답변을 작성 중입니다...</div></div> : null}
         </div>
         {error ? <div className="chat-error" role="alert">{error}</div> : null}
