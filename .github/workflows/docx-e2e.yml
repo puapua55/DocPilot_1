@@ -1,6 +1,12 @@
 name: DOCX E2E
 
 on:
+  push:
+    branches:
+      - 'codex/docx-search-highlight-replace'
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/docx-e2e.yml'
   pull_request:
     paths:
       - 'frontend/**'
@@ -36,6 +42,14 @@ jobs:
 
       - name: Run DOCX conversion E2E
         run: npm run test:e2e:docx
+
+      - name: Upload converted DOCX
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docx-converted-result
+          path: frontend/test-results/**/테스트1_docx_converted.docx
+          if-no-files-found: error
 
       - name: Upload Playwright report on failure
         if: failure()
