@@ -24,7 +24,6 @@ export function downloadBlob(blob, fileName) {
   anchor.click();
   anchor.remove();
 
-  // 브라우저가 다운로드를 시작하기 전에 object URL이 해제되는 것을 피합니다.
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
@@ -38,113 +37,93 @@ function getDocxTextXmlPaths(zip) {
   });
 }
 
-function parseDocxXml(xmlText) {
-  const parser = new DOMParser();
-  const xmlDoc = parser.parseFromString(xmlText, 'application/xml');
-  const parserError = xmlDoc.getElementsByTagName('parsererror')[0];
-
-  if (parserError) {
-    return null;
-  }
-
-  return xmlDoc;
+function escapeXmlText(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }
 
-function serializeDocxXml(xmlDoc) {
-  return new XMLSerializer().serializeToString(xmlDoc);
+function unescapeXmlText(value) {
+  return String(value ?? '')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&');
 }
 
-function replaceTextInDocxXmlByTextNode(xmlText, originalText, newText) {
-  const xmlDoc = parseDocxXml(xmlText);
-
-  if (!xmlDoc) {
-    console.warn('[DocxConvert] XML parse error. Fallback to original XML.');
-    return {
-      xmlText,
-      replaceCount: 0
-    };
-  }
-
-  const textNodes = Array.from(xmlDoc.getElementsByTagName('w:t'));
-  let replaceCount = 0;
-
-  textNodes.forEach((node) => {
-    const before = node.textContent || '';
-    if (!before.includes(originalText)) {
-      return;
-    }
-
-    const occurrences = before.split(originalText).length - 1;
-    node.textContent = before.split(originalText).join(newText);
-    replaceCount += occurrences;
-  });
+export function getXmlPrefixSummary(xmlText) {
+  const source = String(xmlText || '');
 
   return {
-    xmlText: serializeDocxXml(xmlDoc),
-    replaceCount
-  };
-}
-
-function replaceTextInDocxXmlByParagraph(xmlText, originalText, newText) {
-  const xmlDoc = parseDocxXml(xmlText);
-
-  if (!xmlDoc) {
-    console.warn('[DocxConvert] paragraph fallback XML parse error.');
-    return {
-      xmlText,
-      replaceCount: 0
-    };
-  }
-
-  const paragraphs = Array.from(xmlDoc.getElementsByTagName('w:p'));
-  let replaceCount = 0;
-
-  paragraphs.forEach((paragraph) => {
-    const textNodes = Array.from(paragraph.getElementsByTagName('w:t'));
-    if (textNodes.length === 0) {
-      return;
-    }
-
-    const combinedText = textNodes.map((node) => node.textContent || '').join('');
-    if (!combinedText.includes(originalText)) {
-      return;
-    }
-
-    const occurrences = combinedText.split(originalText).length - 1;
-    const replacedText = combinedText.split(originalText).join(newText);
-
-    // split run fallback입니다. 문단 내 run별 서식 보존이 완벽하지 않을 수 있으므로
-    // direct w:t 치환이 전혀 성공하지 않은 경우에만 이 경로를 사용합니다.
-    textNodes.forEach((node, index) => {
-      node.textContent = index === 0 ? replacedText : '';
-    });
-
-    replaceCount += occurrences;
-  });
-
-  return {
-    xmlText: serializeDocxXml(xmlDoc),
-    replaceCount
+    hasWDocument: source.includes('<w:document'),
+    hasNs0Document: source.includes('<ns0:document'),
+    wTextCount: (source.match(/<w:t\b/g) || []).length,
+    ns0TextCount: (source.match(/<ns0:t\b/g) || []).length,
+    sectPrCount: (source.match(/:sectPr\b/g) || []).length,
+    tblCount: (source.match(/:tbl\b/g) || []).length
   };
 }
 
 export function replaceTextInDocxXml(xmlText, originalText, newText) {
+  const source = String(xmlText ?? '');
   const target = String(originalText || '');
   const replacement = String(newText ?? '');
 
   if (!target) {
     return {
-      xmlText,
+      xmlText: source,
       replaceCount: 0
     };
   }
 
-  const directResult = replaceTextInDocxXmlByTextNode(xmlText, target, replacement);
-  if (directResult.replaceCount > 0) {
-    return directResult;
+  let replaceCount = 0;
+
+  // WordprocessingML 전체를 DOMParser/XMLSerializer로 다시 만들지 않습니다.
+  // 원본 태그, namespace prefix, 속성, 문단/표/section 구조를 그대로 유지하고
+  // <prefix:t>...</prefix:t> 내부 문자열만 최소 변경합니다.
+  const replacedXmlText = source.replace(
+    /(<([A-Za-z_][A-Za-z0-9_.-]*):t\b[^>]*>)([\s\S]*?)(<\/\2:t>)/g,
+    (match, openTag, _prefix, encodedText, closeTag) => {
+      const text = unescapeXmlText(encodedText);
+
+      if (!text.includes(target)) {
+        return match;
+      }
+
+      const occurrences = text.split(target).length - 1;
+      const replacedText = text.split(target).join(replacement);
+      replaceCount += occurrences;
+
+      return `${openTag}${escapeXmlText(replacedText)}${closeTag}`;
+    }
+  );
+
+  if (replaceCount === 0) {
+    console.warn(
+      '[DocxConvert] no direct w:t replacements. split-run replacement is not enabled yet.'
+    );
   }
 
-  return replaceTextInDocxXmlByParagraph(xmlText, target, replacement);
+  return {
+    xmlText: replacedXmlText,
+    replaceCount
+  };
+}
+
+async function debugValidateConvertedDocxBlob(blob, originalText, newText) {
+  try {
+    const buffer = await blob.arrayBuffer();
+    const zip = new PizZip(buffer);
+    const documentXml = zip.file('word/document.xml')?.asText() || '';
+
+    console.log('[DocxConvert] converted document.xml summary:', {
+      ...getXmlPrefixSummary(documentXml),
+      includesNewText: documentXml.includes(String(newText ?? '')),
+      includesOldText: documentXml.includes(String(originalText ?? ''))
+    });
+  } catch (error) {
+    console.warn('[DocxConvert] converted blob validation failed:', error);
+  }
 }
 
 export async function convertDocxFileWithTextReplace(file, originalText, newText) {
@@ -192,7 +171,40 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
       return;
     }
 
-    const result = replaceTextInDocxXml(xmlFile.asText(), target, replacement);
+    const xmlText = xmlFile.asText();
+    const beforeSummary = getXmlPrefixSummary(xmlText);
+
+    console.log('[DocxConvert] before XML summary:', {
+      path,
+      ...beforeSummary
+    });
+
+    const result = replaceTextInDocxXml(xmlText, target, replacement);
+    const afterSummary = getXmlPrefixSummary(result.xmlText);
+
+    console.log('[DocxConvert] after XML summary:', {
+      path,
+      ...afterSummary,
+      replaceCount: result.replaceCount
+    });
+
+    if (path === 'word/document.xml') {
+      const prefixChanged = beforeSummary.hasWDocument && !afterSummary.hasWDocument;
+      const introducedNs0 = !beforeSummary.hasNs0Document && afterSummary.hasNs0Document;
+      const textNodeCountChanged = beforeSummary.wTextCount !== afterSummary.wTextCount;
+      const tableCountChanged = beforeSummary.tblCount !== afterSummary.tblCount;
+      const sectionCountChanged = beforeSummary.sectPrCount !== afterSummary.sectPrCount;
+
+      if (
+        prefixChanged ||
+        introducedNs0 ||
+        textNodeCountChanged ||
+        tableCountChanged ||
+        sectionCountChanged
+      ) {
+        throw new Error('DOCX 본문 XML 구조 보존 검증에 실패했습니다. 변환을 중단합니다.');
+      }
+    }
 
     if (result.replaceCount > 0) {
       zip.file(path, result.xmlText);
@@ -213,6 +225,7 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
     compression: 'DEFLATE'
   });
 
+  await debugValidateConvertedDocxBlob(blob, target, replacement);
   downloadBlob(blob, outputFileName);
 
   console.log('[DocxConvert] done:', {
