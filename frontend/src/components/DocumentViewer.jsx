@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { formatFileSize, isPdfFile } from '../utils/fileUtils';
 import PdfViewer from './PdfViewer';
 import PreviewInfoBox from './PreviewInfoBox';
@@ -10,7 +10,7 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
 const SCALE_STEP = 0.25;
 
-function DocumentViewer({
+const DocumentViewer = forwardRef(function DocumentViewer({
   file,
   previewModel,
   highlightKeyword,
@@ -20,9 +20,39 @@ function DocumentViewer({
   onClose,
   onChangeFile,
   onReselect
-}) {
+}, ref) {
   const inputRef = useRef(null);
+  const viewerRef = useRef(null);
   const [scale, setScale] = useState(DEFAULT_SCALE);
+
+  useImperativeHandle(ref, () => ({
+    async getDocumentText() {
+      try {
+        return await viewerRef.current?.getDocumentText?.() ?? '';
+      } catch (error) {
+        console.warn('[DocumentViewer] document text extraction failed:', error);
+        return '';
+      }
+    },
+    searchDocument(keyword) {
+      return viewerRef.current?.searchDocument?.(keyword) ?? [];
+    },
+    scrollToSearchResult(resultIndex) {
+      return viewerRef.current?.scrollToSearchResult?.(resultIndex) ?? false;
+    },
+    highlightText(keyword) {
+      return viewerRef.current?.highlightText?.(keyword) ?? 0;
+    },
+    replaceText(originalText, newText) {
+      return viewerRef.current?.replaceText?.(originalText, newText) ?? 0;
+    },
+    clearHighlights() {
+      viewerRef.current?.clearHighlights?.();
+    },
+    getModifiedHtml() {
+      return viewerRef.current?.getModifiedHtml?.() ?? '';
+    }
+  }));
 
   if (file) {
     console.log('[DocumentViewer] file:', file);
@@ -48,6 +78,7 @@ function DocumentViewer({
     if (previewModel.type === 'pdf') {
       return (
         <PdfViewer
+          ref={viewerRef}
           file={file}
           highlightKeyword={highlightKeyword}
           replacePreview={replacePreview}
@@ -58,7 +89,7 @@ function DocumentViewer({
     }
 
     if (previewModel.type === 'word') {
-      return <WordViewer previewModel={previewModel} />;
+      return <WordViewer ref={viewerRef} previewModel={previewModel} />;
     }
 
     return (
@@ -107,6 +138,6 @@ function DocumentViewer({
       {renderContent()}
     </section>
   );
-}
+});
 
 export default DocumentViewer;

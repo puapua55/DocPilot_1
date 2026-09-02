@@ -1,12 +1,21 @@
 import { useState } from 'react';
 import { searchKeywordInDocument } from '../services/searchService';
 
-function SearchModal({ documentText, selectedDocument, onClose, onResultClick }) {
+function SearchModal({
+  documentText,
+  selectedDocument,
+  previewModel,
+  onDocxSearch,
+  onClose,
+  onResultClick
+}) {
   const [mode, setMode] = useState('input');
   const [keyword, setKeyword] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [results, setResults] = useState([]);
   const [emptyMessage, setEmptyMessage] = useState('');
+
+  const isDocx = previewModel?.type === 'word';
 
   const handleSearch = async () => {
     const normalizedKeyword = keyword.trim();
@@ -23,14 +32,18 @@ function SearchModal({ documentText, selectedDocument, onClose, onResultClick })
       return;
     }
 
-    if (!Array.isArray(documentText) || documentText.length === 0) {
+    if (!isDocx && (!Array.isArray(documentText) || documentText.length === 0)) {
       setErrorMessage('문서 텍스트를 아직 읽지 못했습니다.');
       setEmptyMessage('');
       return;
     }
 
     setErrorMessage('');
-    const searchResults = await searchKeywordInDocument(documentText, normalizedKeyword);
+
+    const searchResults = isDocx
+      ? (onDocxSearch?.(normalizedKeyword) ?? [])
+      : await searchKeywordInDocument(documentText, normalizedKeyword);
+
     setResults(searchResults);
     setEmptyMessage(searchResults.length === 0 ? '검색 결과가 없습니다.' : '');
     setMode('result');
@@ -112,33 +125,66 @@ function SearchModal({ documentText, selectedDocument, onClose, onResultClick })
               <table className="search-result-table">
                 <thead>
                   <tr>
-                    <th>페이지</th>
-                    <th>줄</th>
-                    <th>검색어</th>
+                    {isDocx ? (
+                      <>
+                        <th>문단</th>
+                        <th>위치</th>
+                        <th>검색 결과</th>
+                      </>
+                    ) : (
+                      <>
+                        <th>페이지</th>
+                        <th>줄</th>
+                        <th>검색어</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {results.length > 0 ? (
                     results.map((result, index) => (
                       <tr
-                        key={`${result.page}-${result.line}-${result.keyword}-${index}`}
+                        key={isDocx
+                          ? `docx-${result.blockIndex}-${result.index}-${index}`
+                          : `${result.page}-${result.line}-${result.keyword}-${index}`}
                         className="search-result-row"
                         onClick={() => handleResultClick(result)}
                       >
-                        <td>{result.page}</td>
-                        <td>{result.line}</td>
-                        <td>
-                          <button
-                            type="button"
-                            className="search-result-keyword"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handleResultClick(result);
-                            }}
-                          >
-                            {result.keyword}
-                          </button>
-                        </td>
+                        {result.type === 'docx' ? (
+                          <>
+                            <td>문단 {result.paragraphIndex}</td>
+                            <td>블록 {result.blockIndex}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="search-result-keyword"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleResultClick(result);
+                                }}
+                              >
+                                {result.matchedText}
+                              </button>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td>{result.page}</td>
+                            <td>{result.line}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="search-result-keyword"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleResultClick(result);
+                                }}
+                              >
+                                {result.keyword}
+                              </button>
+                            </td>
+                          </>
+                        )}
                       </tr>
                     ))
                   ) : (

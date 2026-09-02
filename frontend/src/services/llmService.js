@@ -1,9 +1,32 @@
 export async function sendChatMessage(message, context = {}) {
-  void message;
-  void context;
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      message,
+      documentName: context.documentName || '',
+      documentType: context.documentType || '',
+      documentText: context.documentText || '',
+      history: Array.isArray(context.history) ? context.history : []
+    })
+  });
 
-  // TODO: 현재는 LLM 연동 전 단계입니다.
-  // TODO: Spring Boot 프록시를 붙일 경우 이 파일에서만 API를 호출합니다.
-  // TODO: Electron 전환 후에는 로컬 설정/IPC 기반 호출로 바꿀 수 있도록 유지합니다.
-  return '현재 AI 연동은 준비 중입니다.';
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(data?.message || 'AI 응답 요청에 실패했습니다.');
+  }
+
+  return {
+    answer: data?.answer || '응답을 받지 못했습니다.',
+    intent: data?.intent || 'question_answer',
+    action: data?.action || null
+  };
 }

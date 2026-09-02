@@ -1,0 +1,72 @@
+name: DOCX E2E
+
+on:
+  push:
+    branches:
+      - 'codex/docx-search-highlight-replace'
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/docx-e2e.yml'
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/docx-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  docx-convert:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npm run build
+
+      - name: Run DOCX conversion E2E
+        run: npm run test:e2e:docx
+
+      - name: Validate converted DOCX ZIP integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          converted_file="$(find test-results -type f -name '테스트1_docx_converted.docx' -print -quit)"
+          if [ -z "$converted_file" ]; then
+            echo "Converted DOCX was not found."
+            exit 1
+          fi
+          echo "Validating: $converted_file"
+          unzip -t "$converted_file"
+
+      - name: Upload converted DOCX
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docx-converted-result
+          path: frontend/test-results/**/테스트1_docx_converted.docx
+          if-no-files-found: error
+
+      - name: Upload Playwright test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docx-e2e-report
+          path: frontend/test-results
+          if-no-files-found: ignore

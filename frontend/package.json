@@ -6,16 +6,23 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test",
+    "test:e2e:docx": "playwright test tests/docx-convert.spec.js",
+    "test:e2e:chat-doc": "playwright test tests/ai-document-chat.spec.js",
+    "test:e2e:ai-tools": "playwright test tests/ai-tool-actions.spec.js"
   },
   "dependencies": {
     "jspdf": "^3.0.4",
+    "jszip": "^3.10.1",
     "mammoth": "^1.12.2",
     "pdfjs-dist": "^6.2.108",
+    "pizzip": "^3.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@vitejs/plugin-react": "^4.3.1",
     "vite": "^5.4.10"
   }
