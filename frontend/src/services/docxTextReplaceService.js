@@ -176,7 +176,9 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
 
   let zip;
   try {
-    zip = await JSZip.loadAsync(await file.arrayBuffer(), { checkCRC32: true });
+    // 일부 정상 DOCX는 ZIP 메타데이터와 압축 해제 크기 표기가 JSZip의 강제 CRC 검사와 충돌할 수 있다.
+    // 입력 문서는 우선 호환성 있게 열고, 생성 결과물에는 아래 validateConvertedDocxBlob에서 CRC 검사를 강제한다.
+    zip = await JSZip.loadAsync(await file.arrayBuffer());
   } catch (error) {
     console.error('[DocxConvert] failed to open DOCX zip:', error);
     throw new Error('DOCX 파일 구조를 읽지 못했습니다. 파일이 손상되지 않았는지 확인해주세요.');
