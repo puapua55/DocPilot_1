@@ -78,9 +78,9 @@ export function replaceTextInDocxXml(xmlText, originalText, newText) {
 
   let replaceCount = 0;
 
-  // WordprocessingML 전체를 DOMParser/XMLSerializer로 다시 만들지 않습니다.
-  // 원본 태그, namespace prefix, 속성, 문단/표/section 구조를 그대로 유지하고
-  // <prefix:t>...</prefix:t> 내부 문자열만 최소 변경합니다.
+  // 전체 XML을 DOMParser/XMLSerializer로 재생성하지 않는다.
+  // 원본 prefix/namespace/태그/속성/문단/표/section 구조를 그대로 유지하고
+  // <prefix:t>...</prefix:t> 내부 텍스트만 최소 치환한다.
   const replacedXmlText = source.replace(
     /(<([A-Za-z_][A-Za-z0-9_.-]*):t\b[^>]*>)([\s\S]*?)(<\/\2:t>)/g,
     (match, openTag, _prefix, encodedText, closeTag) => {
@@ -98,6 +98,7 @@ export function replaceTextInDocxXml(xmlText, originalText, newText) {
     }
   );
 
+  // split run fallback은 레이아웃/스타일 보존 문제 때문에 의도적으로 비활성화한다.
   if (replaceCount === 0) {
     console.warn(
       '[DocxConvert] no direct w:t replacements. split-run replacement is not enabled yet.'
@@ -189,19 +190,14 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
     });
 
     if (path === 'word/document.xml') {
-      const prefixChanged = beforeSummary.hasWDocument && !afterSummary.hasWDocument;
-      const introducedNs0 = !beforeSummary.hasNs0Document && afterSummary.hasNs0Document;
-      const textNodeCountChanged = beforeSummary.wTextCount !== afterSummary.wTextCount;
-      const tableCountChanged = beforeSummary.tblCount !== afterSummary.tblCount;
-      const sectionCountChanged = beforeSummary.sectPrCount !== afterSummary.sectPrCount;
+      const structureChanged =
+        (beforeSummary.hasWDocument && !afterSummary.hasWDocument) ||
+        (!beforeSummary.hasNs0Document && afterSummary.hasNs0Document) ||
+        beforeSummary.wTextCount !== afterSummary.wTextCount ||
+        beforeSummary.tblCount !== afterSummary.tblCount ||
+        beforeSummary.sectPrCount !== afterSummary.sectPrCount;
 
-      if (
-        prefixChanged ||
-        introducedNs0 ||
-        textNodeCountChanged ||
-        tableCountChanged ||
-        sectionCountChanged
-      ) {
+      if (structureChanged) {
         throw new Error('DOCX 본문 XML 구조 보존 검증에 실패했습니다. 변환을 중단합니다.');
       }
     }
