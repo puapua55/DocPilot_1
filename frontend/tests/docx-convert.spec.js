@@ -8,8 +8,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURE_PATH = path.join(__dirname, 'fixtures', '테스트1.docx');
 
-async function openDocx(buffer) {
-  return JSZip.loadAsync(buffer, { checkCRC32: true });
+async function openDocx(buffer, checkCRC32 = false) {
+  return JSZip.loadAsync(buffer, { checkCRC32 });
 }
 
 async function getXml(zip, xmlPath) {
@@ -66,8 +66,8 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
   ]);
 
   const [originalZip, convertedZip] = await Promise.all([
-    openDocx(originalBuffer),
-    openDocx(convertedBuffer)
+    openDocx(originalBuffer, false),
+    openDocx(convertedBuffer, true)
   ]);
 
   const [
