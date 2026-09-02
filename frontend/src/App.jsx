@@ -32,7 +32,7 @@ function App() {
     loading: chatLoading,
     error: chatError,
     handleSendMessage
-  } = useChat(selectedDocument, previewModel, documentText);
+  } = useChat(selectedDocument, previewModel, documentViewerRef);
 
   useEffect(() => {
     console.log('[App] highlightKeyword:', highlightKeyword);
