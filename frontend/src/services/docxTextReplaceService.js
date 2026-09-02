@@ -1,4 +1,4 @@
-import PizZip from 'pizzip';
+import JSZip from 'jszip';
 
 const DOCX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const WORD_TEXT_XML_PATHS = new Set([
@@ -80,9 +80,6 @@ export function replaceTextInDocxXml(xmlText, originalText, newText) {
 
   let replaceCount = 0;
 
-  // 전체 XML을 DOMParser/XMLSerializer로 재생성하지 않는다.
-  // 원본 prefix/namespace/태그/속성/문단/표/section 구조를 그대로 유지하고
-  // <prefix:t>...</prefix:t> 내부 텍스트만 최소 치환한다.
   const replacedXmlText = source.replace(
     /(<([A-Za-z_][A-Za-z0-9_.-]*):t\b[^>]*>)([\s\S]*?)(<\/\2:t>)/g,
     (match, openTag, _prefix, encodedText, closeTag) => {
@@ -100,7 +97,6 @@ export function replaceTextInDocxXml(xmlText, originalText, newText) {
     }
   );
 
-  // split run fallback은 레이아웃/스타일 보존 문제 때문에 의도적으로 비활성화한다.
   if (replaceCount === 0) {
     console.warn(
       '[DocxConvert] no direct w:t replacements. split-run replacement is not enabled yet.'
@@ -113,13 +109,18 @@ export function replaceTextInDocxXml(xmlText, originalText, newText) {
   };
 }
 
+async function readZipText(zip, path) {
+  const entry = zip.file(path);
+  return entry ? entry.async('string') : '';
+}
+
 async function validateConvertedDocxBlob(blob, originalText, newText) {
   try {
     const buffer = await blob.arrayBuffer();
-    const checkZip = new PizZip(buffer);
-    const documentXml = checkZip.file('word/document.xml')?.asText() || '';
+    const checkZip = await JSZip.loadAsync(buffer, { checkCRC32: true });
+    const documentXml = await readZipText(checkZip, 'word/document.xml');
     const stylesFile = checkZip.file('word/styles.xml');
-    const stylesXml = stylesFile?.asText() || '';
+    const stylesXml = stylesFile ? await stylesFile.async('string') : '';
 
     if (!documentXml) {
       throw new Error('word/document.xml을 읽을 수 없습니다.');
@@ -175,7 +176,7 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
 
   let zip;
   try {
-    zip = new PizZip(await file.arrayBuffer());
+    zip = await JSZip.loadAsync(await file.arrayBuffer(), { checkCRC32: true });
   } catch (error) {
     console.error('[DocxConvert] failed to open DOCX zip:', error);
     throw new Error('DOCX 파일 구조를 읽지 못했습니다. 파일이 손상되지 않았는지 확인해주세요.');
@@ -190,13 +191,13 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
 
   let totalReplaceCount = 0;
 
-  xmlPaths.forEach((path) => {
+  for (const path of xmlPaths) {
     const xmlFile = zip.file(path);
     if (!xmlFile) {
-      return;
+      continue;
     }
 
-    const xmlText = xmlFile.asText();
+    const xmlText = await xmlFile.async('string');
     const beforeSummary = getXmlPrefixSummary(xmlText);
     const result = replaceTextInDocxXml(xmlText, target, replacement);
     const afterSummary = getXmlPrefixSummary(result.xmlText);
@@ -216,8 +217,6 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
       }
     }
 
-    // 실제 텍스트가 바뀐 XML만 ZIP 엔트리에 다시 기록한다.
-    // styles.xml/fontTable.xml/settings.xml/theme/relationships 등은 이 경로 목록에 포함되지 않는다.
     if (result.replaceCount > 0) {
       zip.file(path, result.xmlText);
     }
@@ -228,13 +227,10 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
       path,
       replaceCount: result.replaceCount
     });
-  });
+  }
 
   const outputFileName = makeDocxConvertedFileName(file.name);
-
-  // 원본 구조 보존을 우선한다. DOCX 전체를 DEFLATE로 재압축하지 않고 STORE로 생성하여
-  // styles.xml/fontTable.xml/theme/relationships 등 수정하지 않은 엔트리의 재압축 손상을 방지한다.
-  const blob = zip.generate({
+  const blob = await zip.generateAsync({
     type: 'blob',
     mimeType: DOCX_MIME_TYPE,
     compression: 'STORE'
@@ -246,7 +242,7 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
   console.log('[DocxConvert] done:', {
     outputFileName,
     replaceCount: totalReplaceCount,
-    integrityCheck: 'PizZip document.xml/styles.xml read passed',
+    integrityCheck: 'JSZip CRC/document.xml/styles.xml read passed',
     terminalCheck: `unzip -t "${outputFileName}"`
   });
 
