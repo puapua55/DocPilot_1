@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { sendChatMessage } from '../services/llmService';
 import { INITIAL_CHAT_MESSAGES } from '../utils/constants';
 
-export function useChat(selectedDocument, previewModel, documentText = '') {
+export function useChat(selectedDocument, previewModel, documentViewerRef) {
   const [messages, setMessages] = useState(INITIAL_CHAT_MESSAGES);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -25,10 +25,26 @@ export function useChat(selectedDocument, previewModel, documentText = '') {
     setError('');
 
     try {
+      let documentText = '';
+      try {
+        documentText = await documentViewerRef?.current?.getDocumentText?.() || '';
+      } catch (extractionError) {
+        console.warn('[useChat] document text extraction failed:', extractionError);
+      }
+
+      const documentName = selectedDocument?.file?.name ?? selectedDocument?.name ?? '';
+      const documentType = previewModel?.type ?? '';
+
+      console.log('[AssistantPanel] chat request:', {
+        documentName,
+        documentType,
+        documentTextLength: documentText.length
+      });
+
       const reply = await sendChatMessage(trimmed, {
-        documentName: selectedDocument?.file?.name ?? selectedDocument?.name ?? '',
-        documentType: previewModel?.type ?? '',
-        documentText: String(documentText || '').slice(0, 30000),
+        documentName,
+        documentType,
+        documentText,
         history: nextMessages.slice(-10).map(({ role, text }) => ({
           role,
           content: text
