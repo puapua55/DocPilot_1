@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -43,6 +43,18 @@ jobs:
       - name: Run DOCX conversion E2E
         run: npm run test:e2e:docx
 
+      - name: Validate converted DOCX ZIP integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          converted_file="$(find test-results -type f -name '테스트1_docx_converted.docx' -print -quit)"
+          if [ -z "$converted_file" ]; then
+            echo "Converted DOCX was not found."
+            exit 1
+          fi
+          echo "Validating: $converted_file"
+          unzip -t "$converted_file"
+
       - name: Upload converted DOCX
         if: success()
         uses: actions/upload-artifact@v4
@@ -51,10 +63,10 @@ jobs:
           path: frontend/test-results/**/테스트1_docx_converted.docx
           if-no-files-found: error
 
-      - name: Upload Playwright report on failure
+      - name: Upload Playwright test results on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: docx-e2e-report
-          path: frontend/playwright-report
+          path: frontend/test-results
           if-no-files-found: ignore
