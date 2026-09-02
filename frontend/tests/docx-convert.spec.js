@@ -1,20 +1,24 @@
 import { expect, test } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import JSZip from 'jszip';
 
+const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURE_PATH = path.join(__dirname, 'fixtures', '테스트1.docx');
 
-async function openDocx(buffer, checkCRC32 = false) {
-  return JSZip.loadAsync(buffer, { checkCRC32 });
+async function unzipText(filePath, entryPath) {
+  const { stdout } = await execFileAsync('unzip', ['-p', filePath, entryPath], {
+    encoding: 'utf8',
+    maxBuffer: 10 * 1024 * 1024
+  });
+  return stdout;
 }
 
-async function getXml(zip, xmlPath) {
-  const entry = zip.file(xmlPath);
-  return entry ? entry.async('string') : '';
+async function testZip(filePath) {
+  await execFileAsync('unzip', ['-t', filePath], { encoding: 'utf8' });
 }
 
 function countMatches(source, pattern) {
@@ -51,24 +55,19 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
   await page.getByLabel('기존 단어').fill('테스트');
   await page.getByLabel('변경 단어').fill('시험');
 
-  const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '변환', exact: true }).click();
-  const download = await downloadPromise;
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: '변환', exact: true }).click()
+  ]);
 
   expect(download.suggestedFilename()).toBe('테스트1_docx_converted.docx');
 
   const downloadedPath = testInfo.outputPath('테스트1_docx_converted.docx');
   await download.saveAs(downloadedPath);
 
-  const [originalBuffer, convertedBuffer] = await Promise.all([
-    readFile(FIXTURE_PATH),
-    readFile(downloadedPath)
-  ]);
-
-  const [originalZip, convertedZip] = await Promise.all([
-    openDocx(originalBuffer, false),
-    openDocx(convertedBuffer, true)
-  ]);
+  // JSZip은 이 실제 fixture의 일부 원본 DEFLATE 엔트리에 대해
+  // "uncompressed data size mismatch"를 내므로 결과 ZIP 무결성은 표준 unzip으로 검증한다.
+  await testZip(downloadedPath);
 
   const [
     originalDocumentXml,
@@ -76,10 +75,10 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
     originalStylesXml,
     convertedStylesXml
   ] = await Promise.all([
-    getXml(originalZip, 'word/document.xml'),
-    getXml(convertedZip, 'word/document.xml'),
-    getXml(originalZip, 'word/styles.xml'),
-    getXml(convertedZip, 'word/styles.xml')
+    unzipText(FIXTURE_PATH, 'word/document.xml'),
+    unzipText(downloadedPath, 'word/document.xml'),
+    unzipText(FIXTURE_PATH, 'word/styles.xml'),
+    unzipText(downloadedPath, 'word/styles.xml')
   ]);
 
   expect(originalDocumentXml).not.toBe('');
@@ -111,7 +110,7 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
   expect(convertedStylesXml.length).toBe(originalStylesXml.length);
   expect(convertedStylesXml).toBe(originalStylesXml);
 
-  [
+  const requiredEntries = [
     'word/styles.xml',
     'word/fontTable.xml',
     'word/settings.xml',
@@ -119,9 +118,11 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
     '_rels/.rels',
     'word/_rels/document.xml.rels',
     '[Content_Types].xml'
-  ].forEach((entryPath) => {
-    expect(convertedZip.file(entryPath), `${entryPath} must remain in converted DOCX`).not.toBeNull();
-  });
+  ];
+  const { stdout: entryList } = await execFileAsync('unzip', ['-Z1', downloadedPath], { encoding: 'utf8' });
+  for (const entryPath of requiredEntries) {
+    expect(entryList.split(/\r?\n/)).toContain(entryPath);
+  }
 
   await expect(page.getByText(/DOCX 파일 변환 완료/)).toBeVisible();
 });
