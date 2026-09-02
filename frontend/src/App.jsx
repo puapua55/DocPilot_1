@@ -27,7 +27,12 @@ function App() {
     handleDocumentSelect,
     clearSelectedDocument
   } = useDocument();
-  const { messages, handleSendMessage } = useChat(selectedDocument);
+  const {
+    messages,
+    loading: chatLoading,
+    error: chatError,
+    handleSendMessage
+  } = useChat(selectedDocument, previewModel, documentText);
 
   useEffect(() => {
     console.log('[App] highlightKeyword:', highlightKeyword);
@@ -176,6 +181,9 @@ function App() {
           />
           <AssistantPanel
             messages={messages}
+            loading={chatLoading}
+            error={chatError}
+            selectedDocument={selectedDocument}
             onSendMessage={handleSendMessage}
             onSearchCardClick={() => setIsSearchModalOpen(true)}
             onHighlightCardClick={() => setIsHighlightModalOpen(true)}
