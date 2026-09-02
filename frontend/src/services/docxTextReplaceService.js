@@ -60,7 +60,9 @@ export function getXmlPrefixSummary(xmlText) {
     wTextCount: (source.match(/<w:t\b/g) || []).length,
     ns0TextCount: (source.match(/<ns0:t\b/g) || []).length,
     sectPrCount: (source.match(/:sectPr\b/g) || []).length,
-    tblCount: (source.match(/:tbl\b/g) || []).length
+    tblCount: (source.match(/<w:tbl\b/g) || []).length,
+    trCount: (source.match(/<w:tr\b/g) || []).length,
+    tcCount: (source.match(/<w:tc\b/g) || []).length
   };
 }
 
@@ -111,19 +113,41 @@ export function replaceTextInDocxXml(xmlText, originalText, newText) {
   };
 }
 
-async function debugValidateConvertedDocxBlob(blob, originalText, newText) {
+async function validateConvertedDocxBlob(blob, originalText, newText) {
   try {
     const buffer = await blob.arrayBuffer();
-    const zip = new PizZip(buffer);
-    const documentXml = zip.file('word/document.xml')?.asText() || '';
+    const checkZip = new PizZip(buffer);
+    const documentXml = checkZip.file('word/document.xml')?.asText() || '';
+    const stylesFile = checkZip.file('word/styles.xml');
+    const stylesXml = stylesFile?.asText() || '';
 
-    console.log('[DocxConvert] converted document.xml summary:', {
-      ...getXmlPrefixSummary(documentXml),
-      includesNewText: documentXml.includes(String(newText ?? '')),
-      includesOldText: documentXml.includes(String(originalText ?? ''))
-    });
+    if (!documentXml) {
+      throw new Error('word/document.xml을 읽을 수 없습니다.');
+    }
+
+    if (stylesFile && !stylesXml) {
+      throw new Error('word/styles.xml을 읽을 수 없습니다.');
+    }
+
+    const validation = {
+      canReadDocumentXml: Boolean(documentXml),
+      canReadStylesXml: stylesFile ? Boolean(stylesXml) : null,
+      documentHasNewText: documentXml.includes(String(newText ?? '')),
+      documentHasOldText: documentXml.includes(String(originalText ?? '')),
+      stylesHasTableGrid: stylesXml
+        ? stylesXml.includes('TableGrid') ||
+          stylesXml.includes('Table Grid') ||
+          stylesXml.includes('w:tblBorders')
+        : null,
+      stylesLength: stylesXml.length,
+      ...getXmlPrefixSummary(documentXml)
+    };
+
+    console.log('[DocxConvert] validation:', validation);
+    return validation;
   } catch (error) {
-    console.warn('[DocxConvert] converted blob validation failed:', error);
+    console.error('[DocxConvert] converted DOCX validation failed:', error);
+    throw new Error('변환된 DOCX 내부 ZIP 무결성 검증에 실패했습니다.');
   }
 }
 
@@ -158,7 +182,7 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
   }
 
   const xmlPaths = getDocxTextXmlPaths(zip);
-  console.log('[DocxConvert] xml paths:', xmlPaths);
+  console.log('[DocxConvert] text XML paths only:', xmlPaths);
 
   if (!xmlPaths.includes('word/document.xml')) {
     throw new Error('DOCX 본문 XML(word/document.xml)을 찾지 못했습니다.');
@@ -174,20 +198,8 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
 
     const xmlText = xmlFile.asText();
     const beforeSummary = getXmlPrefixSummary(xmlText);
-
-    console.log('[DocxConvert] before XML summary:', {
-      path,
-      ...beforeSummary
-    });
-
     const result = replaceTextInDocxXml(xmlText, target, replacement);
     const afterSummary = getXmlPrefixSummary(result.xmlText);
-
-    console.log('[DocxConvert] after XML summary:', {
-      path,
-      ...afterSummary,
-      replaceCount: result.replaceCount
-    });
 
     if (path === 'word/document.xml') {
       const structureChanged =
@@ -195,6 +207,8 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
         (!beforeSummary.hasNs0Document && afterSummary.hasNs0Document) ||
         beforeSummary.wTextCount !== afterSummary.wTextCount ||
         beforeSummary.tblCount !== afterSummary.tblCount ||
+        beforeSummary.trCount !== afterSummary.trCount ||
+        beforeSummary.tcCount !== afterSummary.tcCount ||
         beforeSummary.sectPrCount !== afterSummary.sectPrCount;
 
       if (structureChanged) {
@@ -202,6 +216,8 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
       }
     }
 
+    // 실제 텍스트가 바뀐 XML만 ZIP 엔트리에 다시 기록한다.
+    // styles.xml/fontTable.xml/settings.xml/theme/relationships 등은 이 경로 목록에 포함되지 않는다.
     if (result.replaceCount > 0) {
       zip.file(path, result.xmlText);
     }
@@ -215,18 +231,23 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
   });
 
   const outputFileName = makeDocxConvertedFileName(file.name);
+
+  // 원본 구조 보존을 우선한다. DOCX 전체를 DEFLATE로 재압축하지 않고 STORE로 생성하여
+  // styles.xml/fontTable.xml/theme/relationships 등 수정하지 않은 엔트리의 재압축 손상을 방지한다.
   const blob = zip.generate({
     type: 'blob',
     mimeType: DOCX_MIME_TYPE,
-    compression: 'DEFLATE'
+    compression: 'STORE'
   });
 
-  await debugValidateConvertedDocxBlob(blob, target, replacement);
+  await validateConvertedDocxBlob(blob, target, replacement);
   downloadBlob(blob, outputFileName);
 
   console.log('[DocxConvert] done:', {
     outputFileName,
-    replaceCount: totalReplaceCount
+    replaceCount: totalReplaceCount,
+    integrityCheck: 'PizZip document.xml/styles.xml read passed',
+    terminalCheck: `unzip -t "${outputFileName}"`
   });
 
   return {
