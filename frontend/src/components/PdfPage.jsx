@@ -1,11 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import HighlightLayer from './HighlightLayer';
 import PdfTextLayer from './PdfTextLayer';
 import {
   calculateHighlightBoxes,
   createHighlightBoxesFromTextLayer,
-  createReplacementPreviewFromTextLayer,
-  createViewportTextSpans
+  createReplacementPreviewFromTextLayer
 } from '../services/highlightService';
 
 function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onPageReady }) {
@@ -13,10 +12,15 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
   const pageRef = useRef(null);
   const renderTaskRef = useRef(null);
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
-  const [textSpans, setTextSpans] = useState([]);
+  const [viewport, setViewport] = useState(null);
+  const [textContent, setTextContent] = useState(null);
   const [highlightBoxes, setHighlightBoxes] = useState([]);
   const [fallbackBoxes, setFallbackBoxes] = useState([]);
   const [replacementPreviewItems, setReplacementPreviewItems] = useState([]);
+  const [textLayerVersion, setTextLayerVersion] = useState(0);
+  const handleTextLayerRendered = useCallback(() => {
+    setTextLayerVersion((version) => version + 1);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,10 +30,20 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
         return;
       }
 
-      if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
-        renderTaskRef.current = null;
-      }
+      renderTaskRef.current?.cancel();
+      renderTaskRef.current = null;
+
+      const canvas = canvasRef.current;
+      canvas.width = 0;
+      canvas.height = 0;
+      canvas.style.width = '';
+      canvas.style.height = '';
+      setPageSize({ width: 0, height: 0 });
+      setViewport(null);
+      setTextContent(null);
+      setHighlightBoxes([]);
+      setFallbackBoxes([]);
+      setReplacementPreviewItems([]);
 
       console.log('[PdfPage] render page:', pageNumber);
 
@@ -40,15 +54,15 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
       }
 
       const viewport = page.getViewport({ scale });
-      const canvas = canvasRef.current;
       const context = canvas.getContext('2d');
 
       if (!context) {
         throw new Error('Canvas 2D context is not available.');
       }
 
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      const outputScale = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(viewport.width * outputScale);
+      canvas.height = Math.floor(viewport.height * outputScale);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
 
@@ -56,10 +70,12 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
         width: viewport.width,
         height: viewport.height
       });
+      setViewport(viewport);
 
       const renderTask = page.render({
         canvasContext: context,
-        viewport
+        viewport,
+        transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0]
       });
 
       renderTaskRef.current = renderTask;
@@ -72,7 +88,17 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
 
       const textContent = await page.getTextContent();
       const nextTextItems = Array.isArray(textContent.items) ? textContent.items : [];
-      const nextTextSpans = createViewportTextSpans(nextTextItems, viewport);
+
+      nextTextItems.forEach((item, index) => {
+        if (String(item?.str || '').includes('테스트')) {
+          console.debug('[PdfPage] text item:', {
+            index,
+            str: JSON.stringify(item.str),
+            width: item.width,
+            hasTrailingSpace: /\s$/.test(item.str)
+          });
+        }
+      });
 
       const nextBoxes = calculateHighlightBoxes({
         keyword: highlightKeyword,
@@ -81,13 +107,17 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
         viewport
       });
 
-      console.log('[PdfPage] viewport:', viewport.width, viewport.height);
-      console.log('[PdfPage] textContent items:', nextTextItems);
-      console.log('[Highlight] keyword:', highlightKeyword);
-      console.log('[Highlight] boxes:', nextBoxes);
+      console.log('[PdfPage] viewport sync:', {
+        pageNumber,
+        scale,
+        viewport: { width: viewport.width, height: viewport.height },
+        canvasCss: { width: canvas.style.width, height: canvas.style.height },
+        canvasBitmap: { width: canvas.width, height: canvas.height },
+        outputScale
+      });
 
       if (!cancelled) {
-        setTextSpans(nextTextSpans);
+        setTextContent(textContent);
         setFallbackBoxes(nextBoxes);
         setReplacementPreviewItems([]);
       }
@@ -101,7 +131,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
       console.error(`[PdfPage] Failed to render page ${pageNumber}`, error);
 
       if (!cancelled) {
-        setTextSpans([]);
+        setTextContent(null);
         setFallbackBoxes([]);
         setHighlightBoxes([]);
         setReplacementPreviewItems([]);
@@ -142,7 +172,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [fallbackBoxes, highlightKeyword, pageNumber, textSpans]);
+  }, [fallbackBoxes, highlightKeyword, pageNumber, textLayerVersion]);
 
   useLayoutEffect(() => {
     if (!pageRef.current || !replacePreview?.originalText) {
@@ -163,7 +193,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [pageNumber, replacePreview, textSpans]);
+  }, [pageNumber, replacePreview, textLayerVersion]);
 
   useEffect(() => {
     if (!onPageReady) {
@@ -190,7 +220,13 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
     >
       <div className="pdf-page-debug-label">page {pageNumber}</div>
       <canvas ref={canvasRef} className="pdf-canvas" />
-      <PdfTextLayer spans={textSpans} width={pageSize.width} height={pageSize.height} />
+      <PdfTextLayer
+        textContent={textContent}
+        viewport={viewport}
+        width={pageSize.width}
+        height={pageSize.height}
+        onRendered={handleTextLayerRendered}
+      />
       <ReplacementPreviewLayer items={replacementPreviewItems} width={pageSize.width} height={pageSize.height} />
       <HighlightLayer boxes={highlightBoxes} width={pageSize.width} height={pageSize.height} />
     </div>

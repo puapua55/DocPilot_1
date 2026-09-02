@@ -7,6 +7,7 @@ import {
   renderPdfFromHtmlText,
   replaceTextInHtmlText
 } from '../services/pdfHtmlTextConvertService';
+import { convertTextReplacement, getDocumentFileType } from '../services/documentReplaceService';
 
 function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, onReplaceDocument, onClose }) {
   const [originalText, setOriginalText] = useState('');
@@ -38,15 +39,15 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
     try {
       const target = String(originalText || '').trim();
       const replacement = String(newText || '').trim();
+      const file = selectedDocument?.file;
+      const fileType = getDocumentFileType(file);
 
-      console.log('========== [ConvertTrace] 변환 버튼 클릭됨 ==========');
-      console.log('[ConvertTrace] selectedFile:', selectedDocument?.file?.name);
-      console.log('[ConvertTrace] originalText:', target);
-      console.log('[ConvertTrace] newText:', replacement);
-      console.log('[ConvertTrace] handler file: ReplaceModal.jsx');
-      console.log('[ConvertTrace] extractPdfToHtmlText function:', extractPdfToHtmlText);
-      console.log('[ConvertTrace] replaceTextInHtmlText function:', replaceTextInHtmlText);
-      console.log('[ConvertTrace] renderPdfFromHtmlText function:', renderPdfFromHtmlText);
+      console.log('[ReplaceModal] convert clicked', {
+        fileName: file?.name,
+        fileType,
+        originalText: target,
+        newText: replacement
+      });
 
       setIsConverting(true);
       setMessage('');
@@ -62,10 +63,15 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
         return;
       }
 
-      const docxReplacementCount = onReplaceDocument?.(target, replacement);
+      if (fileType === 'docx') {
+        const result = await convertTextReplacement({
+          file,
+          fileType,
+          originalText: target,
+          newText: replacement
+        });
 
-      if (typeof docxReplacementCount === 'number') {
-        if (docxReplacementCount === 0) {
+        if (result.replaceCount === 0) {
           setMessage('교체할 텍스트를 찾을 수 없습니다.');
           return;
         }
@@ -74,22 +80,22 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
           pages: 0,
           texts: 0,
           lines: 0,
-          replacements: docxReplacementCount,
-          outputFileName: selectedDocument?.file?.name || 'DOCX 문서',
-          warning: 'DOCX 뷰어 화면에 텍스트 교체를 적용했습니다.'
+          replacements: result.replaceCount,
+          outputFileName: result.outputFileName,
+          warning: ''
         });
-        setMessage('DOCX 뷰어 화면에 텍스트 교체를 적용했습니다.');
+        setMessage('변환된 DOCX 파일이 다운로드되었습니다.');
         return;
       }
 
-      if (!selectedDocument || previewModel?.type !== 'pdf' || !selectedDocument.file) {
+      if (!selectedDocument || previewModel?.type !== 'pdf' || !file) {
         setMessage('먼저 PDF 또는 DOCX 파일을 선택해주세요.');
         return;
       }
 
       setMessage('PDF를 HTML 형식 텍스트 구조로 변환 중입니다...');
 
-      const htmlText = await extractPdfToHtmlText(selectedDocument.file);
+      const htmlText = await extractPdfToHtmlText(file);
 
       console.log('[HtmlTextConvert] htmlText:', htmlText);
       console.log('[HtmlTextConvert] originalHtmlText:', htmlText);
@@ -110,7 +116,7 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
         console.warn('[HtmlTextConvert] replacedHtmlText still includes originalText:', target);
       }
 
-      downloadHtmlTextFile(replacedHtmlText, selectedDocument.file.name);
+      downloadHtmlTextFile(replacedHtmlText, file.name);
 
       const parsedStructure = parseHtmlTextStructure(replacedHtmlText);
       const totalTextCount = parsedStructure.pages.reduce((sum, page) => sum + page.texts.length, 0);
@@ -131,7 +137,7 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
           texts: totalTextCount,
           lines: totalLineCount,
           replacements: 0,
-          outputFileName: makeHtmlConvertedFileName(selectedDocument.file.name),
+          outputFileName: makeHtmlConvertedFileName(file.name),
           warning: ''
         });
         return;
@@ -139,7 +145,7 @@ function ReplaceModal({ isOpen, selectedDocument, previewModel, onApplyPreview, 
 
       setMessage('수정된 HTML 텍스트 구조를 PDF로 재생성 중입니다...');
 
-      const outputFileName = makeHtmlConvertedFileName(selectedDocument.file.name);
+      const outputFileName = makeHtmlConvertedFileName(file.name);
       await renderPdfFromHtmlText(replacedHtmlText, outputFileName);
 
       setLastSummary({

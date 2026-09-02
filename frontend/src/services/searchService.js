@@ -58,9 +58,15 @@ export function searchKeywordInDocument(documentText, keyword) {
 
         results.push({
           id: `search-result-${pageNumber}-${index + 1}-${foundIndex}-${results.length}`,
+          type: 'pdf',
+          pageNumber,
+          paragraphNumber: index + 1,
+          lineNumber: index + 1,
+          text: rawLineText,
           page: pageNumber,
           line: index + 1,
-          keyword: extractMatchedWord(rawLineText, foundIndex, normalizedKeyword),
+          keyword: normalizedKeyword,
+          matchedText: extractMatchedWord(rawLineText, foundIndex, normalizedKeyword),
           fullText: rawLineText,
           x: null,
           y: null,

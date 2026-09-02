@@ -1,0 +1,31 @@
+DocPilot DOCX 페이지 번호 보정 작업 정리
+
+문제
+- 테스트1.docx는 Word에서 두 페이지로 보이지만 docx-preview에서는 section.docx가 하나로 렌더링될 수 있습니다.
+- 이 경우 정확한 문서 검색 결과의 모든 항목이 1페이지로 표시되었습니다.
+
+확인 결과
+- word/document.xml에는 강제 페이지 나누기(w:br w:type="page")가 없습니다.
+- w:lastRenderedPageBreak도 없습니다.
+- 문서의 페이지 크기 비율은 16838 / 11906 = 약 1.41424로 A4 세로 비율입니다.
+
+변경 사항
+- frontend/src/components/DocxViewer.jsx
+  - 렌더링 전에 DOCX ZIP을 읽기 전용으로 검사하여 페이지 비율과 명시적 페이지 나누기 정보를 확인합니다.
+  - section.docx가 여러 개이면 기존처럼 section 순번을 pageNumber로 사용합니다.
+  - section.docx가 하나이면 검색 block의 화면상 상대 위치를 실제 페이지 높이로 나눠 pageNumber를 추정합니다.
+  - 페이지 높이는 렌더링된 문서 너비 x DOCX 페이지 비율로 계산합니다.
+  - 확대/축소 transform 영향을 제거한 좌표로 계산하므로 줌 변경으로 페이지 번호가 바뀌지 않습니다.
+  - 문단 번호는 계산된 페이지별로 다시 시작합니다.
+  - 검색 결과 block의 offsetTop, 상대 위치, 추정 페이지 높이, pageNumber를 콘솔에 기록합니다.
+
+영향 범위
+- PDF.js PDF 뷰어는 변경하지 않았습니다.
+- DOCX 변환, ZIP/CRC, styles.xml, Table Grid 보존 로직은 변경하지 않았습니다.
+- 검색 대상은 기존과 동일하게 화면에 보이는 docx-preview DOM만 사용하며 hidden DOM은 제외합니다.
+- DOM section을 강제로 분할하지 않았습니다.
+
+검증
+- frontend: npm run build 성공
+- backend: mvn test 성공 (8 tests)
+- 프로젝트에 브라우저 E2E/Playwright 실행 도구가 없어 실제 업로드 기반 E2E는 실행하지 못했습니다.

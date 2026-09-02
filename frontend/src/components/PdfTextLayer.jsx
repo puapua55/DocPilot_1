@@ -1,27 +1,69 @@
 import { useEffect, useRef } from 'react';
+import { TextLayer } from 'pdfjs-dist';
 
-function PdfTextLayer({ spans, width, height }) {
+function PdfTextLayer({ textContent, viewport, width, height, onRendered }) {
   const layerRef = useRef(null);
+  const textLayerTaskRef = useRef(null);
 
   useEffect(() => {
-    const textLayer = layerRef.current;
+    const container = layerRef.current;
 
-    if (!textLayer) {
+    if (!container || !textContent || !viewport || !width || !height) {
       return;
     }
 
-    const spanNodes = textLayer.querySelectorAll('span');
+    let cancelled = false;
+    textLayerTaskRef.current?.cancel();
+    container.replaceChildren();
+    container.style.setProperty('--total-scale-factor', String(viewport.scale));
+    const textLayerTask = new TextLayer({ textContentSource: textContent, container, viewport });
+    textLayerTaskRef.current = textLayerTask;
 
-    console.log('[TextLayer] layer:', textLayer);
-    console.log('[TextLayer] spans:', spanNodes);
+    textLayerTask.render()
+      .then(() => {
+        if (!cancelled) {
+          Array.from(container.querySelectorAll('span')).forEach((span) => {
+            if (!span.textContent?.includes('테스트')) {
+              return;
+            }
 
-    const targetSpan = Array.from(spanNodes).find((span) => span.textContent?.includes('테스트1'));
+            const style = window.getComputedStyle(span);
+            console.debug('[PdfTextLayer] span metrics:', {
+              text: JSON.stringify(span.textContent),
+              width: span.getBoundingClientRect().width,
+              scaleX: style.getPropertyValue('--scale-x'),
+              paddingLeft: style.paddingLeft,
+              paddingRight: style.paddingRight,
+              marginLeft: style.marginLeft,
+              marginRight: style.marginRight,
+              letterSpacing: style.letterSpacing,
+              wordSpacing: style.wordSpacing
+            });
+          });
 
-    if (targetSpan) {
-      console.log('[TextLayer] span rect:', targetSpan.getBoundingClientRect());
-      console.log('[TextLayer] span style:', window.getComputedStyle(targetSpan));
-    }
-  }, [spans]);
+          console.log('[PdfTextLayer] viewport sync:', {
+            width: container.clientWidth,
+            height: container.clientHeight,
+            scale: viewport.scale
+          });
+          onRendered?.();
+        }
+      })
+      .catch((error) => {
+        if (!cancelled && error?.name !== 'AbortException') {
+          console.error('[PdfTextLayer] Failed to render text layer', error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      textLayerTask.cancel();
+      if (textLayerTaskRef.current === textLayerTask) {
+        textLayerTaskRef.current = null;
+      }
+      container.replaceChildren();
+    };
+  }, [height, onRendered, textContent, viewport, width]);
 
   return (
     <div
@@ -30,50 +72,10 @@ function PdfTextLayer({ spans, width, height }) {
       aria-hidden="false"
       style={{
         width: `${width}px`,
-        height: `${height}px`
+        height: `${height}px`,
+        '--total-scale-factor': viewport?.scale || 1
       }}
-    >
-      {spans.map((span, index) => {
-        console.log('[TextLayer] span rect:', {
-          text: span.text,
-          x: span.left,
-          y: span.top,
-          width: span.width,
-          height: span.height,
-          itemWidth: span.itemWidth,
-          expectedWidth: span.expectedWidth
-        });
-
-        return (
-          <span
-            key={`${span.text}-${span.left}-${span.top}-${index}`}
-            className="textLayer-item"
-            style={{
-              left: `${span.left}px`,
-              top: `${span.top}px`,
-              lineHeight: `${span.lineHeight}`,
-              fontSize: `${span.fontSize}px`
-            }}
-            data-text={span.text}
-            ref={(node) => {
-              if (!node) {
-                return;
-              }
-
-              console.log('[TextLayer] span check:', {
-                text: span.text,
-                itemWidth: span.itemWidth,
-                expectedWidth: span.expectedWidth,
-                rect: node.getBoundingClientRect(),
-                styleWidth: node.style.width
-              });
-            }}
-          >
-            {span.text}
-          </span>
-        );
-      })}
-    </div>
+    />
   );
 }
 

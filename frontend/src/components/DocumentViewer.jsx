@@ -26,6 +26,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   const inputRef = useRef(null);
   const innerViewerRef = useRef(null);
   const viewerType = getViewerType(file, previewModel);
+  const maxScale = viewerType === 'docx' ? 2 : MAX_SCALE;
   const [scale, setScale] = useState(() => (viewerType === 'docx' ? DOCX_DEFAULT_SCALE : DEFAULT_SCALE));
 
   useEffect(() => {
@@ -145,7 +146,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
             <ZoomControls
               scale={scale}
               onZoomOut={() => setScale((current) => Math.max(MIN_SCALE, current - SCALE_STEP))}
-              onZoomIn={() => setScale((current) => Math.min(MAX_SCALE, current + SCALE_STEP))}
+              onZoomIn={() => setScale((current) => Math.min(maxScale, current + SCALE_STEP))}
             />
           ) : null}
           <input

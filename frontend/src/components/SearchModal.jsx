@@ -1,6 +1,18 @@
 import { useState } from 'react';
 import { searchKeywordInDocument } from '../services/searchService';
 
+function getPageNumber(result) {
+  return result.pageNumber ?? result.page ?? null;
+}
+
+function getParagraphNumber(result) {
+  return result.paragraphNumber ?? result.paragraphIndex ?? result.lineNumber ?? result.line ?? null;
+}
+
+function getResultText(result) {
+  return result.text || result.previewText || result.fullText || result.matchedText || '-';
+}
+
 function SearchModal({ documentText, selectedDocument, onClose, onResultClick, onSearchDocument }) {
   const [mode, setMode] = useState('input');
   const [keyword, setKeyword] = useState('');
@@ -119,47 +131,56 @@ function SearchModal({ documentText, selectedDocument, onClose, onResultClick, o
               <h2 id="search-modal-title" className="search-modal-title">
                 검색 결과
               </h2>
-              <table className="search-result-table">
-                <thead>
-                  <tr>
-                    <th>{results[0]?.type === 'docx' ? '문단' : '페이지'}</th>
-                    <th>{results[0]?.type === 'docx' ? '내용' : '줄'}</th>
-                    <th>검색어</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {results.length > 0 ? (
-                    results.map((result, index) => (
-                      <tr
-                        key={`${result.type || 'pdf'}-${result.page || result.blockIndex}-${result.line || result.index}-${result.keyword}-${index}`}
-                        className="search-result-row"
-                        onClick={() => handleResultClick(result)}
-                      >
-                        <td>{result.type === 'docx' ? `문단 ${result.paragraphIndex}` : result.page}</td>
-                        <td>{result.type === 'docx' ? result.previewText : result.line}</td>
-                        <td>
-                          <button
-                            type="button"
-                            className="search-result-keyword"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handleResultClick(result);
-                            }}
+              <div className="search-result-table-wrap">
+                <table className="search-result-table">
+                  <thead>
+                    <tr>
+                      <th>페이지</th>
+                      <th>문단</th>
+                      <th>내용</th>
+                      <th>검색어</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.length > 0 ? (
+                      results.map((result, index) => {
+                        const pageNumber = getPageNumber(result);
+                        const paragraphNumber = getParagraphNumber(result);
+
+                        return (
+                          <tr
+                            key={`${result.type || 'pdf'}-${pageNumber || result.blockIndex}-${paragraphNumber || result.index}-${result.keyword}-${index}`}
+                            className="search-result-row"
+                            onClick={() => handleResultClick(result)}
                           >
-                            {result.keyword}
-                          </button>
+                            <td>{pageNumber ? `${pageNumber}페이지` : '-'}</td>
+                            <td>{paragraphNumber ? `문단 ${paragraphNumber}` : '-'}</td>
+                            <td>{getResultText(result)}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="search-result-keyword"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleResultClick(result);
+                                }}
+                              >
+                                {result.keyword}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan="4" className="search-result-empty">
+                          {emptyMessage}
                         </td>
                       </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan="3" className="search-result-empty">
-                        {emptyMessage}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
         </div>

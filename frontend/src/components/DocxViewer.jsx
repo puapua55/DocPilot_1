@@ -1,12 +1,15 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { renderAsync } from 'docx-preview';
 import mammoth from 'mammoth';
+import JSZip from 'jszip';
 import './DocxViewer.css';
 
 const TEXT_BLOCK_SELECTOR = 'p, li, td, th, h1, h2, h3';
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 2.0;
 const ZOOM_STEP = 0.1;
+const A4_PAGE_RATIO = 297 / 210;
+const DEFAULT_VIRTUAL_PAGE_GAP = 56;
 
 function clampZoom(value) {
   return Math.max(
@@ -24,10 +27,13 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
   const scaleHolderRef = useRef(null);
   const textLayerRef = useRef(null);
   const zoomRef = useRef(scale);
+  const pageLayoutRef = useRef({ pageRatio: A4_PAGE_RATIO });
   const [status, setStatus] = useState('DOCX 문서를 불러오는 중입니다...');
   const [error, setError] = useState('');
   const [renderMode, setRenderMode] = useState('preview');
   const [zoom, setZoom] = useState(scale);
+  const [contentSize, setContentSize] = useState({ width: 0, height: 0 });
+  const [pageBoundaries, setPageBoundaries] = useState([]);
 
   useEffect(() => {
     const nextScale = clampZoom(Number.isFinite(scale) ? scale : 1);
@@ -61,78 +67,23 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
     return { root: wrapper, pages };
   }, []);
 
-  const getDocxPagesMetrics = useCallback((target, holder) => {
-    const pages = Array.from(target.querySelectorAll('section.docx'));
-    const widths = pages.map((page) => {
-      const rect = page.getBoundingClientRect();
-      return page.scrollWidth || rect.width || 0;
-    });
-    const heights = pages.map((page) => {
-      const rect = page.getBoundingClientRect();
-      return page.scrollHeight || rect.height || 0;
-    });
-
-    const maxPageWidth = widths.length > 0 ? Math.max(...widths) : 0;
-    const maxPageHeight = heights.length > 0 ? Math.max(...heights) : 0;
-    const viewportWidth = Math.max(320, (holder?.parentElement?.clientWidth || 900) - 80);
-    const fitScale = maxPageWidth > 0 ? Math.min(1.2, Math.max(0.45, viewportWidth / maxPageWidth)) : 1;
-    const totalPageHeight = heights.reduce((sum, height) => sum + height, 0) + Math.max(0, pages.length - 1) * 28;
-
-    return {
-      pageCount: pages.length,
-      maxPageWidth,
-      maxPageHeight,
-      totalPageHeight,
-      viewportWidth,
-      fitScale
-    };
-  }, []);
-
-  const applyDocxScale = useCallback((nextScale) => {
-    const holder = scaleHolderRef.current;
+  const measureDocxContent = useCallback(() => {
     const targetInfo = getDocxScaleTarget();
     const target = targetInfo.root;
-    const pages = targetInfo.pages;
 
-    if (!holder || !target) {
+    if (!target) {
       return;
     }
 
-    const safeScale = clampZoom(Number.isFinite(nextScale) ? nextScale : 1);
-    const viewportWidth = Math.max(320, (holder.parentElement?.clientWidth || 900) - 80);
-    const a4Width = 794;
-    const a4Height = 1123;
-    const baseWidth = Math.min(a4Width, viewportWidth * 0.92);
-    const pageRatio = a4Height / a4Width;
-    const pageDisplayWidth = Math.min(Math.max(baseWidth * safeScale, 220), viewportWidth * 1.45);
-    const pageDisplayHeight = pageDisplayWidth * pageRatio;
+    const nextSize = { width: target.scrollWidth, height: target.scrollHeight };
+    if (nextSize.width <= 0 || nextSize.height <= 0) {
+      return;
+    }
 
-    pages.forEach((page) => {
-      page.style.setProperty('width', `${pageDisplayWidth}px`, 'important');
-      page.style.setProperty('height', `${pageDisplayHeight}px`, 'important');
-      page.style.setProperty('max-width', `${viewportWidth * 1.45}px`, 'important');
-      page.style.setProperty('min-width', '220px', 'important');
-      page.style.setProperty('box-sizing', 'border-box', 'important');
-      page.style.setProperty('display', 'block', 'important');
-      page.style.setProperty('margin-left', 'auto', 'important');
-      page.style.setProperty('margin-right', 'auto', 'important');
-      page.style.setProperty('overflow', 'hidden', 'important');
-    });
-
-    target.style.setProperty('width', '100%', 'important');
-    target.style.setProperty('max-width', `${viewportWidth * 1.15}px`, 'important');
-    target.style.setProperty('height', 'auto', 'important');
-    target.style.setProperty('display', 'flex', 'important');
-    target.style.setProperty('flex-direction', 'column', 'important');
-    target.style.setProperty('align-items', 'center', 'important');
-    target.style.setProperty('justify-content', 'flex-start', 'important');
-    target.style.setProperty('transform', 'none', 'important');
-    target.style.setProperty('transform-origin', 'top center', 'important');
-
-    holder.style.width = '100%';
-    holder.style.maxWidth = `${viewportWidth * 1.15}px`;
-    holder.style.height = 'auto';
-    holder.style.minHeight = '0';
+    setContentSize((current) => (
+      current.width === nextSize.width && current.height === nextSize.height ? current : nextSize
+    ));
+    updateDocxPageBoundaries();
   }, [getDocxScaleTarget]);
 
   const updateZoom = useCallback((next) => {
@@ -163,10 +114,7 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
   const handleResetZoom = useCallback(() => {
     console.log('[DocxZoom] reset clicked');
     updateZoom(1);
-    requestAnimationFrame(() => {
-      applyDocxScale(1);
-    });
-  }, [applyDocxScale, updateZoom]);
+  }, [updateZoom]);
 
   useImperativeHandle(ref, () => ({
     searchDocument(keyword) {
@@ -214,6 +162,9 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
 
       try {
         const arrayBuffer = await file.arrayBuffer();
+        pageLayoutRef.current = await inspectDocxPageLayout(arrayBuffer);
+
+        console.log('[DocxViewer] page break metadata:', pageLayoutRef.current);
 
         if (previewRef.current) {
           await renderAsync(arrayBuffer, previewRef.current, undefined, {
@@ -235,6 +186,9 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
         const preview = previewRef.current;
         const wrapper = preview?.querySelector('.docx-wrapper');
         const sections = Array.from(preview?.querySelectorAll('section.docx') || []);
+
+        console.log('[DocxViewer] rendered section count:', sections.length);
+        console.log('[DocxViewer] rendered wrapper count:', preview?.querySelectorAll('.docx-wrapper').length || 0);
 
         console.log('[DocxPageDebug] rendered DOM:', {
           hasPreview: !!preview,
@@ -309,8 +263,7 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
         setStatus('');
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            console.log('[DocxViewer] initial scale apply');
-            applyDocxScale(1);
+            measureDocxContent();
           });
         });
 
@@ -341,8 +294,7 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
           setStatus('');
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
-              console.log('[DocxViewer] initial scale apply');
-              applyDocxScale(1);
+              measureDocxContent();
             });
           });
         } catch (fallbackErr) {
@@ -362,11 +314,11 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
     return () => {
       cancelled = true;
     };
-  }, [applyDocxScale, file]);
+  }, [file, measureDocxContent]);
 
   useEffect(() => {
     function handleResize() {
-      applyDocxScale(zoomRef.current);
+      measureDocxContent();
     }
 
     window.addEventListener('resize', handleResize);
@@ -374,7 +326,7 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
     return () => {
       window.removeEventListener('resize', handleResize);
     };
-  }, [applyDocxScale]);
+  }, [measureDocxContent]);
 
   useEffect(() => {
     if (!bodyRef.current || typeof ResizeObserver !== 'function') {
@@ -382,7 +334,7 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
     }
 
     const observer = new ResizeObserver(() => {
-      applyDocxScale(zoomRef.current);
+      measureDocxContent();
     });
 
     observer.observe(bodyRef.current);
@@ -390,30 +342,175 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
     return () => {
       observer.disconnect();
     };
-  }, [applyDocxScale]);
+  }, [measureDocxContent]);
 
   useEffect(() => {
     console.log('[DocxZoom] zoom state changed:', zoom);
     zoomRef.current = zoom;
+    window.requestAnimationFrame(updateDocxPageBoundaries);
+  }, [zoom]);
 
-    requestAnimationFrame(() => {
-      applyDocxScale(zoom);
+  function getDocxSearchRoot() {
+    const preview = previewRef.current;
+    return preview?.querySelector('.docx-wrapper, .docx-preview-wrapper') || preview;
+  }
+
+  function getDocxPageInfo(block, root, sections) {
+    const section = block.closest('section.docx, section.docx-preview');
+    const sectionIndex = sections.indexOf(section);
+
+    if (sections.length > 1 && sectionIndex >= 0) {
+      return {
+        pageNumber: sectionIndex + 1,
+        pageHeight: section.offsetHeight || section.getBoundingClientRect().height,
+        relativeTop: block.offsetTop
+      };
+    }
+
+    const pageRoot = section || root;
+    const pageHeight = getEstimatedDocxPageHeight(pageRoot);
+    const pageRect = pageRoot.getBoundingClientRect();
+    const blockRect = block.getBoundingClientRect();
+    const zoomScale = zoomRef.current || 1;
+    const relativeTop = Math.max(0, (blockRect.top - pageRect.top) / zoomScale);
+
+    return {
+      pageNumber: pageHeight > 0 ? Math.floor(relativeTop / pageHeight) + 1 : 1,
+      pageHeight,
+      relativeTop
+    };
+  }
+
+  function getEstimatedDocxPageHeight(pageRoot) {
+    if (!pageRoot) {
+      return 0;
+    }
+
+    const width = pageRoot.offsetWidth || (pageRoot.getBoundingClientRect().width / (zoomRef.current || 1));
+    const pageRatio = pageLayoutRef.current?.pageRatio || A4_PAGE_RATIO;
+
+    return width > 0 ? width * pageRatio : 1122;
+  }
+
+  function setDocxPageBoundaries(nextBoundaries) {
+    setPageBoundaries((current) => {
+      const unchanged = current.length === nextBoundaries.length && current.every((boundary, index) => {
+        const next = nextBoundaries[index];
+        return boundary.pageNumber === next.pageNumber &&
+          boundary.top === next.top &&
+          boundary.left === next.left &&
+          boundary.width === next.width &&
+          boundary.height === next.height;
+      });
+
+      return unchanged ? current : nextBoundaries;
     });
-  }, [applyDocxScale, zoom]);
+  }
+
+  function updateDocxPageBoundaries() {
+    const root = getDocxSearchRoot();
+    const holder = scaleHolderRef.current;
+    const sections = Array.from(root?.querySelectorAll('section.docx, section.docx-preview') || []);
+
+    if (!root || !holder || sections.length !== 1) {
+      setDocxPageBoundaries([]);
+      return;
+    }
+
+    const section = sections[0];
+    const pageHeight = getEstimatedDocxPageHeight(section);
+    const sectionHeight = section.offsetHeight;
+
+    const hasExplicitPageBreak = (pageLayoutRef.current?.explicitPageBreaks || 0) > 0 ||
+      (pageLayoutRef.current?.lastRenderedPageBreaks || 0) > 0;
+    const shouldShowVirtualPageGaps = !hasExplicitPageBreak && pageHeight > 0 && sectionHeight > pageHeight * 1.1;
+    if (!shouldShowVirtualPageGaps) {
+      setDocxPageBoundaries([]);
+      return;
+    }
+
+    const zoomScale = zoomRef.current || 1;
+    const holderRect = holder.getBoundingClientRect();
+    const sectionRect = section.getBoundingClientRect();
+    const sectionTop = (sectionRect.top - holderRect.top) / zoomScale;
+    const sectionLeft = (sectionRect.left - holderRect.left) / zoomScale;
+    const pageCount = Math.ceil(sectionHeight / pageHeight);
+    const pageGap = getDocxPageGap(sections, zoomScale);
+    const boundaries = Array.from({ length: pageCount - 1 }, (_, index) => {
+      const boundaryTop = pageHeight * (index + 1);
+
+      return {
+        pageNumber: index + 2,
+        top: sectionTop + boundaryTop - pageGap / 2,
+        left: sectionLeft,
+        width: section.offsetWidth,
+        height: pageGap
+      };
+    });
+
+    console.log('[DocxViewer] page visualization:', {
+      sectionCount: sections.length,
+      sectionWidth: section.offsetWidth,
+      sectionHeight,
+      estimatedPageHeight: pageHeight,
+      pageGap,
+      hasExplicitPageBreak,
+      shouldShowVirtualPageGaps,
+      tables: Array.from(section.querySelectorAll('table')).map((table) => ({
+        offsetTop: table.offsetTop,
+        height: table.offsetHeight
+      })),
+      pageCount
+    });
+
+    setDocxPageBoundaries(boundaries);
+  }
+
+  function getDocxPageGap(sections, zoomScale) {
+    if (sections.length >= 2) {
+      const firstRect = sections[0].getBoundingClientRect();
+      const secondRect = sections[1].getBoundingClientRect();
+      const measuredGap = (secondRect.top - firstRect.bottom) / zoomScale;
+
+      if (Number.isFinite(measuredGap) && measuredGap > 16 && measuredGap < 120) {
+        return Math.round(measuredGap);
+      }
+    }
+
+    return DEFAULT_VIRTUAL_PAGE_GAP;
+  }
 
   function getDocxTextBlocks() {
-    const root = textLayerRef.current;
+    const root = getDocxSearchRoot();
     if (!root) {
       return [];
     }
 
+    const sections = Array.from(root.querySelectorAll('section.docx, section.docx-preview'));
+    const paragraphCounts = new Map();
+
     return Array.from(root.querySelectorAll(TEXT_BLOCK_SELECTOR))
+      .filter((el) => !el.closest('[data-docx-hidden="true"], .docx-hidden-text, .docx-search-source'))
+      .filter((el) => !el.closest('[data-docx-page-boundary-layer="true"]'))
+      .filter((el) => !el.querySelector(TEXT_BLOCK_SELECTOR))
       .filter((el) => el.textContent?.trim())
-      .map((el, index) => ({
-        element: el,
-        blockIndex: index + 1,
-        text: el.textContent.trim()
-      }));
+      .map((el, index) => {
+        const pageInfo = getDocxPageInfo(el, root, sections);
+        const pageNumber = pageInfo.pageNumber;
+        const paragraphNumber = (paragraphCounts.get(pageNumber) || 0) + 1;
+
+        paragraphCounts.set(pageNumber, paragraphNumber);
+
+        return {
+          element: el,
+          blockIndex: index + 1,
+          pageNumber,
+          paragraphNumber,
+          pageHeight: pageInfo.pageHeight,
+          relativeTop: pageInfo.relativeTop,
+          text: el.textContent.trim()
+        };
+      });
   }
 
   function searchDocxDocument(keyword) {
@@ -425,8 +522,13 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
     clearDocxSearchMarks();
 
     const results = [];
+    const searchRoot = getDocxSearchRoot();
+    const blocks = getDocxTextBlocks();
 
-    getDocxTextBlocks().forEach((block) => {
+    console.log('[DocxViewer] search root:', searchRoot);
+    console.log('[DocxViewer] searchable block count:', blocks.length);
+
+    blocks.forEach((block) => {
       if (!block.text.includes(normalizedKeyword)) {
         return;
       }
@@ -438,21 +540,31 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
         type: 'docx',
         index: resultIndex,
         blockIndex: block.blockIndex,
-        paragraphIndex: block.blockIndex,
+        pageNumber: block.pageNumber,
+        paragraphIndex: block.paragraphNumber,
+        paragraphNumber: block.paragraphNumber,
         keyword: normalizedKeyword,
         matchedText: block.text,
-        previewText: block.text
+        previewText: block.text,
+        text: block.text
+      });
+
+      console.log('[DocxViewer] search result block:', {
+        text: block.text,
+        offsetTop: block.element.offsetTop,
+        pageNumber: block.pageNumber,
+        pageHeight: block.pageHeight,
+        relativeTop: block.relativeTop
       });
     });
 
-    console.log('[DocxSearch] results:', results);
+    console.log('[DocxViewer] search results:', results.length);
 
     return results;
   }
 
   function scrollToDocxSearchResult(result) {
-    const root = textLayerRef.current;
-    const previewRoot = previewRef.current;
+    const root = getDocxSearchRoot();
     if (!root || !result) {
       return;
     }
@@ -471,22 +583,14 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
 
     target.classList.add('docx-search-current');
 
-    const previewTarget = findPreviewBlockByText(target.textContent || '');
-    const scrollTarget = previewTarget || target;
-
-    previewRoot?.querySelectorAll('.docx-search-current').forEach((el) => {
-      el.classList.remove('docx-search-current');
-    });
-    previewTarget?.classList.add('docx-search-current');
-
-    scrollTarget.scrollIntoView({
+    target.scrollIntoView({
       behavior: 'smooth',
       block: 'center'
     });
   }
 
   function highlightDocxText(keyword) {
-    const root = textLayerRef.current;
+    const root = getDocxSearchRoot();
     const normalizedKeyword = String(keyword || '').trim();
 
     if (!root || !normalizedKeyword) {
@@ -495,9 +599,7 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
 
     clearDocxHighlights();
 
-    const hiddenCount = highlightTextInRoot(root, normalizedKeyword);
-    const previewCount = highlightTextInRoot(previewRef.current, normalizedKeyword);
-    const count = previewCount || hiddenCount;
+    const count = highlightTextInRoot(root, normalizedKeyword);
 
     console.log('[DocxHighlight] count:', count);
 
@@ -505,7 +607,7 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
   }
 
   function replaceDocxText(originalText, newText) {
-    const root = textLayerRef.current;
+    const root = getDocxSearchRoot();
     const from = String(originalText || '');
     const to = String(newText || '');
 
@@ -517,7 +619,6 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
     clearDocxSearchMarks();
 
     const count = replaceTextInRoot(root, from, to);
-    replaceTextInRoot(previewRef.current, from, to);
 
     console.log('[DocxReplace] count:', count);
 
@@ -525,49 +626,35 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
   }
 
   function clearDocxHighlights() {
-    [textLayerRef.current, previewRef.current].forEach((root) => {
-      if (!root) {
+    const root = getDocxSearchRoot();
+    if (!root) {
+      return;
+    }
+
+    Array.from(root.querySelectorAll('.docx-highlight')).forEach((span) => {
+      const parent = span.parentNode;
+      if (!parent) {
         return;
       }
 
-      Array.from(root.querySelectorAll('.docx-highlight')).forEach((span) => {
-        const parent = span.parentNode;
-        if (!parent) {
-          return;
-        }
-
-        parent.replaceChild(document.createTextNode(span.textContent || ''), span);
-        parent.normalize();
-      });
+      parent.replaceChild(document.createTextNode(span.textContent || ''), span);
+      parent.normalize();
     });
   }
 
   function clearDocxSearchMarks() {
-    [textLayerRef.current, previewRef.current].forEach((root) => {
-      if (!root) {
-        return;
-      }
-
-      root.querySelectorAll('[data-docx-search-index]').forEach((el) => {
-        delete el.dataset.docxSearchIndex;
-      });
-
-      root.querySelectorAll('.docx-search-current').forEach((el) => {
-        el.classList.remove('docx-search-current');
-      });
-    });
-  }
-
-  function findPreviewBlockByText(text) {
-    const root = previewRef.current;
-    const normalizedText = String(text || '').trim();
-
-    if (!root || !normalizedText) {
-      return null;
+    const root = getDocxSearchRoot();
+    if (!root) {
+      return;
     }
 
-    return Array.from(root.querySelectorAll(TEXT_BLOCK_SELECTOR))
-      .find((el) => el.textContent?.trim() === normalizedText) || null;
+    root.querySelectorAll('[data-docx-search-index]').forEach((el) => {
+      delete el.dataset.docxSearchIndex;
+    });
+
+    root.querySelectorAll('.docx-search-current').forEach((el) => {
+      el.classList.remove('docx-search-current');
+    });
   }
 
   return (
@@ -585,12 +672,49 @@ const DocxViewer = forwardRef(function DocxViewer({ file, scale = 1, onZoomChang
           </div>
         ) : null}
 
-        <div ref={scaleHolderRef} className="docx-scale-holder">
+        <div
+          className="docx-scale-stage"
+          style={{
+            width: contentSize.width ? `${contentSize.width * zoom}px` : '100%',
+            height: contentSize.height ? `${contentSize.height * zoom}px` : 'auto'
+          }}
+        >
           <div
-            ref={previewRef}
-            className="docx-preview-container"
-            data-docx-scale={zoom}
-          />
+            ref={scaleHolderRef}
+            className="docx-scale-holder"
+            style={{
+              width: contentSize.width ? `${contentSize.width}px` : 'fit-content',
+              height: contentSize.height ? `${contentSize.height}px` : 'auto',
+              transform: `scale(${zoom})`,
+              transformOrigin: 'top center'
+            }}
+          >
+            <div
+              ref={previewRef}
+              className="docx-preview-container"
+              data-docx-scale={zoom}
+            />
+            {pageBoundaries.length > 0 ? (
+              <div
+                className="docx-page-visual-layer"
+                aria-hidden="true"
+                data-docx-page-boundary-layer="true"
+              >
+                {pageBoundaries.map((boundary) => (
+                  <div
+                    key={boundary.pageNumber}
+                    className="docx-virtual-page-gap"
+                    style={{
+                      top: `${boundary.top}px`,
+                      left: `${boundary.left}px`,
+                      width: `${boundary.width}px`,
+                      height: `${boundary.height}px`
+                    }}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
         <div ref={textLayerRef} className="docx-text-dom" aria-hidden="true" />
       </div>
@@ -612,6 +736,31 @@ async function convertDocxToTextHtml(arrayBuffer) {
       ]
     }
   );
+}
+
+async function inspectDocxPageLayout(arrayBuffer) {
+  try {
+    const zip = await JSZip.loadAsync(arrayBuffer.slice(0));
+    const documentXml = await zip.file('word/document.xml')?.async('string');
+
+    if (!documentXml) {
+      return { pageRatio: A4_PAGE_RATIO, explicitPageBreaks: 0, lastRenderedPageBreaks: 0 };
+    }
+
+    const pageSizeMatch = documentXml.match(/<w:pgSz\b[^>]*\bw:w="(\d+)"[^>]*\bw:h="(\d+)"[^>]*\/?\s*>/i);
+    const pageWidth = Number(pageSizeMatch?.[1]);
+    const pageHeight = Number(pageSizeMatch?.[2]);
+    const pageRatio = pageWidth > 0 && pageHeight > 0 ? pageHeight / pageWidth : A4_PAGE_RATIO;
+
+    return {
+      pageRatio,
+      explicitPageBreaks: (documentXml.match(/<w:br\b[^>]*\bw:type="page"[^>]*\/?\s*>/gi) || []).length,
+      lastRenderedPageBreaks: (documentXml.match(/<w:lastRenderedPageBreak\b[^>]*\/?\s*>/gi) || []).length
+    };
+  } catch (error) {
+    console.warn('[DocxViewer] Could not inspect DOCX page metadata:', error);
+    return { pageRatio: A4_PAGE_RATIO, explicitPageBreaks: 0, lastRenderedPageBreaks: 0 };
+  }
 }
 
 function highlightTextInRoot(root, keyword) {
