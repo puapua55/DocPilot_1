@@ -16,6 +16,15 @@ function getSearchBlocks(root) {
   return [...primaryBlocks, ...fallbackDivs].filter((element) => element.textContent?.trim());
 }
 
+function getRenderedDocxText(root) {
+  if (!root) {
+    return '';
+  }
+
+  const text = root.innerText || root.textContent || '';
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function unwrapHighlightSpans(root) {
   if (!root) {
     return;
@@ -229,6 +238,14 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
   };
 
   useImperativeHandle(ref, () => ({
+    async getDocumentText() {
+      try {
+        return getRenderedDocxText(docxContentRef.current);
+      } catch (error) {
+        console.warn('[WordViewer] document text extraction failed:', error);
+        return '';
+      }
+    },
     searchDocument(keyword) {
       return searchDocxText(keyword);
     },
