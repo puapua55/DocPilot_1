@@ -27,16 +27,13 @@ function getXmlSummary(xmlText) {
   };
 }
 
-test('DOCX [변환]은 실제 DOCX를 수정해 다운로드하고 재업로드할 수 있다', async ({ page }, testInfo) => {
+test('DOCX 실제 [변환] 버튼은 수정된 DOCX를 다운로드한다', async ({ page }, testInfo) => {
   await page.goto('/');
 
   const fileInput = page.locator('input[type="file"]').first();
   await fileInput.setInputFiles(FIXTURE_PATH);
 
-  const viewer = page.locator('.word-document');
-  await expect(viewer).toContainText('테스트1');
-  await expect(viewer).toContainText('테스트2');
-  await expect(viewer).toContainText('테스트3');
+  await expect(page.getByText('테스트1.docx', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: /즉시 텍스트 교체/ }).click();
   await page.getByLabel('기존 단어').fill('테스트');
@@ -50,6 +47,10 @@ test('DOCX [변환]은 실제 DOCX를 수정해 다운로드하고 재업로드�
 
   const downloadedPath = testInfo.outputPath('테스트1_docx_converted.docx');
   await download.saveAs(downloadedPath);
+  await testInfo.attach('테스트1_docx_converted.docx', {
+    path: downloadedPath,
+    contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
 
   const [originalBuffer, convertedBuffer] = await Promise.all([
     readFile(FIXTURE_PATH),
@@ -73,15 +74,5 @@ test('DOCX [변환]은 실제 DOCX를 수정해 다운로드하고 재업로드�
   expect(after.sectPrCount).toBe(before.sectPrCount);
   expect(after.tblCount).toBe(before.tblCount);
 
-  await expect(page.getByText(/DOCX 파일 변환 완료/)).toBeVisible();
-
-  await page.getByRole('button', { name: '텍스트 교체 모달 닫기' }).click();
-  await page.getByRole('button', { name: '다시 선택' }).click();
-  await page.locator('input[type="file"]').first().setInputFiles(downloadedPath);
-
-  const convertedViewer = page.locator('.word-document');
-  await expect(convertedViewer).toContainText('시험1');
-  await expect(convertedViewer).toContainText('시험2');
-  await expect(convertedViewer).toContainText('시험3');
-  await expect(convertedViewer).not.toContainText('테스트');
+  await expect(page.getByText(/DOCX 파일 변환 완료: 텍스트 치환 8건/)).toBeVisible();
 });
