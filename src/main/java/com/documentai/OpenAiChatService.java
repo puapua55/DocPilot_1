@@ -18,9 +18,20 @@ import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
 @Service
 public class OpenAiChatService {
 
-    private static final int MAX_HISTORY = 10;
-    private static final int MAX_DOCUMENT_TEXT = 20_000;
-    private static final int DOCUMENT_EDGE_LENGTH = MAX_DOCUMENT_TEXT / 2;
+    static final int MAX_HISTORY = 10;
+    static final int MAX_DOCUMENT_TEXT = 20_000;
+    static final int DOCUMENT_EDGE_LENGTH = MAX_DOCUMENT_TEXT / 2;
+
+    private static final String DOCUMENT_ASSISTANT_INSTRUCTIONS =
+            "너는 DocPilot의 문서 작업 보조 AI다. " +
+            "사용자가 문서를 선택한 경우 제공된 문서 텍스트를 최우선 근거로 답변한다. " +
+            "제공된 문서 내용에 없는 정보는 추측하지 말고 '제공된 문서에서는 확인되지 않습니다'라고 답한다. " +
+            "문서 요약 요청 시 핵심 내용을 간결하게 정리한다. " +
+            "특정 단어, 문장, 항목을 묻는 경우 제공된 문서 텍스트 안에서만 판단한다. " +
+            "페이지 번호가 문서 텍스트에 포함되어 있으면 가능한 경우 답변에 페이지 번호를 함께 언급한다. " +
+            "문서 수정 요청이 들어와도 직접 수정했다고 말하지 않는다. " +
+            "수정이 필요한 경우 DocPilot의 정확한 문서 검색, 위치 하이라이트, 즉시 텍스트 교체 기능 사용을 제안한다. " +
+            "문서 텍스트가 제공되지 않은 경우에는 일반 질문과 DocPilot 사용 관련 질문에 답할 수 있다.";
 
     private final RestClient restClient;
     private final String apiKey;
@@ -51,14 +62,7 @@ public class OpenAiChatService {
         LimitedDocumentText limitedDocument = limitDocumentText(rawDocumentText);
 
         List<Map<String, Object>> input = new ArrayList<>();
-        input.add(message("developer",
-                "너는 DocPilot의 문서 작업 보조 AI다. " +
-                "사용자가 문서를 선택한 경우 제공된 문서 텍스트를 우선 기준으로 답변한다. " +
-                "문서에 없는 내용은 추측하지 말고 '문서에서 확인되지 않습니다'라고 답한다. " +
-                "문서 내용을 요약하거나 질문에 답할 때 페이지 표시가 제공되어 있으면 가능한 경우 페이지를 함께 언급한다. " +
-                "문서 수정이 필요한 경우 직접 수정했다고 말하지 말고 수정 제안만 한다. " +
-                "실제 수정은 DocPilot의 검색, 위치 하이라이트, 즉시 텍스트 교체 기능을 통해 사용자가 실행해야 한다. " +
-                "문서 텍스트가 제공되지 않은 경우에는 일반 질문과 DocPilot 사용 관련 질문에 답할 수 있다."));
+        input.add(message("developer", DOCUMENT_ASSISTANT_INSTRUCTIONS));
 
         String documentContext = buildDocumentContext(request, limitedDocument);
         if (!documentContext.isBlank()) {
@@ -108,7 +112,11 @@ public class OpenAiChatService {
         }
     }
 
-    private String buildDocumentContext(ChatController.ChatRequest request, LimitedDocumentText limitedDocument) {
+    static String documentAssistantInstructions() {
+        return DOCUMENT_ASSISTANT_INSTRUCTIONS;
+    }
+
+    static String buildDocumentContext(ChatController.ChatRequest request, LimitedDocumentText limitedDocument) {
         StringBuilder context = new StringBuilder();
         context.append("아래는 현재 DocPilot에서 열린 문서의 컨텍스트다.\n");
         context.append("문서명: ").append(safePromptValue(request.documentName())).append('\n');
@@ -121,12 +129,14 @@ public class OpenAiChatService {
 
         context.append("문서 내용:\n").append(limitedDocument.text());
         if (limitedDocument.truncated()) {
-            context.append("\n\n[문서가 길어 앞부분과 뒷부분만 AI에 전달되었습니다. 중간 내용은 현재 컨텍스트에 포함되지 않았습니다.]");
+            context.append("\n\n[알림: 문서가 길어 앞부분과 뒷부분만 제공되었습니다. 전체 문서를 본 것처럼 단정하지 말고 제공된 일부 내용 기준으로만 답변하세요.]");
+        } else {
+            context.append("\n\n[알림: 답변은 위에 제공된 문서 내용만 근거로 작성하세요.]");
         }
         return context.toString().trim();
     }
 
-    private LimitedDocumentText limitDocumentText(String text) {
+    static LimitedDocumentText limitDocumentText(String text) {
         if (text == null || text.isBlank()) {
             return new LimitedDocumentText("", false);
         }
@@ -141,14 +151,18 @@ public class OpenAiChatService {
         return new LimitedDocumentText(limited, true);
     }
 
-    private String safeLogValue(String value) {
+    static boolean isDocumentTextTruncated(String text) {
+        return text != null && text.length() > MAX_DOCUMENT_TEXT;
+    }
+
+    private static String safeLogValue(String value) {
         if (value == null) {
             return "";
         }
         return value.replaceAll("[\\r\\n]", " ").trim();
     }
 
-    private String safePromptValue(String value) {
+    private static String safePromptValue(String value) {
         return value == null || value.isBlank() ? "없음" : value.trim();
     }
 
@@ -187,5 +201,5 @@ public class OpenAiChatService {
         return text.toString().trim();
     }
 
-    private record LimitedDocumentText(String text, boolean truncated) {}
+    record LimitedDocumentText(String text, boolean truncated) {}
 }
