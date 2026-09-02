@@ -24,5 +24,9 @@ export async function sendChatMessage(message, context = {}) {
     throw new Error(data?.message || 'AI 응답 요청에 실패했습니다.');
   }
 
-  return data?.answer || '응답을 받지 못했습니다.';
+  return {
+    answer: data?.answer || '응답을 받지 못했습니다.',
+    intent: data?.intent || 'question_answer',
+    action: data?.action || null
+  };
 }
