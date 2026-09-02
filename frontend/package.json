@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:e2e": "playwright test",
-    "test:e2e:docx": "playwright test tests/docx-convert.spec.js"
+    "test:e2e:docx": "playwright test tests/docx-convert.spec.js",
+    "test:e2e:chat-doc": "playwright test tests/ai-document-chat.spec.js"
   },
   "dependencies": {
     "jspdf": "^3.0.4",
