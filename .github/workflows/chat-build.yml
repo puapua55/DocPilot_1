@@ -6,19 +6,25 @@ on:
       - 'codex/docx-search-highlight-replace'
     paths:
       - 'frontend/src/**'
+      - 'frontend/tests/ai-document-chat.spec.js'
       - 'frontend/package*.json'
       - 'frontend/vite.config.js'
       - 'src/main/java/**'
+      - 'src/test/java/**'
       - 'src/main/resources/**'
+      - 'docs/ai-document-chat-test-checklist.md'
       - 'pom.xml'
       - '.github/workflows/chat-build.yml'
   pull_request:
     paths:
       - 'frontend/src/**'
+      - 'frontend/tests/ai-document-chat.spec.js'
       - 'frontend/package*.json'
       - 'frontend/vite.config.js'
       - 'src/main/java/**'
+      - 'src/test/java/**'
       - 'src/main/resources/**'
+      - 'docs/ai-document-chat-test-checklist.md'
       - 'pom.xml'
       - '.github/workflows/chat-build.yml'
   workflow_dispatch:
@@ -44,6 +50,14 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+      - name: Install Chromium for document chat E2E
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run PDF and DOCX document chat E2E
+        working-directory: frontend
+        run: npm run test:e2e:chat-doc
 
       - name: Setup Java
         uses: actions/setup-java@v4
