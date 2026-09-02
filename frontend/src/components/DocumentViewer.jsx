@@ -1,14 +1,16 @@
-import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { formatFileSize, isPdfFile } from '../utils/fileUtils';
 import PdfViewer from './PdfViewer';
 import PreviewInfoBox from './PreviewInfoBox';
-import WordViewer from './WordViewer';
 import ZoomControls from './ZoomControls';
+import WordPreviewPlaceholder from './WordPreviewPlaceholder';
+import DocxViewer from './DocxViewer';
 
 const DEFAULT_SCALE = 1;
+const DOCX_DEFAULT_SCALE = 1;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
-const SCALE_STEP = 0.25;
+const SCALE_STEP = 0.1;
 
 const DocumentViewer = forwardRef(function DocumentViewer({
   file,
@@ -22,40 +24,48 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   onReselect
 }, ref) {
   const inputRef = useRef(null);
-  const viewerRef = useRef(null);
-  const [scale, setScale] = useState(DEFAULT_SCALE);
+  const innerViewerRef = useRef(null);
+  const viewerType = getViewerType(file, previewModel);
+  const [scale, setScale] = useState(() => (viewerType === 'docx' ? DOCX_DEFAULT_SCALE : DEFAULT_SCALE));
+
+  useEffect(() => {
+    if (viewerType === 'docx') {
+      setScale(DOCX_DEFAULT_SCALE);
+      return;
+    }
+
+    setScale(DEFAULT_SCALE);
+  }, [viewerType]);
 
   useImperativeHandle(ref, () => ({
-    async getDocumentText() {
-      try {
-        return await viewerRef.current?.getDocumentText?.() ?? '';
-      } catch (error) {
-        console.warn('[DocumentViewer] document text extraction failed:', error);
-        return '';
-      }
-    },
     searchDocument(keyword) {
-      return viewerRef.current?.searchDocument?.(keyword) ?? [];
+      return innerViewerRef.current?.searchDocument?.(keyword) || [];
     },
-    scrollToSearchResult(resultIndex) {
-      return viewerRef.current?.scrollToSearchResult?.(resultIndex) ?? false;
-    },
+
     highlightText(keyword) {
-      return viewerRef.current?.highlightText?.(keyword) ?? 0;
+      return innerViewerRef.current?.highlightText?.(keyword) || 0;
     },
+
     replaceText(originalText, newText) {
-      return viewerRef.current?.replaceText?.(originalText, newText) ?? 0;
+      return innerViewerRef.current?.replaceText?.(originalText, newText) || 0;
     },
+
+    scrollToSearchResult(result) {
+      return innerViewerRef.current?.scrollToSearchResult?.(result);
+    },
+
     clearHighlights() {
-      viewerRef.current?.clearHighlights?.();
+      return innerViewerRef.current?.clearHighlights?.();
     },
-    getModifiedHtml() {
-      return viewerRef.current?.getModifiedHtml?.() ?? '';
+
+    getViewerType() {
+      return viewerType;
     }
   }));
 
   if (file) {
     console.log('[DocumentViewer] file:', file);
+    console.log('[DocumentViewer] viewerType:', viewerType);
     console.log('[selectedFile.name]', file.name);
     console.log('[selectedFile.size]', file.size);
     console.log('[selectedFile.type]', file.type);
@@ -75,10 +85,9 @@ const DocumentViewer = forwardRef(function DocumentViewer({
       return <PreviewInfoBox />;
     }
 
-    if (previewModel.type === 'pdf') {
+    if (viewerType === 'pdf') {
       return (
         <PdfViewer
-          ref={viewerRef}
           file={file}
           highlightKeyword={highlightKeyword}
           replacePreview={replacePreview}
@@ -88,8 +97,26 @@ const DocumentViewer = forwardRef(function DocumentViewer({
       );
     }
 
-    if (previewModel.type === 'word') {
-      return <WordViewer ref={viewerRef} previewModel={previewModel} />;
+    if (viewerType === 'docx') {
+      return (
+        <DocxViewer
+          ref={innerViewerRef}
+          file={file}
+          scale={scale}
+          onZoomChange={setScale}
+        />
+      );
+    }
+
+    if (viewerType === 'doc') {
+      return (
+        <WordPreviewPlaceholder
+          fileName={previewModel.fileName}
+          fileSize={formatFileSize(previewModel.fileSize)}
+          message="DOC 형식은 현재 미리보기가 제한됩니다."
+          description="DOCX 파일을 사용해주세요."
+        />
+      );
     }
 
     return (
@@ -114,7 +141,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           >
             다시 선택
           </button>
-          {previewModel?.type === 'pdf' ? (
+          {previewModel && (previewModel.type === 'pdf' || viewerType === 'docx') ? (
             <ZoomControls
               scale={scale}
               onZoomOut={() => setScale((current) => Math.max(MIN_SCALE, current - SCALE_STEP))}
@@ -139,5 +166,30 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     </section>
   );
 });
+
+function getViewerType(file, previewModel) {
+  const name = file?.name?.toLowerCase?.() || previewModel?.fileName?.toLowerCase?.() || '';
+  const type = file?.type || '';
+
+  if (previewModel?.type === 'pdf' || type === 'application/pdf' || name.endsWith('.pdf')) {
+    return 'pdf';
+  }
+
+  if (
+    previewModel?.type === 'docx' ||
+    previewModel?.type === 'word' ||
+    type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    type === 'application/msword' ||
+    name.endsWith('.docx') ||
+    name.endsWith('.doc')
+  ) {
+    if (name.endsWith('.docx') || type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || previewModel?.type === 'docx') {
+      return 'docx';
+    }
+    return 'doc';
+  }
+
+  return previewModel?.type || 'unknown';
+}
 
 export default DocumentViewer;

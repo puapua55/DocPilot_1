@@ -3,8 +3,18 @@ import {
   uploadDocumentForDev,
   validateDocumentFile
 } from './fileService';
-import { extractWordContentForDev, getWordPreviewModel, isWordDocument } from './docxService';
-import { extractPdfTextByPages, getPdfPreviewModel, isPdfDocument } from './pdfService';
+import {
+  extractWordContentForDev,
+  getWordDocumentInfo,
+  getWordPreviewModel,
+  isWordDocument
+} from './docxService';
+import {
+  extractPdfTextByPages,
+  getPdfDocumentInfo,
+  getPdfPreviewModel,
+  isPdfDocument
+} from './pdfService';
 import { saveDocumentForDev } from './storageService';
 
 export async function openDocument(file) {
@@ -24,6 +34,7 @@ export async function openDocument(file) {
 
   if (isPdfDocument(documentFile)) {
     const documentText = await extractPdfTextByPages(file);
+    const documentInfo = await getPdfDocumentInfo(file);
 
     console.log('[documentText]', documentText);
     console.log('[documentText pages]', documentText.length);
@@ -33,35 +44,38 @@ export async function openDocument(file) {
       errorMessage: '',
       documentFile: {
         ...documentFile,
-        documentText
+        documentText,
+        documentInfo
       },
       preview: {
         ...getPdfPreviewModel(documentFile),
-        documentText
+        documentText,
+        documentInfo
       },
-      documentText
+      documentText,
+      documentInfo
     };
   }
 
   if (isWordDocument(documentFile)) {
-    const docxPreview = await extractWordContentForDev(file);
-    const documentText = docxPreview.documentText || [];
-
-    console.log('[DOCX] text pages:', documentText.length);
-    console.log('[DOCX] conversion messages:', docxPreview.messages);
+    const documentText = (await extractWordContentForDev(file)) || [];
+    const documentInfo = await getWordDocumentInfo(file);
 
     return {
       ok: true,
       errorMessage: '',
       documentFile: {
         ...documentFile,
-        documentText
+        documentText,
+        documentInfo
       },
       preview: {
-        ...getWordPreviewModel(documentFile, docxPreview),
-        documentText
+        ...getWordPreviewModel(documentFile),
+        documentText,
+        documentInfo
       },
-      documentText
+      documentText,
+      documentInfo
     };
   }
 

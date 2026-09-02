@@ -1,8 +1,8 @@
-import { forwardRef } from 'react';
 import DocumentViewer from './DocumentViewer';
 import UploadPanel from './UploadPanel';
 
-const DocumentWorkspace = forwardRef(function DocumentWorkspace({
+function DocumentWorkspace({
+  viewerRef,
   selectedDocument,
   previewModel,
   highlightKeyword,
@@ -13,12 +13,12 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
   onDocumentSelect,
   onDocumentClear,
   onDocumentReselect
-}, ref) {
+}) {
   return (
     <section className="panel document-panel">
       {selectedDocument ? (
         <DocumentViewer
-          ref={ref}
+          ref={viewerRef}
           file={selectedDocument.file}
           previewModel={previewModel}
           highlightKeyword={highlightKeyword}
@@ -37,6 +37,6 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
       )}
     </section>
   );
-});
+}
 
 export default DocumentWorkspace;

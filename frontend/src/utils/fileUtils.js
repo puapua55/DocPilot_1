@@ -46,6 +46,69 @@ export function formatFileSize(bytes = 0) {
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
+export function buildFileMetadataText(file = null, documentInfo = null) {
+  if (!file) {
+    return '';
+  }
+
+  const extension = getFileExtension(file.name || '');
+  const sizeBytes = Number(file.size ?? 0);
+  const lastModified = file.lastModified ? new Date(file.lastModified) : null;
+  const info = documentInfo || {};
+
+  const dimensions = [
+    `Document Type: ${info.type || 'unknown'}`,
+    `Page Count: ${info.pageCount ?? 'N/A'}`,
+    `Page Width (mm): ${info.widthMm ?? 'N/A'}`,
+    `Page Height (mm): ${info.heightMm ?? 'N/A'}`,
+    `Page Width (pt): ${info.widthPt ?? 'N/A'}`,
+    `Page Height (pt): ${info.heightPt ?? 'N/A'}`,
+    `Page Width (px): ${info.widthPx ?? 'N/A'}`,
+    `Page Height (px): ${info.heightPx ?? 'N/A'}`,
+    `Orientation: ${info.orientation ?? 'N/A'}`
+  ];
+
+  if (info.note) {
+    dimensions.push(`Note: ${info.note}`);
+  }
+
+  return [
+    'Document File Metadata',
+    '=====================',
+    `File Name: ${file.name || 'Unknown'}`,
+    `File Extension: ${extension || 'N/A'}`,
+    `File Size: ${sizeBytes} bytes`,
+    `Readable Size: ${formatFileSize(sizeBytes)}`,
+    `MIME Type: ${file.type || 'N/A'}`,
+    `Last Modified: ${lastModified ? lastModified.toISOString() : 'N/A'}`,
+    `Last Modified (Local): ${lastModified ? lastModified.toLocaleString() : 'N/A'}`,
+    `WebkitRelativePath: ${file.webkitRelativePath || 'N/A'}`,
+    '',
+    'Document Dimension Information',
+    '-----------------------------',
+    ...dimensions
+  ].join('\n');
+}
+
+export function downloadTextFile(content = '', fileName = 'document-metadata.txt') {
+  if (!content) {
+    return;
+  }
+
+  const safeFileName = fileName.toLowerCase().endsWith('.txt') ? fileName : `${fileName}.txt`;
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+
+  anchor.href = url;
+  anchor.download = safeFileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 export function validateFile(file) {
   if (!file) {
     return { valid: false, message: '문서를 선택해 주세요.' };

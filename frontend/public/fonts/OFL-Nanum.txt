@@ -1,0 +1,3 @@
+Nanum Gothic and Nanum Myeongjo are distributed under the SIL Open Font License 1.1.
+
+Use `npm run download:fonts` to download the full license text with the font files.

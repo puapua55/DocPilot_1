@@ -104,3 +104,40 @@ export async function extractPdfTextByPages(file) {
 
   return pages;
 }
+
+export async function getPdfDocumentInfo(file) {
+  if (!file || !isPdfFile(file)) {
+    return {
+      type: 'pdf',
+      pageCount: 0,
+      widthMm: 0,
+      heightMm: 0,
+      widthPt: 0,
+      heightPt: 0,
+      widthPx: 0,
+      heightPx: 0,
+      orientation: 'unknown'
+    };
+  }
+
+  const { pdf } = await loadPdfDocument(file);
+  const firstPage = await pdf.getPage(1);
+  const viewport = firstPage.getViewport({ scale: 1 });
+  const widthPt = Number(viewport.width || 0);
+  const heightPt = Number(viewport.height || 0);
+  const widthMm = Number((widthPt * 25.4 / 72).toFixed(2));
+  const heightMm = Number((heightPt * 25.4 / 72).toFixed(2));
+  const orientation = widthPt >= heightPt ? 'landscape' : 'portrait';
+
+  return {
+    type: 'pdf',
+    pageCount: Number(pdf.numPages || 0),
+    widthMm,
+    heightMm,
+    widthPt,
+    heightPt,
+    widthPx: Number(widthPt.toFixed(2)),
+    heightPx: Number(heightPt.toFixed(2)),
+    orientation
+  };
+}

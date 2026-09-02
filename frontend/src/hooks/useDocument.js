@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { openDocument, saveCurrentDocument } from '../services/documentService';
 import { getFeatureMessage } from '../services/searchService';
+import { buildFileMetadataText, downloadTextFile, getFileExtension } from '../utils/fileUtils';
 
 export function useDocument() {
   const [selectedDocument, setSelectedDocument] = useState(null);
@@ -23,6 +24,10 @@ export function useDocument() {
       setErrorMessage(result.errorMessage);
       return;
     }
+
+    const baseName = (file.name || 'document').replace(/\.[^/.]+$/, '');
+    const metadataText = buildFileMetadataText(file, result.documentInfo);
+    downloadTextFile(metadataText, `${baseName}_metadata.txt`);
 
     setSelectedDocument(result.documentFile);
     setPreviewModel(result.preview);

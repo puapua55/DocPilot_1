@@ -86,27 +86,54 @@ function escapeHtmlAttribute(value) {
   return escapeHtml(value);
 }
 
-function normalizePdfFontName(fontName) {
-  const value = String(fontName || '').toLowerCase();
+function normalizeExtractedPdfFont(fontName, styleInfo) {
+  const raw = [
+    fontName,
+    styleInfo?.fontFamily,
+    styleInfo?.fontSubstitution,
+    styleInfo?.loadedName
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
 
-  if (value.includes('malgun') || value.includes('gothic') || value.includes('맑은')) {
+  if (
+    raw.includes('malgun') ||
+    raw.includes('gothic') ||
+    raw.includes('맑은') ||
+    raw.includes('malgun gothic')
+  ) {
     return {
       cssFontFamily: 'Malgun Gothic',
-      pdfFontName: 'MalgunGothic'
+      pdfFontName: 'MalgunGothic',
+      dataFontFamily: 'MalgunGothic',
+      sourceFontName: fontName || ''
     };
   }
 
-  if (value.includes('noto')) {
+  if (
+    raw.includes('noto') ||
+    raw.includes('noto sans kr') ||
+    raw.includes('notosanskr')
+  ) {
     return {
       cssFontFamily: 'Noto Sans KR',
-      pdfFontName: 'NotoSansKR'
+      pdfFontName: 'NotoSansKR',
+      dataFontFamily: 'NotoSansKR',
+      sourceFontName: fontName || ''
     };
   }
 
   return {
     cssFontFamily: 'Malgun Gothic',
-    pdfFontName: 'MalgunGothic'
+    pdfFontName: 'MalgunGothic',
+    dataFontFamily: 'MalgunGothic',
+    sourceFontName: fontName || ''
   };
+}
+
+function normalizePdfFontName(fontName) {
+  return normalizeExtractedPdfFont(fontName, null);
 }
 
 function getViewportPoint(viewport, x, y) {
@@ -388,7 +415,7 @@ function dedupeLines(lines) {
   return result;
 }
 
-function extractTexts(textItems, viewport) {
+function extractTexts(textItems, viewport, styles = {}) {
   if (!PDF_UTIL?.transform) {
     console.warn('[HtmlStructure] pdfjs Util.transform is not available');
     return [];
@@ -408,6 +435,16 @@ function extractTexts(textItems, viewport) {
       const width = item.width || text.length * fontSize * 0.55;
       const x = tx[4];
       const y = tx[5] - height;
+      const styleInfo = styles?.[item.fontName];
+      const fontInfo = normalizeExtractedPdfFont(item.fontName, styleInfo);
+
+      console.log('[PdfFontExtract] item fontName:', item.fontName);
+      console.log('[PdfFontExtract] styles:', styleInfo);
+      console.log('[PdfFontExtract] source font:', {
+        itemFontName: item.fontName,
+        styleInfo,
+        normalized: fontInfo
+      });
 
       return {
         id: `text-${index}`,
@@ -417,7 +454,9 @@ function extractTexts(textItems, viewport) {
         width: round(width),
         height: round(height),
         fontSize: round(fontSize),
-        fontFamily: item.fontName || 'Helvetica'
+        fontFamily: fontInfo.dataFontFamily,
+        normalizedFont: fontInfo,
+        sourceFontName: fontInfo.sourceFontName
       };
     })
     .filter(Boolean);
@@ -485,7 +524,9 @@ function mergeTextItemsIntoLineTexts(texts) {
         ...items.map((item) => (item?.y ?? 0) + (item?.height || item?.fontSize || 10))
       );
       const fontSize = Math.max(...items.map((item) => item?.fontSize || 10));
-      const fontFamily = items.find((item) => item?.fontFamily)?.fontFamily || 'Helvetica';
+      const representativeItem = items.find((item) => item?.fontFamily) || items[0] || {};
+      const fontFamily = representativeItem.fontFamily || 'MalgunGothic';
+      const normalizedFont = representativeItem.normalizedFont || normalizePdfFontName(fontFamily);
 
       return {
         id: `merged-text-${lineIndex}-${groupIndex}`,
@@ -496,7 +537,8 @@ function mergeTextItemsIntoLineTexts(texts) {
         height: round(bottom - y),
         fontSize: round(fontSize),
         fontFamily,
-        normalizedFont: normalizePdfFontName(fontFamily),
+        normalizedFont,
+        sourceFontName: representativeItem.sourceFontName || normalizedFont.sourceFontName || '',
         sourceItems: items
       };
     });
@@ -1027,7 +1069,7 @@ export async function extractPdfToHtmlStructure(file) {
     const page = await pdf.getPage(pageNumber);
     const viewport = page.getViewport({ scale: 1 });
     const textContent = await page.getTextContent();
-    const rawTexts = extractTexts(textContent.items || [], viewport);
+    const rawTexts = extractTexts(textContent.items || [], viewport, textContent.styles || {});
     const mergedTexts = mergeTextItemsIntoLineTexts(rawTexts);
 
     console.log('========== [ConvertTrace] line 추출 호출 직전 ==========');
@@ -1186,7 +1228,10 @@ export function buildHtmlFromStructure(htmlStructure) {
         const cssFontFamily = normalizedFont.cssFontFamily;
         const pdfFontName = normalizedFont.pdfFontName;
 
-        return `<span class="pdf-text" data-font-family="${escapeHtmlAttribute(pdfFontName)}" style="position:absolute; left:${textItem.x}px; top:${textItem.y}px; font-size:${textItem.fontSize}px; font-family:'${escapeHtmlAttribute(cssFontFamily)}';">${escapeHtml(textItem.text)}</span>`;
+        const dataFontFamily = normalizedFont.dataFontFamily || pdfFontName;
+        const sourceFontName = normalizedFont.sourceFontName || textItem.sourceFontName || '';
+
+        return `<span class="pdf-text" data-font-family="${escapeHtmlAttribute(dataFontFamily)}" data-source-font="${escapeHtmlAttribute(sourceFontName)}" style="position:absolute; left:${textItem.x}px; top:${textItem.y}px; font-size:${textItem.fontSize}px; font-family:'${escapeHtmlAttribute(cssFontFamily)}';">${escapeHtml(textItem.text)}</span>`;
       }).join('');
 
       const htmlText = `<div class="pdf-page" data-page="${page.pageNumber}" style="position:relative; width:${page.width}px; height:${page.height}px;">${linesHtml}${textsHtml}</div>`;

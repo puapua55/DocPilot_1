@@ -75,7 +75,7 @@ export function isWordDocument(documentFile) {
 
 export function getWordPreviewModel(documentFile, docxPreview = {}) {
   return {
-    type: 'word',
+    type: 'docx',
     fileName: documentFile.name,
     fileSize: documentFile.size,
     html: docxPreview.html || '',
@@ -116,4 +116,33 @@ export async function extractWordContentForDev(file) {
       renderError: 'DOCX 문서를 표시하지 못했습니다. 파일이 손상되지 않았는지 확인해주세요.'
     };
   }
+}
+
+export async function getWordDocumentInfo(file) {
+  if (!file || !isWordFile(file)) {
+    return {
+      type: 'docx',
+      pageCount: 0,
+      widthMm: 210,
+      heightMm: 297,
+      widthPt: 595.28,
+      heightPt: 841.89,
+      widthPx: 794,
+      heightPx: 1123,
+      orientation: 'portrait'
+    };
+  }
+
+  return {
+    type: 'docx',
+    pageCount: 1,
+    widthMm: 210,
+    heightMm: 297,
+    widthPt: 595.28,
+    heightPt: 841.89,
+    widthPx: 794,
+    heightPx: 1123,
+    orientation: 'portrait',
+    note: '기본 DOCX 문서 크기는 A4 기준(210x297 mm)으로 계산됩니다.'
+  };
 }

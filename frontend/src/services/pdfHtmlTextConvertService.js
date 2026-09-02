@@ -3,29 +3,13 @@ import {
   extractPdfToHtmlStructure,
   isPageEdgeArtifactLine
 } from './pdfHtmlStructureService';
+import {
+  registerAvailablePdfFonts,
+  resolvePdfFontName,
+  setPdfFontSafe
+} from './pdfFontRegistry';
 
 const TEXT_BASELINE_RATIO = 0.85;
-const FONT_DEFINITIONS = [
-  {
-    pdfFontName: 'MalgunGothic',
-    fileName: 'MalgunGothic-Regular.ttf',
-    candidates: [
-      '/fonts/MalgunGothic-Regular.base64.txt',
-      '/fonts/MalgunGothic-Regular.base64',
-      '/fonts/malgun.base64.txt',
-      '/fonts/malgun.ttf.base64'
-    ]
-  },
-  {
-    pdfFontName: 'NotoSansKR',
-    fileName: 'NotoSansKR-Regular.ttf',
-    candidates: [
-      '/fonts/NotoSansKR-Regular.base64.txt',
-      '/fonts/NotoSansKR-Regular.base64',
-      '/fonts/NotoSansKR-Regular.ttf.base64'
-    ]
-  }
-];
 
 function parsePx(value) {
   return Number(String(value || '').replace('px', '').trim()) || 0;
@@ -33,20 +17,6 @@ function parsePx(value) {
 
 function getStylePx(element, propertyName) {
   return parsePx(element?.style?.[propertyName]);
-}
-
-function normalizeHtmlFontToPdfFont(fontFamily) {
-  const value = String(fontFamily || '').toLowerCase();
-
-  if (value.includes('malgun') || value.includes('gothic') || value.includes('맑은')) {
-    return 'MalgunGothic';
-  }
-
-  if (value.includes('noto')) {
-    return 'NotoSansKR';
-  }
-
-  return null;
 }
 
 function downloadBlob(blob, outputFileName) {
@@ -248,12 +218,12 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
     compress: true
   });
 
-  const fontRegistration = await registerPreferredKoreanFont(doc);
-  const selectedFontName = fontRegistration.selectedFontName;
-  const registeredFonts = fontRegistration.registeredFonts;
+  const registeredFonts = await registerAvailablePdfFonts(doc);
+  const selectedFontName = resolvePdfFontName(firstPage.texts?.[0]?.fontFamily || 'MalgunGothic', registeredFonts);
 
-  console.log('[PdfFont] selected font:', selectedFontName);
-  console.log('[PdfFont] registered fonts:', Array.from(registeredFonts));
+  console.log('[PdfFont] selectedFontName:', selectedFontName);
+  console.log('[PdfFont] available:', Array.from(registeredFonts));
+  console.log('[PdfFont] fontList:', doc.getFontList?.());
 
   if (!selectedFontName) {
     console.warn('[PdfFont] No Korean font registered. jsPDF default font will be used and text drawing will continue.');
@@ -285,27 +255,26 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
       const fontSize = textItem.fontSize || 10;
       const drawX = Number.isFinite(textItem.left) ? textItem.left : 0;
       const drawY = (Number.isFinite(textItem.top) ? textItem.top : 0) + fontSize * TEXT_BASELINE_RATIO;
-      const requestedFontName = normalizeHtmlFontToPdfFont(textItem.fontFamily);
-      const drawFontName = requestedFontName && registeredFonts.has(requestedFontName)
-        ? requestedFontName
-        : selectedFontName;
+      const requestedFont = textItem.fontFamily || 'MalgunGothic';
+      const resolvedFont = resolvePdfFontName(requestedFont, registeredFonts);
 
       console.log('[PdfText] draw:', {
         textValue,
+        requestedFont,
+        resolvedFont,
+        registeredFonts: Array.from(registeredFonts),
         drawX,
         drawY,
         fontSize,
-        requestedFontName,
         selectedFontName,
-        drawFontName,
         index: textIndex
       });
 
       doc.setTextColor(0, 0, 0);
       doc.setFontSize(fontSize);
 
-      if (drawFontName && registeredFonts.has(drawFontName)) {
-        doc.setFont(drawFontName, 'normal');
+      if (resolvedFont) {
+        setPdfFontSafe(doc, resolvedFont, registeredFonts);
       } else {
         console.warn('[PdfFont] no registered Korean font selected. text draw continues with jsPDF default font.');
       }
@@ -331,95 +300,4 @@ export function makeHtmlConvertedFileName(fileName = 'document.pdf') {
   const baseName = fileName.replace(/\.pdf$/i, '');
 
   return `${baseName}_html_converted.pdf`;
-}
-
-async function registerPreferredKoreanFont(doc) {
-  // Font registrations in jsPDF belong to each document instance. Never carry
-  // a successful registration flag from a previous jsPDF instance into a new one.
-  const registeredFonts = new Set();
-
-  for (const fontDefinition of FONT_DEFINITIONS) {
-    const registered = await tryRegisterFont(doc, fontDefinition, registeredFonts);
-
-    if (registered) {
-      if (fontDefinition.pdfFontName === 'MalgunGothic') {
-        console.log('[PdfFont] MalgunGothic registered');
-      } else {
-        console.log('[PdfFont] fallback NotoSansKR registered');
-      }
-
-      return {
-        selectedFontName: fontDefinition.pdfFontName,
-        registeredFonts
-      };
-    }
-  }
-
-  console.warn('[PdfFont] No Korean font registered. Use jsPDF default font.');
-
-  return {
-    selectedFontName: null,
-    registeredFonts
-  };
-}
-
-async function tryRegisterFont(doc, fontDefinition, registeredFonts) {
-  try {
-    const fontBase64 = await loadFontBase64(fontDefinition.candidates);
-
-    if (!fontBase64) {
-      console.warn('[PdfFont] font base64 missing:', fontDefinition.pdfFontName);
-      return false;
-    }
-
-    doc.addFileToVFS(fontDefinition.fileName, fontBase64);
-    doc.addFont(fontDefinition.fileName, fontDefinition.pdfFontName, 'normal');
-    registeredFonts.add(fontDefinition.pdfFontName);
-    return true;
-  } catch (error) {
-    console.warn(`[PdfFont] failed to register ${fontDefinition.pdfFontName}:`, error);
-    return false;
-  }
-}
-
-async function loadFontBase64(candidates) {
-  if (
-    candidates?.some((candidate) => candidate.includes('Malgun')) &&
-    typeof window !== 'undefined' &&
-    typeof window.__DOC_PILOT_MALGUN_GOTHIC_BASE64__ === 'string'
-  ) {
-    return window.__DOC_PILOT_MALGUN_GOTHIC_BASE64__;
-  }
-
-  if (
-    candidates?.some((candidate) => candidate.includes('NotoSansKR')) &&
-    typeof window !== 'undefined' &&
-    typeof window.__DOC_PILOT_KOREAN_FONT_BASE64__ === 'string'
-  ) {
-    return window.__DOC_PILOT_KOREAN_FONT_BASE64__;
-  }
-
-  if (typeof fetch !== 'function') {
-    return null;
-  }
-
-  for (const candidate of candidates) {
-    try {
-      const response = await fetch(candidate);
-
-      if (!response.ok) {
-        continue;
-      }
-
-      const base64 = (await response.text()).trim();
-
-      if (base64) {
-        return base64;
-      }
-    } catch (error) {
-      console.warn('[HtmlTextConvert] failed to load font candidate:', candidate, error);
-    }
-  }
-
-  return null;
 }
