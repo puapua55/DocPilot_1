@@ -19,7 +19,8 @@ import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
 public class OpenAiChatService {
 
     private static final int MAX_HISTORY = 10;
-    private static final int MAX_DOCUMENT_TEXT = 30_000;
+    private static final int MAX_DOCUMENT_TEXT = 20_000;
+    private static final int DOCUMENT_EDGE_LENGTH = MAX_DOCUMENT_TEXT / 2;
 
     private final RestClient restClient;
     private final String apiKey;
@@ -42,12 +43,24 @@ public class OpenAiChatService {
             );
         }
 
+        String rawDocumentText = request.documentText() == null ? "" : request.documentText();
+        System.out.println("[Chat] documentName=" + safeLogValue(request.documentName()));
+        System.out.println("[Chat] documentType=" + safeLogValue(request.documentType()));
+        System.out.println("[Chat] documentTextLength=" + rawDocumentText.length());
+
+        LimitedDocumentText limitedDocument = limitDocumentText(rawDocumentText);
+
         List<Map<String, Object>> input = new ArrayList<>();
         input.add(message("developer",
-                "당신은 DocPilot AI입니다. 사용자의 일반 질문에 한국어로 명확하고 실용적으로 답하세요. " +
-                "현재는 일반 챗봇 1차 연결 단계이며, 문서 편집 동작을 직접 수행했다고 주장하지 마세요."));
+                "너는 DocPilot의 문서 작업 보조 AI다. " +
+                "사용자가 문서를 선택한 경우 제공된 문서 텍스트를 우선 기준으로 답변한다. " +
+                "문서에 없는 내용은 추측하지 말고 '문서에서 확인되지 않습니다'라고 답한다. " +
+                "문서 내용을 요약하거나 질문에 답할 때 페이지 표시가 제공되어 있으면 가능한 경우 페이지를 함께 언급한다. " +
+                "문서 수정이 필요한 경우 직접 수정했다고 말하지 말고 수정 제안만 한다. " +
+                "실제 수정은 DocPilot의 검색, 위치 하이라이트, 즉시 텍스트 교체 기능을 통해 사용자가 실행해야 한다. " +
+                "문서 텍스트가 제공되지 않은 경우에는 일반 질문과 DocPilot 사용 관련 질문에 답할 수 있다."));
 
-        String documentContext = buildDocumentContext(request);
+        String documentContext = buildDocumentContext(request, limitedDocument);
         if (!documentContext.isBlank()) {
             input.add(message("developer", documentContext));
         }
@@ -95,23 +108,48 @@ public class OpenAiChatService {
         }
     }
 
-    private String buildDocumentContext(ChatController.ChatRequest request) {
+    private String buildDocumentContext(ChatController.ChatRequest request, LimitedDocumentText limitedDocument) {
         StringBuilder context = new StringBuilder();
-        if (request.documentName() != null && !request.documentName().isBlank()) {
-            context.append("현재 선택된 문서명: ").append(request.documentName().trim()).append('\n');
-        }
-        if (request.documentType() != null && !request.documentType().isBlank()) {
-            context.append("현재 뷰어 유형: ").append(request.documentType().trim()).append('\n');
+        context.append("아래는 현재 DocPilot에서 열린 문서의 컨텍스트다.\n");
+        context.append("문서명: ").append(safePromptValue(request.documentName())).append('\n');
+        context.append("문서 유형: ").append(safePromptValue(request.documentType())).append('\n');
+
+        if (limitedDocument.text().isBlank()) {
+            context.append("문서 내용: 현재 선택된 문서 내용은 전달되지 않았습니다.");
+            return context.toString();
         }
 
-        // 1차 연결에서도 인터페이스는 유지하되, 텍스트가 준비된 경우에만 제한적으로 컨텍스트에 포함한다.
-        if (request.documentText() != null && !request.documentText().isBlank()) {
-            String text = request.documentText().length() > MAX_DOCUMENT_TEXT
-                    ? request.documentText().substring(0, MAX_DOCUMENT_TEXT)
-                    : request.documentText();
-            context.append("현재 문서에서 추출된 텍스트(일부):\n").append(text);
+        context.append("문서 내용:\n").append(limitedDocument.text());
+        if (limitedDocument.truncated()) {
+            context.append("\n\n[문서가 길어 앞부분과 뒷부분만 AI에 전달되었습니다. 중간 내용은 현재 컨텍스트에 포함되지 않았습니다.]");
         }
         return context.toString().trim();
+    }
+
+    private LimitedDocumentText limitDocumentText(String text) {
+        if (text == null || text.isBlank()) {
+            return new LimitedDocumentText("", false);
+        }
+
+        if (text.length() <= MAX_DOCUMENT_TEXT) {
+            return new LimitedDocumentText(text, false);
+        }
+
+        String limited = text.substring(0, DOCUMENT_EDGE_LENGTH)
+                + "\n\n[... 문서 중간 내용 생략 ...]\n\n"
+                + text.substring(text.length() - DOCUMENT_EDGE_LENGTH);
+        return new LimitedDocumentText(limited, true);
+    }
+
+    private String safeLogValue(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replaceAll("[\\r\\n]", " ").trim();
+    }
+
+    private String safePromptValue(String value) {
+        return value == null || value.isBlank() ? "없음" : value.trim();
     }
 
     private Map<String, Object> message(String role, String content) {
@@ -148,4 +186,6 @@ public class OpenAiChatService {
         }
         return text.toString().trim();
     }
+
+    private record LimitedDocumentText(String text, boolean truncated) {}
 }
