@@ -26,6 +26,14 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   const [scale, setScale] = useState(DEFAULT_SCALE);
 
   useImperativeHandle(ref, () => ({
+    async getDocumentText() {
+      try {
+        return await viewerRef.current?.getDocumentText?.() ?? '';
+      } catch (error) {
+        console.warn('[DocumentViewer] document text extraction failed:', error);
+        return '';
+      }
+    },
     searchDocument(keyword) {
       return viewerRef.current?.searchDocument?.(keyword) ?? [];
     },
@@ -70,6 +78,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     if (previewModel.type === 'pdf') {
       return (
         <PdfViewer
+          ref={viewerRef}
           file={file}
           highlightKeyword={highlightKeyword}
           replacePreview={replacePreview}
