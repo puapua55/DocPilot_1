@@ -21,58 +21,47 @@ async function mockChat(page) {
   });
 }
 
-async function send(page, text) {
-  const input = page.getByPlaceholder('DocPilot AI에게 질문해보세요.');
-  await input.fill(text);
-  await input.press('Enter');
-}
-
-async function uploadDocx(page) {
-  await page.locator('input[type="file"]').first().setInputFiles({ name: 'tool-action.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: await createDocxBuffer() });
-  await expect(page.locator('.word-document')).toBeVisible();
-}
+async function send(page, text) { const input = page.getByPlaceholder('DocPilot AI에게 질문해보세요.'); await input.fill(text); await input.press('Enter'); }
+async function uploadDocx(page) { await page.locator('input[type="file"]').first().setInputFiles({ name: 'tool-action.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: await createDocxBuffer() }); await expect(page.locator('.word-document')).toBeVisible(); }
 
 test.beforeEach(async ({ page }) => { await mockChat(page); await page.goto('/'); });
 
-test('search action waits for approval then runs existing DOCX search', async ({ page }) => {
+test('search action card waits for approval and records result', async ({ page }) => {
   await uploadDocx(page); await send(page, '테스트 찾아줘');
-  const button = page.getByRole('button', { name: '검색 실행' });
-  await expect(button).toBeVisible();
-  await button.click();
-  await expect(page.getByText(/검색 결과 1건/)).toBeVisible();
+  const card = page.locator('.ai-action-card[data-action-type="search"]');
+  await expect(card).toContainText('작업 준비됨'); await expect(card).toContainText('문서 검색'); await expect(card).toContainText('검색어'); await expect(card).toContainText('테스트'); await expect(card).toContainText('tool-action.docx');
+  const button = page.getByRole('button', { name: '검색 실행' }); await expect(button).toBeVisible(); await button.click();
+  await expect(page.getByText(/검색 결과: 1건/)).toBeVisible();
 });
 
-test('highlight action waits for approval then highlights viewer', async ({ page }) => {
+test('highlight action card waits for approval and records count', async ({ page }) => {
   await uploadDocx(page); await send(page, '테스트 하이라이트해줘');
+  const card = page.locator('.ai-action-card[data-action-type="highlight"]');
+  await expect(card).toContainText('위치 하이라이트'); await expect(card).toContainText('대상 단어'); await expect(card).toContainText('테스트');
   await page.getByRole('button', { name: '하이라이트 실행' }).click();
-  await expect(page.locator('.docx-highlight')).toHaveCount(2);
-  await expect(page.getByText(/하이라이트를 2건 적용/)).toBeVisible();
+  await expect(page.locator('.docx-highlight')).toHaveCount(2); await expect(page.getByText(/적용 건수: 2건/)).toBeVisible();
 });
 
-test('replace apply waits for approval then changes only viewer DOM', async ({ page }) => {
+test('replace action card waits for approval then changes only viewer DOM', async ({ page }) => {
   await uploadDocx(page); await send(page, '테스트를 시험으로 바꿔줘');
+  const card = page.locator('.ai-action-card[data-action-type="replace"]');
+  await expect(card).toContainText('텍스트 치환'); await expect(card).toContainText('기존 단어'); await expect(card).toContainText('변경 단어'); await expect(card).toContainText('시험');
+  await expect(page.getByRole('button', { name: '화면에 적용' })).toBeVisible(); await expect(page.getByRole('button', { name: '변환 파일 다운로드' })).toBeVisible();
   await page.getByRole('button', { name: '화면에 적용' }).click();
-  await expect(page.locator('.word-document')).toContainText('시험 문서입니다. 시험 항목입니다.');
-  await expect(page.getByText(/치환을 2건 적용/)).toBeVisible();
+  await expect(page.locator('.word-document')).toContainText('시험 문서입니다. 시험 항목입니다.'); await expect(page.getByText(/적용 건수: 2건/)).toBeVisible();
 });
 
-test('replace convert downloads converted DOCX after approval', async ({ page }) => {
+test('replace convert prevents duplicate click and records downloaded file name', async ({ page }) => {
   await uploadDocx(page); await send(page, '테스트를 시험으로 바꿔줘');
-  const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '변환 파일 다운로드' }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe('tool-action_docx_converted.docx');
-  const buffer = await (await import('node:fs/promises')).readFile(await download.path());
-  const zip = await JSZip.loadAsync(buffer, { checkCRC32: true });
-  const documentXml = await zip.file('word/document.xml').async('string');
-  const stylesXml = await zip.file('word/styles.xml').async('string');
-  expect(documentXml).toContain('시험');
-  expect(documentXml).not.toContain('테스트');
-  expect(stylesXml).toContain('TableGrid');
+  const button = page.getByRole('button', { name: '변환 파일 다운로드' }); const downloadPromise = page.waitForEvent('download'); await button.click();
+  await expect(page.getByRole('button', { name: '변환 파일 생성 중...' })).toBeDisabled();
+  const download = await downloadPromise; expect(download.suggestedFilename()).toBe('tool-action_docx_converted.docx');
+  const buffer = await (await import('node:fs/promises')).readFile(await download.path()); const zip = await JSZip.loadAsync(buffer, { checkCRC32: true });
+  const documentXml = await zip.file('word/document.xml').async('string'); const stylesXml = await zip.file('word/styles.xml').async('string');
+  expect(documentXml).toContain('시험'); expect(documentXml).not.toContain('테스트'); expect(stylesXml).toContain('TableGrid');
+  await expect(page.getByText(/파일명: tool-action_docx_converted\.docx/)).toBeVisible();
 });
 
 test('document action is not exposed without a selected document', async ({ page }) => {
-  await send(page, '테스트 찾아줘');
-  await expect(page.getByText('현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.')).toBeVisible();
-  await expect(page.getByRole('button', { name: '검색 실행' })).toHaveCount(0);
+  await send(page, '테스트 찾아줘'); await expect(page.getByText('현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.')).toBeVisible(); await expect(page.getByRole('button', { name: '검색 실행' })).toHaveCount(0);
 });
