@@ -10,7 +10,6 @@ const WORD_TEXT_XML_PATHS = new Set([
 const ZIP_LOCAL_FILE_HEADER = 0x04034b50;
 const ZIP_CENTRAL_FILE_HEADER = 0x02014b50;
 const ZIP_END_OF_CENTRAL_DIRECTORY = 0x06054b50;
-const UTF8_FLAG = 0x0800;
 
 export function makeDocxConvertedFileName(fileName = 'document.docx') {
   const baseName = String(fileName || 'document.docx').replace(/\.docx$/i, '');
@@ -26,7 +25,6 @@ export function downloadBlob(blob, fileName) {
   document.body.appendChild(anchor);
   anchor.click();
 
-  // Playwright/브라우저가 download 이벤트와 Blob URL을 소비할 시간을 준 뒤 정리한다.
   window.setTimeout(() => {
     anchor.remove();
     URL.revokeObjectURL(url);
@@ -100,10 +98,9 @@ async function readZipText(zip, path) {
 
 function findEocd(bytes) {
   const minOffset = Math.max(0, bytes.length - 0xffff - 22);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let offset = bytes.length - 22; offset >= minOffset; offset -= 1) {
-    if (new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, true) === ZIP_END_OF_CENTRAL_DIRECTORY) {
-      return offset;
-    }
+    if (view.getUint32(offset, true) === ZIP_END_OF_CENTRAL_DIRECTORY) return offset;
   }
   throw new Error('DOCX ZIP central directory를 찾지 못했습니다.');
 }
@@ -122,15 +119,22 @@ function parseZipEntries(bytes) {
       throw new Error('DOCX ZIP central directory 엔트리가 올바르지 않습니다.');
     }
     const flags = view.getUint16(cursor + 8, true);
+    const compression = view.getUint16(cursor + 10, true);
+    const crc = view.getUint32(cursor + 16, true);
+    const compressedSize = view.getUint32(cursor + 20, true);
+    const uncompressedSize = view.getUint32(cursor + 24, true);
     const nameLength = view.getUint16(cursor + 28, true);
     const extraLength = view.getUint16(cursor + 30, true);
     const commentLength = view.getUint16(cursor + 32, true);
     const centralLength = 46 + nameLength + extraLength + commentLength;
-    const nameBytes = bytes.slice(cursor + 46, cursor + 46 + nameLength);
-    const name = decoder.decode(nameBytes);
+    const name = decoder.decode(bytes.slice(cursor + 46, cursor + 46 + nameLength));
     entries.push({
       name,
       flags,
+      compression,
+      crc,
+      compressedSize,
+      uncompressedSize,
       centralBytes: bytes.slice(cursor, cursor + centralLength),
       localOffset: view.getUint32(cursor + 42, true)
     });
@@ -186,7 +190,7 @@ function makeStoredLocalEntry(originalBytes, entry, contentBytes) {
   headerView.setUint32(0, ZIP_LOCAL_FILE_HEADER, true);
   headerView.setUint16(4, view.getUint16(entry.localOffset + 4, true), true);
   headerView.setUint16(6, entry.flags & ~0x0008, true);
-  headerView.setUint16(8, 0, true); // STORE
+  headerView.setUint16(8, 0, true);
   headerView.setUint16(10, view.getUint16(entry.localOffset + 10, true), true);
   headerView.setUint16(12, view.getUint16(entry.localOffset + 12, true), true);
   headerView.setUint32(14, crc32(contentBytes), true);
@@ -202,7 +206,7 @@ function patchCentralEntry(entry, localOffset, contentBytes) {
   const view = new DataView(central.buffer, central.byteOffset, central.byteLength);
   view.setUint16(8, entry.flags & ~0x0008, true);
   if (contentBytes) {
-    view.setUint16(10, 0, true); // STORE
+    view.setUint16(10, 0, true);
     view.setUint32(16, crc32(contentBytes), true);
     view.setUint32(20, contentBytes.length, true);
     view.setUint32(24, contentBytes.length, true);
@@ -218,8 +222,7 @@ function rebuildDocxZip(originalBytes, replacements) {
   const newOffsets = new Map();
   let outputOffset = 0;
 
-  const localOrder = [...entries].sort((a, b) => a.localOffset - b.localOffset);
-  for (const entry of localOrder) {
+  for (const entry of [...entries].sort((a, b) => a.localOffset - b.localOffset)) {
     newOffsets.set(entry.name, outputOffset);
     const replacement = replacements.get(entry.name);
     const part = replacement
@@ -245,24 +248,78 @@ function rebuildDocxZip(originalBytes, replacements) {
   return concatBytes([...localParts, ...centralParts, eocd]);
 }
 
-async function validateConvertedDocxBlob(blob, originalText, newText) {
+function getStoredEntryContent(bytes, entry) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(entry.localOffset, true) !== ZIP_LOCAL_FILE_HEADER) {
+    throw new Error(`DOCX ZIP local header를 읽지 못했습니다: ${entry.name}`);
+  }
+  if (entry.compression !== 0) {
+    throw new Error(`검증 대상 XML이 STORE 방식이 아닙니다: ${entry.name}`);
+  }
+  const nameLength = view.getUint16(entry.localOffset + 26, true);
+  const extraLength = view.getUint16(entry.localOffset + 28, true);
+  const dataOffset = entry.localOffset + 30 + nameLength + extraLength;
+  return bytes.slice(dataOffset, dataOffset + entry.compressedSize);
+}
+
+function equalBytes(left, right) {
+  if (!left || !right || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+async function validateConvertedDocxBlob(blob, originalBytes, replacements, originalText, newText) {
   try {
-    const checkZip = await JSZip.loadAsync(await blob.arrayBuffer(), { checkCRC32: true });
-    const documentXml = await readZipText(checkZip, 'word/document.xml');
-    const stylesFile = checkZip.file('word/styles.xml');
-    const stylesXml = stylesFile ? await stylesFile.async('string') : '';
-    if (!documentXml) throw new Error('word/document.xml을 읽을 수 없습니다.');
-    if (stylesFile && !stylesXml) throw new Error('word/styles.xml을 읽을 수 없습니다.');
+    const convertedBytes = new Uint8Array(await blob.arrayBuffer());
+    const originalParsed = parseZipEntries(originalBytes);
+    const convertedParsed = parseZipEntries(convertedBytes);
+    const originalByName = new Map(originalParsed.entries.map((entry) => [entry.name, entry]));
+    const convertedByName = new Map(convertedParsed.entries.map((entry) => [entry.name, entry]));
+
+    if (convertedParsed.entries.length !== originalParsed.entries.length) {
+      throw new Error('ZIP 엔트리 개수가 원본과 다릅니다.');
+    }
+
+    for (const entry of originalParsed.entries) {
+      if (!convertedByName.has(entry.name)) throw new Error(`ZIP 엔트리가 누락되었습니다: ${entry.name}`);
+    }
+
+    for (const [path, expectedContent] of replacements) {
+      const entry = convertedByName.get(path);
+      if (!entry) throw new Error(`변경 XML 엔트리를 찾지 못했습니다: ${path}`);
+      const actualContent = getStoredEntryContent(convertedBytes, entry);
+      if (!equalBytes(actualContent, expectedContent)) throw new Error(`변경 XML 내용 검증에 실패했습니다: ${path}`);
+      if (entry.crc !== crc32(expectedContent) || entry.uncompressedSize !== expectedContent.length) {
+        throw new Error(`변경 XML CRC/크기 검증에 실패했습니다: ${path}`);
+      }
+    }
+
+    const documentEntry = convertedByName.get('word/document.xml');
+    const documentBytes = replacements.get('word/document.xml');
+    if (!documentEntry || !documentBytes) throw new Error('word/document.xml 변경 결과를 확인할 수 없습니다.');
+    const documentXml = new TextDecoder('utf-8').decode(getStoredEntryContent(convertedBytes, documentEntry));
+
+    const originalStyles = originalByName.get('word/styles.xml');
+    const convertedStyles = convertedByName.get('word/styles.xml');
+    const stylesPreserved = !originalStyles || (
+      convertedStyles &&
+      originalStyles.crc === convertedStyles.crc &&
+      originalStyles.compressedSize === convertedStyles.compressedSize &&
+      originalStyles.uncompressedSize === convertedStyles.uncompressedSize &&
+      equalBytes(
+        originalBytes.slice(originalStyles.localOffset, originalStyles.localEnd),
+        convertedBytes.slice(convertedStyles.localOffset, convertedStyles.localEnd)
+      )
+    );
+    if (!stylesPreserved) throw new Error('word/styles.xml 원본 ZIP record 보존 검증에 실패했습니다.');
 
     const validation = {
-      canReadDocumentXml: Boolean(documentXml),
-      canReadStylesXml: stylesFile ? Boolean(stylesXml) : null,
+      zipEntryCount: convertedParsed.entries.length,
       documentHasNewText: documentXml.includes(String(newText ?? '')),
       documentHasOldText: documentXml.includes(String(originalText ?? '')),
-      stylesHasTableGrid: stylesXml
-        ? stylesXml.includes('TableGrid') || stylesXml.includes('Table Grid') || stylesXml.includes('w:tblBorders')
-        : null,
-      stylesLength: stylesXml.length,
+      stylesPreserved,
       ...getXmlPrefixSummary(documentXml)
     };
     console.log('[DocxConvert] validation:', validation);
@@ -325,18 +382,16 @@ export async function convertDocxFileWithTextReplace(file, originalText, newText
     console.log('[DocxConvert] xml replace:', { path, replaceCount: result.replaceCount });
   }
 
-  // JSZip/PizZip으로 전체 패키지를 재압축하지 않는다. 수정하지 않은 styles.xml 등은
-  // 원본의 local ZIP record(압축 데이터 포함)를 그대로 복사하고, 변경 XML 엔트리만 STORE로 다시 쓴다.
   const convertedBytes = rebuildDocxZip(originalBytes, replacements);
   const blob = new Blob([convertedBytes], { type: DOCX_MIME_TYPE });
-  await validateConvertedDocxBlob(blob, target, replacement);
+  await validateConvertedDocxBlob(blob, originalBytes, replacements, target, replacement);
 
   const outputFileName = makeDocxConvertedFileName(file.name);
   downloadBlob(blob, outputFileName);
   console.log('[DocxConvert] done:', {
     outputFileName,
     replaceCount: totalReplaceCount,
-    integrityCheck: 'raw ZIP passthrough + JSZip CRC/document.xml/styles.xml read passed'
+    integrityCheck: 'raw ZIP structure + changed XML CRC + styles raw record preservation passed'
   });
   return { outputFileName, replaceCount: totalReplaceCount };
 }
