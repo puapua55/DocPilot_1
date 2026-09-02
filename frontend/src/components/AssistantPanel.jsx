@@ -1,4 +1,5 @@
 import ChatInput from './ChatInput';
+import './ChatPanel.css';
 
 const CARDS = [
   {
