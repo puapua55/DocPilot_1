@@ -7,7 +7,6 @@ import ReplaceModal from './components/ReplaceModal';
 import SearchModal from './components/SearchModal';
 import { useChat } from './hooks/useChat';
 import { useDocument } from './hooks/useDocument';
-import { countKeywordMatches } from './services/highlightService';
 import { applyTextReplacement, convertTextReplacement, getDocumentFileType } from './services/documentReplaceService';
 import { searchKeywordInDocument } from './services/searchService';
 
@@ -97,19 +96,77 @@ function App() {
     setSelectedSearchResult(null);
   };
 
-  const handleHighlightSearch = (keyword) => {
-    if (!selectedDocument) return { ok: false, message: '먼저 문서를 선택해주세요.', matchCount: 0 };
-    if (previewModel?.type === 'word') {
-      const matchCount = documentViewerRef.current?.highlightText?.(keyword) ?? 0;
-      setHighlightKeyword('');
-      setHighlightStatusMessage(matchCount === 0 ? '검색 결과가 없습니다.' : `${matchCount}개의 DOCX 검색 결과를 표시했습니다.`);
-      return { ok: true, closeModal: true, matchCount };
+  const handleHighlightSearch = async (keyword, options = {}) => {
+    if (!selectedDocument) {
+      return {
+        ok: false,
+        message: '현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.',
+        count: 0,
+        results: []
+      };
     }
-    if (previewModel?.type !== 'pdf') return { ok: false, message: '지원하는 문서 형식이 아닙니다.', matchCount: 0 };
-    const matchCount = countKeywordMatches(documentText, keyword);
-    setHighlightKeyword(keyword);
-    setHighlightStatusMessage(matchCount === 0 ? '검색 결과가 없습니다.' : `${matchCount}개의 검색 결과를 표시했습니다.`);
-    return { ok: true, closeModal: true, matchCount };
+
+    if (previewModel?.type !== 'word' && previewModel?.type !== 'pdf') {
+      return {
+        ok: false,
+        message: '지원하는 문서 형식이 아닙니다.',
+        count: 0,
+        results: []
+      };
+    }
+
+    if (!documentViewerRef.current?.highlightText) {
+      return {
+        ok: false,
+        message: '현재 뷰어에서 하이라이트 기능을 사용할 수 없습니다.',
+        count: 0,
+        results: []
+      };
+    }
+
+    const result = await documentViewerRef.current.highlightText(keyword, {
+      color: options?.color || 'yellow',
+      matchMode: options?.matchMode === 'exact' ? 'exact' : 'contains'
+    });
+    const count = normalizeCount(result);
+    const results = getSearchResults(result);
+
+    setHighlightKeyword('');
+    setHighlightStatusMessage(
+      count > 0
+        ? `총 ${count}건을 하이라이트했습니다.`
+        : '하이라이트할 단어를 찾을 수 없습니다.'
+    );
+
+    return {
+      ok: true,
+      count,
+      matchCount: count,
+      results
+    };
+  };
+
+  const handleHighlightClearAll = async () => {
+    documentViewerRef.current?.clearHighlights?.();
+    documentViewerRef.current?.clearHighlightSelection?.();
+    setHighlightKeyword('');
+    setHighlightStatusMessage('하이라이트를 모두 제거했습니다.');
+    return true;
+  };
+
+  const handleHighlightReset = () => {
+    documentViewerRef.current?.clearHighlightSelection?.();
+  };
+
+  const handleHighlightResultClick = (result) => {
+    const target = result?.raw || result;
+    const moved = documentViewerRef.current?.scrollToHighlightResult?.(target)
+      ?? documentViewerRef.current?.scrollToSearchResult?.(target)
+      ?? false;
+
+    if (!moved) {
+      console.warn('[App] highlight result navigation was not handled:', target);
+    }
   };
 
   const handleDocxReplace = (originalText, newText) => {
@@ -170,10 +227,14 @@ function App() {
   const executeHighlightAction = async (messageId, action) => {
     if (!validateKeywordAction(action, '하이라이트')) return;
     await runAction(messageId, 'highlight', async () => {
-      if (previewModel?.type === 'word' && !documentViewerRef.current?.highlightText) throw new Error('현재 뷰어에서 하이라이트 기능을 사용할 수 없습니다.');
-      const result = handleHighlightSearch(action.keyword);
+      if (!documentViewerRef.current?.highlightText) throw new Error('현재 뷰어에서 하이라이트 기능을 사용할 수 없습니다.');
+      const result = await handleHighlightSearch(action.keyword, {
+        color: 'yellow',
+        matchMode: 'contains'
+      });
       if (!result.ok) throw new Error(result.message || '하이라이트를 적용하지 못했습니다.');
-      appendAssistantMessage(`하이라이트를 적용했습니다.\n대상 단어: ${action.keyword}\n적용 건수: ${normalizeCount(result)}건`);
+      const count = normalizeCount(result);
+      appendAssistantMessage(`하이라이트를 적용했습니다.\n대상 단어: ${action.keyword}\n적용 건수: ${count}건\n총 ${count}건을 하이라이트했습니다.`);
     });
   };
 
@@ -210,7 +271,16 @@ function App() {
       <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onReplaceCardClick={() => setIsReplaceModalOpen(true)} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteReplaceApplyAction={executeReplaceApplyAction} onExecuteReplaceConvertAction={executeReplaceConvertAction} />
     </main></div>
     {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
-    <HighlightModal isOpen={isHighlightModalOpen} onClose={() => setIsHighlightModalOpen(false)} onSearch={handleHighlightSearch} />
+    <HighlightModal
+      isOpen={isHighlightModalOpen}
+      selectedDocument={selectedDocument}
+      previewModel={previewModel}
+      onApply={handleHighlightSearch}
+      onClearAll={handleHighlightClearAll}
+      onReset={handleHighlightReset}
+      onResultClick={handleHighlightResultClick}
+      onClose={() => setIsHighlightModalOpen(false)}
+    />
     <ReplaceModal isOpen={isReplaceModalOpen} selectedDocument={selectedDocument} previewModel={previewModel} onDocxReplace={handleDocxReplace} onApplyPreview={setReplacePreview} onClose={() => setIsReplaceModalOpen(false)} />
     </div>
   );
