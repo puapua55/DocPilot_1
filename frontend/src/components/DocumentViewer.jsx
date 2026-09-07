@@ -54,8 +54,9 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     clearHighlightSelection() {
       viewerRef.current?.clearHighlightSelection?.();
     },
-    replaceText(originalText, newText) {
-      return viewerRef.current?.replaceText?.(originalText, newText) ?? 0;
+    replaceText(originalText, newText, options) {
+      return viewerRef.current?.replaceText?.(originalText, newText, options)
+        ?? { count: 0, replaceCount: 0, results: [] };
     },
     clearHighlights() {
       viewerRef.current?.clearHighlights?.();
