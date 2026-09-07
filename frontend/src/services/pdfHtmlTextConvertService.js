@@ -58,8 +58,14 @@ function downloadBlob(blob, outputFileName) {
 
   link.href = url;
   link.download = outputFileName;
+  link.style.display = 'none';
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+
+  window.setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
 function makeHtmlStructureFileName(fileName = 'document.pdf') {
