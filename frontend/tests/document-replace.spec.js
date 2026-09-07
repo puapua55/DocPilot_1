@@ -74,9 +74,10 @@ test('문서 없음과 입력값 오류 안내를 표시한다', async ({ page }
   await openReplace(page);
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.')).toBeVisible();
+  await page.getByRole('button', { name: '텍스트 교체 모달 닫기' }).click();
 
   await uploadDocx(page);
-  await page.getByRole('button', { name: /즉시 텍스트 교체/ }).click();
+  await openReplace(page);
   await page.getByRole('button', { name: '대상 확인' }).click();
   await expect(page.getByRole('dialog').getByText('교체할 기존 단어를 입력해주세요.')).toBeVisible();
 
