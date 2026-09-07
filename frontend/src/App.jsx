@@ -169,13 +169,48 @@ function App() {
     }
   };
 
-  const handleDocxReplace = (originalText, newText) => {
-    if (previewModel?.type !== 'word') return { replaceCount: 0, html: '' };
-    const replaceCount = documentViewerRef.current?.replaceText?.(originalText, newText) ?? 0;
-    const html = documentViewerRef.current?.getModifiedHtml?.() ?? '';
-    setModifiedDocxHtml(html);
-    setHighlightStatusMessage(replaceCount > 0 ? `DOCX 텍스트 치환 ${replaceCount}건` : '교체할 텍스트를 찾을 수 없습니다.');
-    return { replaceCount, html };
+  const handleReplacePreviewTargets = async (originalText, _newText, options = {}) => {
+    return handleDocumentSearch(originalText, {
+      matchMode: options?.matchMode === 'exact' ? 'exact' : 'contains'
+    });
+  };
+
+  const handleReplaceApply = async (originalText, newText, options = {}) => {
+    if (!selectedDocument?.file) throw new Error('현재 선택된 문서가 없습니다.');
+    const file = selectedDocument.file;
+    const fileType = getDocumentFileType(file);
+    const result = await applyTextReplacement({
+      file,
+      fileType,
+      documentViewerRef,
+      originalText,
+      newText,
+      options,
+      onPdfApply: setReplacePreview
+    });
+
+    if (fileType === 'docx') {
+      setModifiedDocxHtml(documentViewerRef.current?.getModifiedHtml?.() ?? '');
+    }
+
+    return result;
+  };
+
+  const handleReplaceConvert = async (originalText, newText, options = {}) => {
+    if (!selectedDocument?.file) throw new Error('현재 선택된 문서가 없습니다.');
+    const file = selectedDocument.file;
+    const fileType = getDocumentFileType(file);
+    return convertTextReplacement({ file, fileType, originalText, newText, options });
+  };
+
+  const handleReplaceResultClick = (result) => {
+    const target = result?.raw || result;
+    const moved = documentViewerRef.current?.scrollToSearchResult?.(target) ?? false;
+    if (!moved) console.warn('[App] replace result navigation was not handled:', target);
+  };
+
+  const handleReplaceReset = () => {
+    documentViewerRef.current?.clearSearchSelection?.();
   };
 
   const requireDocumentForAction = () => {
@@ -244,7 +279,15 @@ function App() {
       const file = selectedDocument.file;
       const fileType = getDocumentFileType(file);
       if ((fileType === 'docx' || fileType === 'word') && !documentViewerRef.current?.replaceText) throw new Error('현재 뷰어에서 텍스트 교체 기능을 사용할 수 없습니다.');
-      const result = await applyTextReplacement({ file, fileType, documentViewerRef, originalText: action.originalText, newText: action.newText, onPdfApply: setReplacePreview });
+      const result = await applyTextReplacement({
+        file,
+        fileType,
+        documentViewerRef,
+        originalText: action.originalText,
+        newText: action.newText,
+        options: { matchMode: 'contains' },
+        onPdfApply: setReplacePreview
+      });
       if (fileType === 'docx') {
         setModifiedDocxHtml(documentViewerRef.current?.getModifiedHtml?.() ?? '');
         setHighlightStatusMessage(normalizeCount(result) > 0 ? `DOCX 텍스트 치환 ${normalizeCount(result)}건` : '교체할 텍스트를 찾을 수 없습니다.');
@@ -259,7 +302,13 @@ function App() {
     await runAction(messageId, 'replace-convert', async () => {
       const file = selectedDocument.file;
       const fileType = getDocumentFileType(file);
-      const result = await convertTextReplacement({ file, fileType, originalText: action.originalText, newText: action.newText });
+      const result = await convertTextReplacement({
+        file,
+        fileType,
+        originalText: action.originalText,
+        newText: action.newText,
+        options: { matchMode: 'contains' }
+      });
       const fileName = result?.fileName || result?.outputFileName || `${file.name} 변환 파일`;
       appendAssistantMessage(`변환 파일 다운로드를 실행했습니다.\n기존 단어: ${action.originalText}\n변경 단어: ${action.newText}\n파일명: ${fileName}${result?.replaceCount != null ? `\n치환 건수: ${result.replaceCount}건` : ''}`);
     });
@@ -281,7 +330,17 @@ function App() {
       onResultClick={handleHighlightResultClick}
       onClose={() => setIsHighlightModalOpen(false)}
     />
-    <ReplaceModal isOpen={isReplaceModalOpen} selectedDocument={selectedDocument} previewModel={previewModel} onDocxReplace={handleDocxReplace} onApplyPreview={setReplacePreview} onClose={() => setIsReplaceModalOpen(false)} />
+    <ReplaceModal
+      isOpen={isReplaceModalOpen}
+      selectedDocument={selectedDocument}
+      previewModel={previewModel}
+      onPreviewTargets={handleReplacePreviewTargets}
+      onApply={handleReplaceApply}
+      onConvert={handleReplaceConvert}
+      onResultClick={handleReplaceResultClick}
+      onReset={handleReplaceReset}
+      onClose={() => setIsReplaceModalOpen(false)}
+    />
     </div>
   );
   return <AppErrorBoundary>{appContent}</AppErrorBoundary>;

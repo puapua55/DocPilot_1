@@ -1,382 +1,267 @@
-import { useEffect, useState } from 'react';
-import { convertDocxFileWithTextReplace } from '../services/docxTextReplaceService';
-import {
-  downloadHtmlTextFile,
-  extractPdfToHtmlText,
-  makeHtmlConvertedFileName,
-  parseHtmlTextStructure,
-  renderPdfFromHtmlText,
-  replaceTextInHtmlText
-} from '../services/pdfHtmlTextConvertService';
+import { useEffect, useMemo, useState } from 'react';
 
-function getFileType(file) {
-  const name = String(file?.name || '').toLowerCase();
-  const type = String(file?.type || '').toLowerCase();
+function replaceWithMode(text, target, replacement, matchMode) {
+  const source = String(text || '');
+  if (!target) return source;
+  if (matchMode !== 'exact') return source.split(target).join(replacement);
+  return source.split(/([\s\n\t]+)/).map((part) => part === target ? replacement : part).join('');
+}
 
-  if (name.endsWith('.pdf') || type === 'application/pdf') {
-    return 'pdf';
-  }
+function normalizeResult(raw, index, originalText, newText, matchMode) {
+  const source = String(raw?.originalText ?? raw?.text ?? raw?.fullText ?? raw?.content ?? '').trim();
+  return {
+    id: raw?.id || `replace-result-${index}`,
+    pageNumber: Number(raw?.pageNumber ?? raw?.page ?? 1) || 1,
+    paragraphNumber: raw?.paragraphNumber == null ? undefined : Number(raw.paragraphNumber),
+    lineNumber: raw?.lineNumber == null ? undefined : Number(raw.lineNumber),
+    originalText: source,
+    replacedText: String(raw?.replacedText ?? replaceWithMode(source, originalText, newText, matchMode)),
+    keyword: String(raw?.keyword || originalText),
+    newText: String(raw?.newText ?? newText),
+    matchIndex: raw?.matchIndex,
+    raw
+  };
+}
 
-  if (
-    name.endsWith('.docx') ||
-    type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-  ) {
-    return 'docx';
-  }
+function normalizeResponse(raw, originalText, newText, matchMode) {
+  const items = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
+  const results = items.map((item, index) => normalizeResult(item, index, originalText, newText, matchMode));
+  const count = typeof raw === 'number'
+    ? raw
+    : typeof raw?.count === 'number'
+      ? raw.count
+      : typeof raw?.replaceCount === 'number'
+        ? raw.replaceCount
+        : results.length;
+  return { count, results };
+}
 
-  if (name.endsWith('.doc') || type === 'application/msword') {
-    return 'doc';
-  }
-
-  return 'unknown';
+function formatLocation(result, index) {
+  const values = [];
+  if (Number.isFinite(result.paragraphNumber)) values.push(`문단 ${result.paragraphNumber}`);
+  if (Number.isFinite(result.lineNumber)) values.push(`줄 ${result.lineNumber}`);
+  return values.length ? values.join(' / ') : `결과 ${index + 1}`;
 }
 
 function ReplaceModal({
   isOpen,
   selectedDocument,
   previewModel,
-  onDocxReplace,
-  onApplyPreview,
+  onPreviewTargets,
+  onApply,
+  onConvert,
+  onResultClick,
+  onReset,
   onClose
 }) {
   const [originalText, setOriginalText] = useState('');
   const [newText, setNewText] = useState('');
-  const [message, setMessage] = useState('');
-  const [isConverting, setIsConverting] = useState(false);
-  const [lastSummary, setLastSummary] = useState(null);
+  const [matchMode, setMatchMode] = useState('contains');
+  const [runningAction, setRunningAction] = useState(null);
+  const [results, setResults] = useState([]);
+  const [resultCount, setResultCount] = useState(0);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [statusType, setStatusType] = useState('');
+  const [activeResultId, setActiveResultId] = useState(null);
+
+  const selectedFile = selectedDocument?.file || null;
+  const documentName = selectedFile?.name || '';
+  const documentType = previewModel?.type === 'pdf' ? 'PDF' : previewModel?.type === 'word' ? 'DOCX' : '-';
+  const emptyDocumentMessage = useMemo(
+    () => selectedDocument ? '' : '현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.',
+    [selectedDocument]
+  );
 
   useEffect(() => {
     if (!isOpen) {
       setOriginalText('');
       setNewText('');
-      setMessage('');
-      setIsConverting(false);
-      setLastSummary(null);
+      setMatchMode('contains');
+      setRunningAction(null);
+      setResults([]);
+      setResultCount(0);
+      setStatusMessage('');
+      setStatusType('');
+      setActiveResultId(null);
     }
   }, [isOpen]);
 
-  if (!isOpen) {
-    return null;
-  }
+  if (!isOpen) return null;
 
-  const selectedFile = selectedDocument?.file || null;
-  const fileType = getFileType(selectedFile);
-  const summaryPageCount = lastSummary?.pages ?? 0;
-  const summaryTextCount = lastSummary?.texts ?? 0;
-  const summaryLineCount = lastSummary?.lines ?? 0;
-  const summaryReplacementCount = lastSummary?.replacements ?? 0;
-
-  const applyDocxReplacement = (target, replacement) => {
-    const result = onDocxReplace?.(target, replacement) || {
-      replaceCount: 0,
-      html: ''
-    };
-    const replaceCount = result.replaceCount ?? 0;
-
-    setLastSummary({
-      kind: 'docx-apply',
-      replacements: replaceCount,
-      outputFileName: selectedFile?.name || '',
-      modifiedHtmlAvailable: Boolean(result.html)
-    });
-    setMessage(
-      replaceCount > 0
-        ? `DOCX 화면에 텍스트 치환 ${replaceCount}건 적용됨`
-        : '교체할 텍스트를 찾을 수 없습니다.'
-    );
-
-    return result;
+  const validate = () => {
+    if (!selectedDocument) {
+      setStatusType('error');
+      setStatusMessage('현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.');
+      return false;
+    }
+    if (!originalText.trim()) {
+      setStatusType('error');
+      setStatusMessage('교체할 기존 단어를 입력해주세요.');
+      return false;
+    }
+    if (!newText.trim()) {
+      setStatusType('error');
+      setStatusMessage('변경할 단어를 입력해주세요.');
+      return false;
+    }
+    return true;
   };
 
-  const handlePdfConvert = async (target, replacement) => {
-    console.log('[ConvertTrace] handler file: ReplaceModal.jsx');
-    console.log('[ConvertTrace] extractPdfToHtmlText function:', extractPdfToHtmlText);
-    console.log('[ConvertTrace] replaceTextInHtmlText function:', replaceTextInHtmlText);
-    console.log('[ConvertTrace] renderPdfFromHtmlText function:', renderPdfFromHtmlText);
-
-    setMessage('PDF를 HTML 형식 텍스트 구조로 변환 중입니다...');
-
-    const htmlText = await extractPdfToHtmlText(selectedFile);
-
-    console.log('[HtmlTextConvert] htmlText:', htmlText);
-    console.log('[HtmlTextConvert] originalHtmlText:', htmlText);
-
-    setMessage('HTML 텍스트 구조 안에서 텍스트를 치환하는 중입니다...');
-
-    const replaceResult = replaceTextInHtmlText(htmlText, target, replacement);
-    const replacedHtmlText = replaceResult.htmlText;
-    const replacementCount = replaceResult.replaceCount;
-
-    console.log('[HtmlTextConvert] replacedHtmlText:', replacedHtmlText);
-
-    if (!replacedHtmlText.includes(replacement)) {
-      console.warn('[HtmlTextConvert] replacedHtmlText does not include newText:', replacement);
-    }
-
-    if (replacedHtmlText.includes(target)) {
-      console.warn('[HtmlTextConvert] replacedHtmlText still includes originalText:', target);
-    }
-
-    downloadHtmlTextFile(replacedHtmlText, selectedFile.name);
-
-    const parsedStructure = parseHtmlTextStructure(replacedHtmlText);
-    const totalTextCount = parsedStructure.pages.reduce((sum, page) => sum + page.texts.length, 0);
-    const totalLineCount = parsedStructure.pages.reduce((sum, page) => sum + page.lines.length, 0);
-
-    if (totalTextCount === 0) {
-      throw new Error('HTML 구조에서 .pdf-text를 찾지 못했습니다.');
-    }
-
-    if (totalLineCount === 0) {
-      throw new Error('HTML 구조에서 .pdf-line을 찾지 못했습니다.');
-    }
-
-    if (replacementCount === 0) {
-      setMessage('교체할 텍스트를 찾을 수 없습니다.');
-      setLastSummary({
-        kind: 'pdf',
-        pages: parsedStructure.pages.length,
-        texts: totalTextCount,
-        lines: totalLineCount,
-        replacements: 0,
-        outputFileName: makeHtmlConvertedFileName(selectedFile.name),
-        warning: ''
-      });
-      return;
-    }
-
-    setMessage('수정된 HTML 텍스트 구조를 PDF로 재생성 중입니다...');
-
-    const outputFileName = makeHtmlConvertedFileName(selectedFile.name);
-    await renderPdfFromHtmlText(replacedHtmlText, outputFileName);
-
-    setLastSummary({
-      kind: 'pdf',
-      pages: parsedStructure.pages.length,
-      texts: totalTextCount,
-      lines: totalLineCount,
-      replacements: replacementCount,
-      outputFileName,
-      warning: ''
-    });
-    setMessage('변환된 PDF가 다운로드되었습니다.');
-  };
-
-  const handleConvert = async () => {
+  const run = async (action, work) => {
+    if (runningAction || !validate()) return;
+    setRunningAction(action);
     try {
-      const target = String(originalText || '').trim();
-      const replacement = String(newText || '').trim();
-
-      console.log('========== [ConvertTrace] 변환 버튼 클릭됨 ==========');
-      console.log('[ConvertTrace] selectedFile:', selectedFile?.name);
-      console.log('[ConvertTrace] fileType:', fileType);
-      console.log('[ConvertTrace] originalText:', target);
-      console.log('[ConvertTrace] newText:', replacement);
-
-      setIsConverting(true);
-      setMessage('');
-      setLastSummary(null);
-
-      if (!selectedFile) {
-        setMessage('먼저 문서를 선택해주세요.');
-        return;
-      }
-
-      if (!target) {
-        setMessage('기존 단어를 입력해주세요.');
-        return;
-      }
-
-      if (!replacement) {
-        setMessage('변경 단어를 입력해주세요.');
-        return;
-      }
-
-      if (fileType === 'docx') {
-        // 중요: [변환]은 뷰어 DOM replace를 호출하지 않습니다.
-        // 항상 원본 selectedFile의 DOCX ZIP/XML을 수정해 새 .docx를 생성합니다.
-        setMessage('DOCX 파일에 수정 내용을 반영하는 중입니다...');
-
-        const result = await convertDocxFileWithTextReplace(
-          selectedFile,
-          target,
-          replacement
-        );
-
-        setLastSummary({
-          kind: 'docx-convert',
-          outputFileName: result.outputFileName,
-          replacements: result.replaceCount
-        });
-        setMessage(
-          result.replaceCount > 0
-            ? `DOCX 파일 변환 완료: 텍스트 치환 ${result.replaceCount}건`
-            : 'DOCX 파일은 생성했지만 교체할 텍스트를 찾지 못했습니다.'
-        );
-        return;
-      }
-
-      if (fileType === 'doc') {
-        setMessage('DOC 형식은 현재 변환 저장을 지원하지 않습니다. DOCX 파일을 사용해주세요.');
-        return;
-      }
-
-      if (fileType === 'pdf') {
-        // 기존 PDF → HTML 구조 → PDF 재생성 경로는 그대로 유지합니다.
-        await handlePdfConvert(target, replacement);
-        return;
-      }
-
-      setMessage('지원하지 않는 파일 형식입니다.');
-    } catch (error) {
-      console.error('[Convert] failed:', error);
-      setMessage(error?.message || '문서 변환 중 오류가 발생했습니다.');
+      await work();
     } finally {
-      setIsConverting(false);
+      setRunningAction(null);
     }
   };
 
-  const handleApplyPreview = () => {
-    const target = originalText.trim();
+  const setNormalized = (raw) => {
+    const normalized = normalizeResponse(raw, originalText.trim(), newText, matchMode);
+    setResults(normalized.results);
+    setResultCount(normalized.count);
+    return normalized;
+  };
 
-    if (!selectedFile) {
-      setMessage('먼저 문서를 선택해주세요.');
-      return;
+  const handlePreview = () => run('preview', async () => {
+    setStatusType('progress');
+    setStatusMessage('교체 대상을 확인하는 중입니다.');
+    try {
+      const normalized = setNormalized(await onPreviewTargets?.(originalText.trim(), newText, { matchMode }));
+      setStatusType(normalized.count ? 'success' : 'empty');
+      setStatusMessage(normalized.count ? `총 ${normalized.count}건의 교체 대상을 찾았습니다.` : '교체할 단어를 찾을 수 없습니다.');
+    } catch (error) {
+      console.error('[ReplaceModal] preview failed:', error);
+      setStatusType('error');
+      setStatusMessage('텍스트 교체 중 오류가 발생했습니다. 다시 시도해주세요.');
     }
+  });
 
-    if (!target) {
-      setMessage('기존 단어를 입력해주세요.');
-      return;
+  const handleApply = () => run('apply', async () => {
+    setStatusType('progress');
+    setStatusMessage('화면에 텍스트 교체를 적용하는 중입니다.');
+    try {
+      const normalized = setNormalized(await onApply?.(originalText.trim(), newText, { matchMode }));
+      setStatusType(normalized.count ? 'success' : 'empty');
+      setStatusMessage(normalized.count ? `화면에 총 ${normalized.count}건을 적용했습니다.` : '교체할 단어를 찾을 수 없습니다.');
+    } catch (error) {
+      console.error('[ReplaceModal] apply failed:', error);
+      setStatusType('error');
+      setStatusMessage('텍스트 교체 중 오류가 발생했습니다. 다시 시도해주세요.');
     }
+  });
 
-    if (fileType === 'docx') {
-      const replacement = newText.trim();
-      if (!replacement) {
-        setMessage('변경 단어를 입력해주세요.');
-        return;
-      }
-
-      // [적용]은 기존대로 현재 DOCX 뷰어 DOM만 변경합니다.
-      applyDocxReplacement(target, replacement);
-      return;
+  const handleConvert = () => run('convert', async () => {
+    setStatusType('progress');
+    setStatusMessage('변환 파일을 생성하는 중입니다.');
+    try {
+      setNormalized(await onPreviewTargets?.(originalText.trim(), newText, { matchMode }));
+      const result = await onConvert?.(originalText.trim(), newText, { matchMode });
+      const fileName = result?.fileName || result?.outputFileName || '변환 파일';
+      const count = Number(result?.replaceCount ?? 0);
+      setResultCount(count);
+      setStatusType(count ? 'success' : 'empty');
+      setStatusMessage(count ? `변환 파일이 생성되었습니다: ${fileName} (치환 ${count}건)` : '교체할 단어를 찾을 수 없습니다.');
+    } catch (error) {
+      console.error('[ReplaceModal] conversion failed:', error);
+      setStatusType('error');
+      setStatusMessage('변환 파일 생성 중 오류가 발생했습니다.');
     }
+  });
 
-    if (fileType === 'doc') {
-      setMessage('DOC 형식은 현재 텍스트 교체를 지원하지 않습니다. DOCX 파일을 사용해주세요.');
-      return;
-    }
+  const handleReset = () => {
+    setOriginalText('');
+    setNewText('');
+    setMatchMode('contains');
+    setResults([]);
+    setResultCount(0);
+    setStatusMessage('');
+    setStatusType('');
+    setActiveResultId(null);
+    onReset?.();
+  };
 
-    if (fileType !== 'pdf' || previewModel?.type !== 'pdf') {
-      setMessage('지원하는 문서 형식이 아닙니다.');
-      return;
-    }
-
-    // 기존 PDF 적용 동작은 변경하지 않습니다.
-    onApplyPreview?.({
-      originalText: target,
-      newText,
-      appliedAt: Date.now()
-    });
-    setMessage('현재 PDF 뷰어 화면에 교체 미리보기를 적용했습니다.');
+  const handleClose = () => {
+    onReset?.();
+    onClose?.();
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="search-modal replace-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="replace-modal-title"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <div className="modal-backdrop" role="presentation" onClick={handleClose}>
+      <div className="search-modal replace-panel" role="dialog" aria-modal="true" aria-labelledby="replace-modal-title" onClick={(event) => event.stopPropagation()}>
         <div className="search-modal-header">
-          <button
-            type="button"
-            className="search-modal-close"
-            onClick={onClose}
-            aria-label="텍스트 교체 모달 닫기"
-          >
-            x
-          </button>
+          <button type="button" className="search-modal-close" onClick={handleClose} aria-label="텍스트 교체 모달 닫기">x</button>
         </div>
 
         <div className="search-modal-body">
-          <h2 id="replace-modal-title" className="search-modal-title">
-            즉시 텍스트 교체
-          </h2>
-          {message ? <p className="search-modal-error">{message}</p> : null}
-          <div className="replace-field-stack">
-            <label className="replace-field">
+          <h2 id="replace-modal-title" className="search-modal-title">즉시 텍스트 교체</h2>
+
+          <div className="replace-meta">
+            <div><span>현재 문서</span><strong>{documentName || '-'}</strong></div>
+            <div><span>파일 형식</span><strong>{documentType}</strong></div>
+          </div>
+
+          <div className="replace-form">
+            <label className="replace-field" htmlFor="replace-original-input">
               <span>기존 단어</span>
-              <input
-                className="search-modal-input"
-                type="text"
-                value={originalText}
-                onChange={(event) => setOriginalText(event.target.value)}
-                placeholder="예: 테스트"
-              />
+              <input id="replace-original-input" className="replace-input search-modal-input" value={originalText} onChange={(e) => setOriginalText(e.target.value)} placeholder="예: 테스트" disabled={runningAction !== null} />
             </label>
-            <label className="replace-field">
+            <label className="replace-field" htmlFor="replace-new-input">
               <span>변경 단어</span>
-              <input
-                className="search-modal-input"
-                type="text"
-                value={newText}
-                onChange={(event) => setNewText(event.target.value)}
-                placeholder="예: 시험"
-              />
+              <input id="replace-new-input" className="replace-input search-modal-input" value={newText} onChange={(e) => setNewText(e.target.value)} placeholder="예: 시험" disabled={runningAction !== null} />
             </label>
-          </div>
-          <div className="replace-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={handleApplyPreview}
-              disabled={isConverting}
-            >
-              적용
-            </button>
-            <button
-              type="button"
-              className="search-modal-button"
-              onClick={handleConvert}
-              disabled={isConverting}
-            >
-              {isConverting ? '변환 중...' : '변환'}
-            </button>
-          </div>
-          {lastSummary ? (
-            (() => {
-              console.log('[ConvertTrace] conversionResult UI value:', lastSummary);
-              return null;
-            })()
-          ) : null}
-          {lastSummary ? (
-            <div className="replace-summary" role="status">
-              {lastSummary.kind === 'docx-apply' ? (
-                <>
-                  <span>{lastSummary.outputFileName}</span>
-                  <span>DOCX 화면 텍스트 치환 {summaryReplacementCount}건</span>
-                  <span>현재 뷰어에만 반영되었으며 파일은 다운로드되지 않았습니다.</span>
-                </>
-              ) : lastSummary.kind === 'docx-convert' ? (
-                <>
-                  <span>{lastSummary.outputFileName}</span>
-                  <span>DOCX 파일 텍스트 치환 {summaryReplacementCount}건</span>
-                  <span>수정된 DOCX 파일을 다운로드했습니다.</span>
-                </>
-              ) : (
-                <>
-                  <span>{lastSummary.outputFileName}</span>
-                  <span>
-                    {summaryPageCount}페이지 / 텍스트 {summaryTextCount}개 / 선 {summaryLineCount}개
-                  </span>
-                  <span>텍스트 치환 {summaryReplacementCount}건</span>
-                  {lastSummary.warning ? <span>{lastSummary.warning}</span> : null}
-                </>
-              )}
+
+            <div className="replace-options" role="radiogroup" aria-label="교체 방식">
+              <span>교체 방식</span>
+              <label><input type="radio" name="replace-match-mode" checked={matchMode === 'contains'} onChange={() => setMatchMode('contains')} disabled={runningAction !== null} /> 포함 교체</label>
+              <label><input type="radio" name="replace-match-mode" checked={matchMode === 'exact'} onChange={() => setMatchMode('exact')} disabled={runningAction !== null} /> 정확히 일치</label>
             </div>
-          ) : null}
+
+            <div className="replace-form-actions">
+              <button type="button" className="replace-button secondary-button" onClick={handlePreview} disabled={runningAction !== null}>{runningAction === 'preview' ? '대상 확인 중...' : '대상 확인'}</button>
+              <button type="button" className="replace-apply-button secondary-button" onClick={handleApply} disabled={runningAction !== null}>{runningAction === 'apply' ? '적용 중...' : '화면에 적용'}</button>
+              <button type="button" className="replace-convert-button search-modal-button" onClick={handleConvert} disabled={runningAction !== null}>{runningAction === 'convert' ? '변환 중...' : '변환 파일 다운로드'}</button>
+              <button type="button" className="replace-reset-button" onClick={handleReset} disabled={runningAction !== null}>초기화</button>
+            </div>
+          </div>
+
+          <div className="replace-help">화면에 적용은 현재 뷰어 미리보기만 변경합니다. 실제 파일 저장은 변환 파일 다운로드를 사용하세요.</div>
+
+          {(statusMessage || emptyDocumentMessage) ? <div className={`replace-status ${statusType ? `replace-status-${statusType}` : ''}`} aria-live="polite">{statusMessage || emptyDocumentMessage}</div> : null}
+
+          <div className="replace-result-summary">교체 대상: 총 <strong>{resultCount}</strong>건</div>
+
+          {results.length > 0 ? (
+            <div className="replace-result-table-wrap">
+              <table className="replace-result-table">
+                <thead><tr><th>페이지</th><th>위치</th><th>기존 내용</th><th>변경 후</th></tr></thead>
+                <tbody>
+                  {results.map((result, index) => (
+                    <tr
+                      key={result.id}
+                      className={`replace-result-row ${activeResultId === result.id ? 'active' : ''}`}
+                      onClick={() => { setActiveResultId(result.id); onResultClick?.(result); }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setActiveResultId(result.id);
+                          onResultClick?.(result);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <td>{result.pageNumber ? `${result.pageNumber}페이지` : '-'}</td>
+                      <td>{formatLocation(result, index)}</td>
+                      <td className="replace-result-text" title={result.originalText}>{result.originalText || '-'}</td>
+                      <td className="replace-result-text" title={result.replacedText}>{result.replacedText || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : statusType === 'empty' ? <div className="replace-result-empty">교체할 단어를 찾을 수 없습니다.</div> : null}
         </div>
       </div>
     </div>
