@@ -115,3 +115,11 @@
     padding: 36px 24px;
   }
 }
+
+
+.docx-highlight-current {
+  outline: 2px solid rgba(79, 124, 255, 0.9);
+  outline-offset: 2px;
+  border-radius: 3px;
+  scroll-margin-block: 40px;
+}
