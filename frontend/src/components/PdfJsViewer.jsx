@@ -1,7 +1,36 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import PdfPage from './PdfPage';
 import { loadPdfDocument } from '../services/pdfService';
+import { searchKeywordInDocument } from '../services/searchService';
 import { isPdfFile } from '../utils/fileUtils';
+
+function normalizePdfLines(textItems) {
+  const groupedLines = [];
+
+  textItems.forEach((item) => {
+    const value = String(item?.str || '').trim();
+    if (!value) {
+      return;
+    }
+
+    const y = Array.isArray(item?.transform) ? Number(item.transform[5]) || 0 : 0;
+    const lastLine = groupedLines[groupedLines.length - 1];
+
+    if (lastLine && Math.abs(lastLine.y - y) < 4) {
+      lastLine.parts.push(value);
+      return;
+    }
+
+    groupedLines.push({ y, parts: [value] });
+  });
+
+  return groupedLines
+    .map((line) => ({
+      y: line.y,
+      text: line.parts.join(' ').replace(/\s+/g, ' ').trim()
+    }))
+    .filter((line) => line.text);
+}
 
 async function extractAllPdfText(pdf) {
   if (!pdf) {
@@ -12,13 +41,10 @@ async function extractAllPdfText(pdf) {
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
     const textContent = await page.getTextContent();
-    const text = textContent.items
-      .map((item) => item?.str || '')
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    const lines = normalizePdfLines(textContent.items);
+    const text = lines.map((line) => line.text).join(' ').replace(/\s+/g, ' ').trim();
 
-    pages.push({ pageNumber, text });
+    pages.push({ pageNumber, text, lines });
   }
   return pages;
 }
@@ -42,24 +68,72 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   console.log('[PdfJsViewer] file:', file);
 
+  const ensurePdfTextPages = async () => {
+    if (pagesTextRef.current.length > 0) {
+      return pagesTextRef.current;
+    }
+
+    if (!pdfDocumentRef.current) {
+      return [];
+    }
+
+    const pages = await extractAllPdfText(pdfDocumentRef.current);
+    pagesTextRef.current = pages;
+    return pages;
+  };
+
+  const scrollToPdfSearchResult = (result) => {
+    const target = result?.raw || result || {};
+    const pageNumber = Number(target.pageNumber ?? target.page);
+
+    if (!Number.isFinite(pageNumber)) {
+      console.warn('[PdfJsViewer] invalid search result target:', result);
+      return false;
+    }
+
+    const pageElement = pageRefs.current[pageNumber];
+    if (!pageElement) {
+      console.warn('[PdfJsViewer] search target page not rendered:', pageNumber);
+      return false;
+    }
+
+    const viewerElement = viewerRef.current;
+    if (viewerElement) {
+      const targetTop = pageElement.offsetTop - viewerElement.clientHeight / 4;
+      viewerElement.scrollTo({
+        top: Math.max(targetTop, 0),
+        behavior: 'smooth'
+      });
+      return true;
+    }
+
+    pageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return true;
+  };
+
   useImperativeHandle(ref, () => ({
     async getDocumentText() {
       try {
-        if (pagesTextRef.current.length > 0) {
-          return formatPdfPagesText(pagesTextRef.current);
-        }
-
-        if (!pdfDocumentRef.current) {
-          return '';
-        }
-
-        const pages = await extractAllPdfText(pdfDocumentRef.current);
-        pagesTextRef.current = pages;
+        const pages = await ensurePdfTextPages();
         return formatPdfPagesText(pages);
       } catch (error) {
         console.warn('[PdfJsViewer] document text extraction failed:', error);
         return '';
       }
+    },
+    async searchDocument(keyword, options) {
+      const pages = await ensurePdfTextPages();
+      const documentText = pages.map((page) => ({
+        page: page.pageNumber,
+        lines: page.lines.map((line) => line.text)
+      }));
+      return searchKeywordInDocument(documentText, keyword, options);
+    },
+    scrollToSearchResult(result) {
+      return scrollToPdfSearchResult(result);
+    },
+    clearSearchSelection() {
+      // PDF 검색은 별도의 검색 선택 DOM을 만들지 않으므로 초기화할 항목이 없습니다.
     }
   }));
 
@@ -156,11 +230,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     }
 
     const result = selectedSearchResult;
-    const pageElement = pageRefs.current[result.page];
+    const pageNumber = Number(result.pageNumber ?? result.page);
+    const pageElement = pageRefs.current[pageNumber];
 
     console.log('[PdfJsViewer] target page element:', pageElement);
     console.log('[PdfJsViewer] scroll target:', {
-      page: result.page,
+      page: pageNumber,
       x: result.x,
       y: result.y
     });
@@ -187,10 +262,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       return;
     }
 
-    pageElement.scrollIntoView({
-      behavior: 'smooth',
-      block: 'center'
-    });
+    scrollToPdfSearchResult(result);
   }, [selectedSearchResult, scale, pageNumbers]);
 
   if (errorMessage) {
