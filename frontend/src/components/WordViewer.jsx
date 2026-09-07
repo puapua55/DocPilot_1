@@ -515,6 +515,18 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
     replaceText(originalText, newText, options) {
       return replaceDocxText(originalText, newText, options);
     },
+    scrollToReplaceResult(result) {
+      const target = result?.raw || result || {};
+      const blockIndex = Number(target.blockIndex);
+      const blocks = getSearchBlocks(docxContentRef.current);
+      const element = Number.isFinite(blockIndex) ? blocks[blockIndex - 1] : null;
+      if (!element) {
+        console.warn('[WordViewer] replacement result target not found:', target);
+        return false;
+      }
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return true;
+    },
     clearHighlights() {
       clearDocxHighlights();
     },
