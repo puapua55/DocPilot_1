@@ -469,6 +469,11 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
     scrollToHighlightResult(result) {
       return scrollToDocxHighlightResult(result);
     },
+    clearHighlightSelection() {
+      docxContentRef.current?.querySelectorAll('.docx-highlight-current').forEach((element) => {
+        element.classList.remove('docx-highlight-current');
+      });
+    },
     replaceText(originalText, newText) {
       return replaceDocxText(originalText, newText);
     },
