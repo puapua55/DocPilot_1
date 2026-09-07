@@ -80,7 +80,7 @@ test('DOCX 포함 하이라이트 결과와 위치 목록을 표시한다', asyn
   await page.getByPlaceholder('하이라이트할 단어 또는 문장을 입력하세요').fill('테스트');
   await page.getByRole('button', { name: '하이라이트 적용' }).click();
 
-  await expect(page.getByText('총 4건을 하이라이트했습니다.')).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('총 4건을 하이라이트했습니다.')).toBeVisible();
   await expect(page.locator('.docx-highlight')).toHaveCount(4);
   await expect(page.locator('.docx-highlight[data-highlight-color="yellow"]')).toHaveCount(4);
 
@@ -105,7 +105,7 @@ test('DOCX 정확히 일치 하이라이트는 독립된 테스트만 적용한�
   await page.getByLabel('정확히 일치').check();
   await page.getByRole('button', { name: '하이라이트 적용' }).click();
 
-  await expect(page.getByText('총 1건을 하이라이트했습니다.')).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('총 1건을 하이라이트했습니다.')).toBeVisible();
   await expect(page.locator('.docx-highlight')).toHaveCount(1);
   await expect(page.locator('.docx-highlight')).toHaveText('테스트');
   await expect(page.locator('.highlight-result-row')).toHaveCount(1);
@@ -130,7 +130,7 @@ test('DOCX 초록 색상과 전체 제거가 동작하며 초기화는 문서 �
 
   await page.getByRole('button', { name: '전체 제거' }).click();
   await expect(page.locator('.docx-highlight')).toHaveCount(0);
-  await expect(page.getByText('하이라이트를 모두 제거했습니다.')).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('하이라이트를 모두 제거했습니다.')).toBeVisible();
 });
 
 test('PDF 하이라이트 결과에 실제 1페이지와 2페이지 및 색상을 표시한다', async ({ page }) => {
@@ -150,7 +150,7 @@ test('PDF 하이라이트 결과에 실제 1페이지와 2페이지 및 색상�
   await page.getByRole('button', { name: '파랑' }).click();
   await page.getByRole('button', { name: '하이라이트 적용' }).click();
 
-  await expect(page.getByText('총 2건을 하이라이트했습니다.')).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('총 2건을 하이라이트했습니다.')).toBeVisible();
   const rows = page.locator('.highlight-result-row');
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText('1페이지');
