@@ -399,25 +399,30 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
     return true;
   };
 
-  const replaceDocxText = (originalText, newText) => {
+  const replaceDocxText = (originalText, newText, options = {}) => {
     const root = docxContentRef.current;
     const target = String(originalText || '').trim();
     const replacement = String(newText ?? '');
+    const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
 
     if (!root || !target) {
-      return 0;
+      return { count: 0, replaceCount: 0, results: [] };
     }
 
     clearDocxHighlights();
     clearSearchSelection(root);
 
+    const blockMetadata = getDocxBlockMetadata(root);
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
-        if (!node.nodeValue?.includes(target)) {
-          return NodeFilter.FILTER_REJECT;
-        }
+        const parent = node.parentElement;
+        const text = String(node.nodeValue || '');
 
-        if (node.parentElement?.closest('script, style')) {
+        if (
+          !parent ||
+          isSearchExcluded(parent) ||
+          findKeywordMatchIndexes(text, target, matchMode).length === 0
+        ) {
           return NodeFilter.FILTER_REJECT;
         }
 
@@ -430,19 +435,52 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
       textNodes.push(walker.currentNode);
     }
 
-    let replaceCount = 0;
-    textNodes.forEach((node) => {
-      const before = node.nodeValue || '';
-      const occurrences = before.split(target).length - 1;
-      if (occurrences <= 0) {
-        return;
-      }
+    const results = [];
 
-      node.nodeValue = before.split(target).join(replacement);
-      replaceCount += occurrences;
+    textNodes.forEach((node) => {
+      const before = String(node.nodeValue || '');
+      const matchIndexes = findKeywordMatchIndexes(before, target, matchMode);
+      if (matchIndexes.length === 0) return;
+
+      const block = node.parentElement?.closest(SEARCH_BLOCK_SELECTOR);
+      const metadata = blockMetadata.get(block) || {
+        pageNumber: getDocxPageNumber(root, block || node.parentElement),
+        paragraphNumber: undefined,
+        blockIndex: undefined
+      };
+      const originalBlockText = String(block?.textContent || before).trim();
+
+      let cursor = 0;
+      let after = '';
+
+      matchIndexes.forEach((matchIndex, occurrenceIndex) => {
+        after += before.slice(cursor, matchIndex);
+        after += replacement;
+        results.push({
+          id: `docx-replace-${metadata.pageNumber}-${metadata.paragraphNumber || 0}-${results.length}`,
+          type: 'docx',
+          pageNumber: metadata.pageNumber,
+          paragraphNumber: metadata.paragraphNumber,
+          blockIndex: metadata.blockIndex,
+          originalText: originalBlockText,
+          replacedText: originalBlockText.replace(target, replacement),
+          keyword: target,
+          newText: replacement,
+          matchIndex,
+          occurrenceIndex
+        });
+        cursor = matchIndex + target.length;
+      });
+
+      after += before.slice(cursor);
+      node.nodeValue = after;
     });
 
-    return replaceCount;
+    return {
+      count: results.length,
+      replaceCount: results.length,
+      results
+    };
   };
 
   useImperativeHandle(ref, () => ({
@@ -474,8 +512,8 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
         element.classList.remove('docx-highlight-current');
       });
     },
-    replaceText(originalText, newText) {
-      return replaceDocxText(originalText, newText);
+    replaceText(originalText, newText, options) {
+      return replaceDocxText(originalText, newText, options);
     },
     clearHighlights() {
       clearDocxHighlights();
