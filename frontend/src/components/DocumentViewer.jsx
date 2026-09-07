@@ -43,8 +43,13 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     clearSearchSelection() {
       viewerRef.current?.clearSearchSelection?.();
     },
-    highlightText(keyword) {
-      return viewerRef.current?.highlightText?.(keyword) ?? 0;
+    highlightText(keyword, options) {
+      return viewerRef.current?.highlightText?.(keyword, options) ?? { count: 0, results: [] };
+    },
+    scrollToHighlightResult(result) {
+      return viewerRef.current?.scrollToHighlightResult?.(result)
+        ?? viewerRef.current?.scrollToSearchResult?.(result)
+        ?? false;
     },
     replaceText(originalText, newText) {
       return viewerRef.current?.replaceText?.(originalText, newText) ?? 0;
