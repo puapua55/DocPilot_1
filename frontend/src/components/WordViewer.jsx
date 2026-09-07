@@ -2,6 +2,17 @@ import { forwardRef, useImperativeHandle, useRef } from 'react';
 import './WordViewer.css';
 
 const SEARCH_BLOCK_SELECTOR = 'p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre';
+const SEARCH_EXCLUDED_SELECTOR = [
+  '[data-docx-measure-root="true"]',
+  '[data-docx-page-boundary-layer="true"]',
+  '[data-docx-page-ui="true"]',
+  'script',
+  'style'
+].join(', ');
+
+function isSearchExcluded(element) {
+  return Boolean(element?.closest?.(SEARCH_EXCLUDED_SELECTOR));
+}
 
 function getSearchBlocks(root) {
   if (!root) {
@@ -13,7 +24,83 @@ function getSearchBlocks(root) {
     (element) => !element.querySelector(SEARCH_BLOCK_SELECTOR)
   );
 
-  return [...primaryBlocks, ...fallbackDivs].filter((element) => element.textContent?.trim());
+  const unique = [];
+  const seen = new Set();
+
+  [...primaryBlocks, ...fallbackDivs].forEach((element) => {
+    if (!element?.textContent?.trim() || isSearchExcluded(element) || seen.has(element)) {
+      return;
+    }
+    seen.add(element);
+    unique.push(element);
+  });
+
+  return unique;
+}
+
+function isWordSeparator(char) {
+  return char == null || char === ' ' || char === '\n' || char === '\t';
+}
+
+function hasKeyword(text, keyword, matchMode) {
+  const source = String(text || '').toLowerCase();
+  const target = String(keyword || '').toLowerCase();
+
+  if (!target) {
+    return false;
+  }
+
+  let startIndex = 0;
+  while (startIndex <= source.length - target.length) {
+    const foundIndex = source.indexOf(target, startIndex);
+    if (foundIndex === -1) {
+      return false;
+    }
+
+    if (matchMode !== 'exact') {
+      return true;
+    }
+
+    const before = foundIndex > 0 ? text[foundIndex - 1] : null;
+    const afterIndex = foundIndex + keyword.length;
+    const after = afterIndex < text.length ? text[afterIndex] : null;
+    if (isWordSeparator(before) && isWordSeparator(after)) {
+      return true;
+    }
+
+    startIndex = foundIndex + Math.max(target.length, 1);
+  }
+
+  return false;
+}
+
+function getEstimatedDocxPageNumber(root, block) {
+  if (!root || !block) {
+    return 1;
+  }
+
+  const rootRect = root.getBoundingClientRect();
+  const blockRect = block.getBoundingClientRect();
+  const relativeTop = Math.max(0, blockRect.top - rootRect.top);
+  const estimatedPageHeight = Math.max(900, (root.clientWidth || 794) * (1123 / 794));
+  return Math.max(1, Math.floor(relativeTop / estimatedPageHeight) + 1);
+}
+
+function getDocxPageNumber(root, block) {
+  const virtualPage = block?.closest?.('[data-virtual-page-number]');
+  if (virtualPage) {
+    return Number(virtualPage.dataset.virtualPageNumber) || 1;
+  }
+
+  const sections = Array.from(root?.querySelectorAll?.('section.docx') ?? []);
+  const section = block?.closest?.('section.docx');
+
+  if (sections.length > 1 && section) {
+    const sectionIndex = sections.indexOf(section);
+    return sectionIndex >= 0 ? sectionIndex + 1 : 1;
+  }
+
+  return getEstimatedDocxPageNumber(root, block);
 }
 
 function getRenderedDocxText(root) {
@@ -74,9 +161,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
     unwrapHighlightSpans(docxContentRef.current);
   };
 
-  const searchDocxText = (keyword) => {
+  const searchDocxText = (keyword, options = {}) => {
     const root = docxContentRef.current;
     const normalizedKeyword = String(keyword || '').trim();
+    const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
 
     if (!root || !normalizedKeyword) {
       return [];
@@ -85,30 +173,41 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
     clearSearchSelection(root);
 
     const results = [];
-    getSearchBlocks(root).forEach((element, index) => {
-      const text = element.textContent || '';
-      if (!text.includes(normalizedKeyword)) {
+    const pageParagraphCounts = new Map();
+
+    getSearchBlocks(root).forEach((element, blockIndex) => {
+      const text = String(element.textContent || '').trim();
+      const pageNumber = getDocxPageNumber(root, element);
+      const paragraphNumber = (pageParagraphCounts.get(pageNumber) || 0) + 1;
+      pageParagraphCounts.set(pageNumber, paragraphNumber);
+
+      if (!hasKeyword(text, normalizedKeyword, matchMode)) {
         return;
       }
 
       const resultIndex = results.length;
       element.dataset.docxSearchIndex = String(resultIndex);
       results.push({
+        id: `docx-${pageNumber}-${paragraphNumber}-${resultIndex}`,
         type: 'docx',
         index: resultIndex,
-        paragraphIndex: index + 1,
-        blockIndex: index + 1,
-        matchedText: text.trim(),
-        keyword: normalizedKeyword
+        pageNumber,
+        paragraphNumber,
+        paragraphIndex: paragraphNumber,
+        blockIndex: blockIndex + 1,
+        text,
+        matchedText: text,
+        keyword: normalizedKeyword,
+        matchIndex: text.toLowerCase().indexOf(normalizedKeyword.toLowerCase())
       });
     });
 
     return results;
   };
 
-  const scrollToDocxSearchResult = (resultIndex) => {
+  const scrollToDocxSearchResult = (resultOrIndex) => {
     const root = docxContentRef.current;
-    if (!root && root !== 0) {
+    if (!root) {
       return false;
     }
 
@@ -116,8 +215,18 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
       element.classList.remove('docx-search-current');
     });
 
+    const resultIndex = typeof resultOrIndex === 'number'
+      ? resultOrIndex
+      : Number(resultOrIndex?.index ?? resultOrIndex?.raw?.index);
+
+    if (!Number.isFinite(resultIndex)) {
+      console.warn('[WordViewer] invalid search result target:', resultOrIndex);
+      return false;
+    }
+
     const element = root.querySelector(`[data-docx-search-index="${resultIndex}"]`);
     if (!element) {
+      console.warn('[WordViewer] search result element not found:', resultIndex);
       return false;
     }
 
@@ -246,11 +355,14 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
         return '';
       }
     },
-    searchDocument(keyword) {
-      return searchDocxText(keyword);
+    searchDocument(keyword, options) {
+      return searchDocxText(keyword, options);
     },
-    scrollToSearchResult(resultIndex) {
-      return scrollToDocxSearchResult(resultIndex);
+    scrollToSearchResult(resultOrIndex) {
+      return scrollToDocxSearchResult(resultOrIndex);
+    },
+    clearSearchSelection() {
+      clearSearchSelection(docxContentRef.current);
     },
     highlightText(keyword) {
       return highlightDocxText(keyword);
