@@ -104,7 +104,7 @@ export async function extractPdfToHtmlText(file) {
   return htmlText;
 }
 
-export function replaceTextInHtmlText(htmlText, originalText, newText) {
+export function replaceTextInHtmlText(htmlText, originalText, newText, options = {}) {
   const target = String(originalText ?? '');
 
   if (!target) {
@@ -115,6 +115,7 @@ export function replaceTextInHtmlText(htmlText, originalText, newText) {
   }
 
   const replacement = String(newText ?? '');
+  const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
   const parser = new DOMParser();
   const docHtml = parser.parseFromString(String(htmlText ?? ''), 'text/html');
   const textElements = Array.from(docHtml.querySelectorAll('.pdf-text'));
@@ -122,11 +123,26 @@ export function replaceTextInHtmlText(htmlText, originalText, newText) {
 
   textElements.forEach((textElement) => {
     const before = textElement.textContent ?? '';
-    const after = before.split(target).join(replacement);
+    let after = before;
+    let localCount = 0;
 
-    if (before !== after) {
-      replaceCount += 1;
-      console.log('[HtmlTextConvert] replace text:', { before, after });
+    if (matchMode === 'exact') {
+      const parts = before.split(/([\s\n\t]+)/);
+      after = parts.map((part) => {
+        if (part === target) {
+          localCount += 1;
+          return replacement;
+        }
+        return part;
+      }).join('');
+    } else {
+      localCount = before.split(target).length - 1;
+      after = before.split(target).join(replacement);
+    }
+
+    if (localCount > 0) {
+      replaceCount += localCount;
+      console.log('[HtmlTextConvert] replace text:', { before, after, matchMode, count: localCount });
     }
 
     textElement.textContent = after;
