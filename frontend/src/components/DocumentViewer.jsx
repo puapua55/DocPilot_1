@@ -34,11 +34,14 @@ const DocumentViewer = forwardRef(function DocumentViewer({
         return '';
       }
     },
-    searchDocument(keyword) {
-      return viewerRef.current?.searchDocument?.(keyword) ?? [];
+    searchDocument(keyword, options) {
+      return viewerRef.current?.searchDocument?.(keyword, options) ?? [];
     },
-    scrollToSearchResult(resultIndex) {
-      return viewerRef.current?.scrollToSearchResult?.(resultIndex) ?? false;
+    scrollToSearchResult(result) {
+      return viewerRef.current?.scrollToSearchResult?.(result) ?? false;
+    },
+    clearSearchSelection() {
+      viewerRef.current?.clearSearchSelection?.();
     },
     highlightText(keyword) {
       return viewerRef.current?.highlightText?.(keyword) ?? 0;
