@@ -65,6 +65,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const pagesTextRef = useRef([]);
   const viewerRef = useRef(null);
   const pageRefs = useRef({});
+  const [userHighlight, setUserHighlight] = useState({
+    keyword: String(highlightKeyword || ''),
+    color: 'yellow',
+    matchMode: 'contains'
+  });
 
   console.log('[PdfJsViewer] file:', file);
 
@@ -134,11 +139,58 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     },
     clearSearchSelection() {
       // PDF 검색은 별도의 검색 선택 DOM을 만들지 않으므로 초기화할 항목이 없습니다.
+    },
+    async highlightText(keyword, options = {}) {
+      const normalizedKeyword = String(keyword || '').trim();
+      const color = ['yellow', 'green', 'blue', 'pink'].includes(options?.color)
+        ? options.color
+        : 'yellow';
+      const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
+
+      if (!normalizedKeyword) {
+        setUserHighlight({ keyword: '', color, matchMode });
+        return { count: 0, results: [] };
+      }
+
+      const pages = await ensurePdfTextPages();
+      const documentText = pages.map((page) => ({
+        page: page.pageNumber,
+        lines: page.lines.map((line) => line.text)
+      }));
+      const results = searchKeywordInDocument(
+        documentText,
+        normalizedKeyword,
+        { matchMode }
+      ).map((result, index) => ({
+        ...result,
+        id: result.id || `pdf-highlight-${result.pageNumber}-${result.lineNumber}-${index}`,
+        color
+      }));
+
+      setUserHighlight({ keyword: normalizedKeyword, color, matchMode });
+      return { count: results.length, results };
+    },
+    clearHighlights() {
+      setUserHighlight({
+        keyword: '',
+        color: 'yellow',
+        matchMode: 'contains'
+      });
+      return true;
+    },
+    scrollToHighlightResult(result) {
+      return scrollToPdfSearchResult(result);
     }
   }));
 
   useEffect(() => {
     console.log('[PdfJsViewer] highlightKeyword:', highlightKeyword);
+    if (highlightKeyword !== undefined && highlightKeyword !== null) {
+      setUserHighlight((current) => ({
+        ...current,
+        keyword: String(highlightKeyword || '')
+      }));
+    }
   }, [highlightKeyword]);
 
   useEffect(() => {
@@ -283,7 +335,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
               pdf={pdfDocument}
               pageNumber={pageNumber}
               scale={scale}
-              highlightKeyword={highlightKeyword}
+              highlightKeyword={userHighlight.keyword}
+              highlightOptions={userHighlight}
               replacePreview={replacePreview}
               onPageReady={(element) => {
                 if (element) {
