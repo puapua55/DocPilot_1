@@ -63,13 +63,38 @@ function App() {
     setHighlightKeyword(''); setHighlightStatusMessage(''); setReplacePreview(null); setSelectedSearchResult(null); setModifiedDocxHtml(''); setRunningActionId(null); clearSelectedDocument();
   };
 
-  const handleDocxSearch = (keyword) => previewModel?.type === 'word' ? (documentViewerRef.current?.searchDocument?.(keyword) ?? []) : [];
+  const handleDocumentSearch = async (keyword, options = {}) => {
+    if (!selectedDocument) {
+      return [];
+    }
+
+    if (documentViewerRef.current?.searchDocument) {
+      return await documentViewerRef.current.searchDocument(keyword, options);
+    }
+
+    if (previewModel?.type === 'pdf') {
+      return searchKeywordInDocument(documentText, keyword, options);
+    }
+
+    console.warn('[App] searchDocument is not available for the current viewer.');
+    return [];
+  };
 
   const handleSearchResultClick = (result) => {
     console.log('[SearchResult] clicked:', result);
-    if (result?.type === 'docx') documentViewerRef.current?.scrollToSearchResult?.(result.index);
-    setSelectedSearchResult({ ...result, clickedAt: Date.now() });
-    setIsSearchModalOpen(false);
+    const target = result?.raw || result;
+    const moved = documentViewerRef.current?.scrollToSearchResult?.(target) ?? false;
+
+    if (!moved) {
+      console.warn('[App] search result navigation was not handled:', target);
+    }
+
+    setSelectedSearchResult({ ...target, clickedAt: Date.now() });
+  };
+
+  const handleSearchReset = () => {
+    documentViewerRef.current?.clearSearchSelection?.();
+    setSelectedSearchResult(null);
   };
 
   const handleHighlightSearch = (keyword) => {
@@ -129,13 +154,13 @@ function App() {
   const executeSearchAction = async (messageId, action) => {
     if (!validateKeywordAction(action)) return;
     await runAction(messageId, 'search', async () => {
-      let rawResult;
-      if (previewModel?.type === 'word') {
-        if (!documentViewerRef.current?.searchDocument) throw new Error('현재 뷰어에서 검색 기능을 사용할 수 없습니다.');
-        rawResult = await documentViewerRef.current.searchDocument(action.keyword);
-      } else if (previewModel?.type === 'pdf') {
-        rawResult = await searchKeywordInDocument(documentText, action.keyword);
-      } else throw new Error('지원하지 않는 파일 형식입니다.');
+      if (previewModel?.type !== 'word' && previewModel?.type !== 'pdf') {
+        throw new Error('지원하지 않는 파일 형식입니다.');
+      }
+      if (!documentViewerRef.current?.searchDocument && previewModel?.type !== 'pdf') {
+        throw new Error('현재 뷰어에서 검색 기능을 사용할 수 없습니다.');
+      }
+      const rawResult = await handleDocumentSearch(action.keyword, { matchMode: 'contains' });
       const results = getSearchResults(rawResult);
       const count = results.length || normalizeCount(rawResult);
       appendAssistantMessage(`검색을 실행했습니다.\n검색어: ${action.keyword}\n검색 결과: ${count}건${formatSearchResultSummary(results)}`);
@@ -184,7 +209,7 @@ function App() {
       <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} replacePreview={replacePreview} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} />
       <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onReplaceCardClick={() => setIsReplaceModalOpen(true)} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteReplaceApplyAction={executeReplaceApplyAction} onExecuteReplaceConvertAction={executeReplaceConvertAction} />
     </main></div>
-    {isSearchModalOpen ? <SearchModal documentText={documentText} selectedDocument={selectedDocument} previewModel={previewModel} onDocxSearch={handleDocxSearch} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
+    {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
     <HighlightModal isOpen={isHighlightModalOpen} onClose={() => setIsHighlightModalOpen(false)} onSearch={handleHighlightSearch} />
     <ReplaceModal isOpen={isReplaceModalOpen} selectedDocument={selectedDocument} previewModel={previewModel} onDocxReplace={handleDocxReplace} onApplyPreview={setReplacePreview} onClose={() => setIsReplaceModalOpen(false)} />
     </div>
