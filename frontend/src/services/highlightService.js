@@ -315,6 +315,7 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword, options 
 export function createReplacementPreviewFromTextLayer(pageElement, replaceState) {
   const originalText = String(replaceState?.originalText || '').trim();
   const newText = String(replaceState?.newText ?? '');
+  const matchMode = replaceState?.matchMode === 'exact' ? 'exact' : 'contains';
 
   if (!pageElement || !originalText) {
     return [];
@@ -330,21 +331,13 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
     (span) => (span.textContent || '').length > 0
   );
   const lineGroups = buildTextLayerLineGroups(spans);
-  const loweredKeyword = originalText.toLowerCase();
   const previewItems = [];
 
   lineGroups.forEach((lineGroup, lineIndex) => {
     const lineText = lineGroup.text || '';
-    const loweredText = lineText.toLowerCase();
-    let startIndex = 0;
+    const matchIndexes = findHighlightMatchIndexes(lineText, originalText, matchMode);
 
-    while (true) {
-      const foundIndex = loweredText.indexOf(loweredKeyword, startIndex);
-
-      if (foundIndex === -1) {
-        break;
-      }
-
+    matchIndexes.forEach((foundIndex) => {
       const endIndex = foundIndex + originalText.length;
       const matchedRects = [];
       let cursor = 0;
@@ -405,8 +398,7 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
         });
       }
 
-      startIndex = foundIndex + originalText.length;
-    }
+    });
   });
 
   return previewItems;
