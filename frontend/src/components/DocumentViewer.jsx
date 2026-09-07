@@ -58,6 +58,11 @@ const DocumentViewer = forwardRef(function DocumentViewer({
       return viewerRef.current?.replaceText?.(originalText, newText, options)
         ?? { count: 0, replaceCount: 0, results: [] };
     },
+    scrollToReplaceResult(result) {
+      return viewerRef.current?.scrollToReplaceResult?.(result)
+        ?? viewerRef.current?.scrollToSearchResult?.(result)
+        ?? false;
+    },
     clearHighlights() {
       viewerRef.current?.clearHighlights?.();
     },
