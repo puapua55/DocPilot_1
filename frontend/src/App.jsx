@@ -205,7 +205,9 @@ function App() {
 
   const handleReplaceResultClick = (result) => {
     const target = result?.raw || result;
-    const moved = documentViewerRef.current?.scrollToSearchResult?.(target) ?? false;
+    const moved = documentViewerRef.current?.scrollToReplaceResult?.(target)
+      ?? documentViewerRef.current?.scrollToSearchResult?.(target)
+      ?? false;
     if (!moved) console.warn('[App] replace result navigation was not handled:', target);
   };
 
