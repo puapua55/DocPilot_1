@@ -8,7 +8,7 @@ import {
   createViewportTextSpans
 } from '../services/highlightService';
 
-function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onPageReady }) {
+function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = {}, replacePreview, onPageReady }) {
   const canvasRef = useRef(null);
   const pageRef = useRef(null);
   const renderTaskRef = useRef(null);
@@ -78,7 +78,8 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
         keyword: highlightKeyword,
         pageNumber,
         textItems: nextTextItems,
-        viewport
+        viewport,
+        matchMode: highlightOptions.matchMode
       });
 
       console.log('[PdfPage] viewport:', viewport.width, viewport.height);
@@ -116,7 +117,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
         renderTaskRef.current = null;
       }
     };
-  }, [highlightKeyword, pageNumber, pdf, scale]);
+  }, [highlightKeyword, highlightOptions.matchMode, pageNumber, pdf, scale]);
 
   useLayoutEffect(() => {
     if (!pageRef.current) {
@@ -127,7 +128,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
     let frameId = 0;
 
     const updateHighlightBoxes = () => {
-      const domRangeBoxes = createHighlightBoxesFromTextLayer(pageRef.current, highlightKeyword);
+      const domRangeBoxes = createHighlightBoxesFromTextLayer(pageRef.current, highlightKeyword, highlightOptions);
 
       if (domRangeBoxes.length > 0) {
         setHighlightBoxes(domRangeBoxes.map((box) => ({ ...box, page: pageNumber })));
@@ -142,7 +143,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [fallbackBoxes, highlightKeyword, pageNumber, textSpans]);
+  }, [fallbackBoxes, highlightKeyword, highlightOptions, pageNumber, textSpans]);
 
   useLayoutEffect(() => {
     if (!pageRef.current || !replacePreview?.originalText) {
@@ -192,7 +193,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, replacePreview, onP
       <canvas ref={canvasRef} className="pdf-canvas" />
       <PdfTextLayer spans={textSpans} width={pageSize.width} height={pageSize.height} />
       <ReplacementPreviewLayer items={replacementPreviewItems} width={pageSize.width} height={pageSize.height} />
-      <HighlightLayer boxes={highlightBoxes} width={pageSize.width} height={pageSize.height} />
+      <HighlightLayer boxes={highlightBoxes} width={pageSize.width} height={pageSize.height} color={highlightOptions.color} />
     </div>
   );
 }
