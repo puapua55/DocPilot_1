@@ -68,8 +68,9 @@ test('DOCX 포함 검색과 정확히 일치 검색을 구분한다', async ({ p
   await expect(page.locator('.word-document')).toBeVisible();
 
   await openSearch(page);
-  await expect(page.getByText('테스트1.docx', { exact: true })).toBeVisible();
-  await expect(page.getByText('DOCX', { exact: true })).toBeVisible();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('테스트1.docx', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('DOCX', { exact: true })).toBeVisible();
 
   const input = page.getByPlaceholder('검색어를 입력하세요');
   await input.fill('테스트');
