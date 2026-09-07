@@ -10,6 +10,7 @@ on:
       - 'frontend/tests/ai-tool-actions.spec.js'
       - 'frontend/tests/main-page-screenshot.spec.js'
       - 'frontend/tests/document-search.spec.js'
+      - 'frontend/tests/document-highlight.spec.js'
       - 'frontend/package*.json'
       - 'frontend/vite.config.js'
       - 'src/main/java/**'
@@ -25,6 +26,7 @@ on:
       - 'frontend/tests/ai-tool-actions.spec.js'
       - 'frontend/tests/main-page-screenshot.spec.js'
       - 'frontend/tests/document-search.spec.js'
+      - 'frontend/tests/document-highlight.spec.js'
       - 'frontend/package*.json'
       - 'frontend/vite.config.js'
       - 'src/main/java/**'
@@ -65,6 +67,9 @@ jobs:
       - name: Run exact document search E2E
         working-directory: frontend
         run: npm run test:e2e:search
+      - name: Run location highlight E2E
+        working-directory: frontend
+        run: npm run test:e2e:highlight
       - name: Capture DocPilot main page
         working-directory: frontend
         run: npx playwright test tests/main-page-screenshot.spec.js
