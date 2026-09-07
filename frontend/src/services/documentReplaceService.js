@@ -51,12 +51,14 @@ export async function applyTextReplacement({
   }
 
   if (fileType === 'pdf') {
-    onPdfApply?.({
-      originalText,
-      newText,
-      matchMode,
-      appliedAt: Date.now()
-    });
+    if (searchResults.length > 0) {
+      onPdfApply?.({
+        originalText,
+        newText,
+        matchMode,
+        appliedAt: Date.now()
+      });
+    }
     return {
       count: searchResults.length,
       replaceCount: searchResults.length,

@@ -4,7 +4,29 @@ function replaceWithMode(text, target, replacement, matchMode) {
   const source = String(text || '');
   if (!target) return source;
   if (matchMode !== 'exact') return source.split(target).join(replacement);
-  return source.split(/([\s\n\t]+)/).map((part) => part === target ? replacement : part).join('');
+
+  let cursor = 0;
+  let output = '';
+  while (cursor <= source.length - target.length) {
+    const found = source.indexOf(target, cursor);
+    if (found === -1) break;
+
+    const beforeChar = found > 0 ? source[found - 1] : null;
+    const afterIndex = found + target.length;
+    const afterChar = afterIndex < source.length ? source[afterIndex] : null;
+    const beforeOk = beforeChar == null || beforeChar === ' ' || beforeChar === '\n' || beforeChar === '\t';
+    const afterOk = afterChar == null || afterChar === ' ' || afterChar === '\n' || afterChar === '\t';
+
+    if (beforeOk && afterOk) {
+      output += source.slice(cursor, found) + replacement;
+      cursor = afterIndex;
+    } else {
+      output += source.slice(cursor, found + target.length);
+      cursor = found + target.length;
+    }
+  }
+
+  return output + source.slice(cursor);
 }
 
 function normalizeResult(raw, index, originalText, newText, matchMode) {
@@ -156,7 +178,9 @@ function ReplaceModal({
     setStatusType('progress');
     setStatusMessage('변환 파일을 생성하는 중입니다.');
     try {
-      setNormalized(await onPreviewTargets?.(originalText.trim(), newText, { matchMode }));
+      if (results.length === 0) {
+        setNormalized(await onPreviewTargets?.(originalText.trim(), newText, { matchMode }));
+      }
       const result = await onConvert?.(originalText.trim(), newText, { matchMode });
       const fileName = result?.fileName || result?.outputFileName || '변환 파일';
       const count = Number(result?.replaceCount ?? 0);
@@ -226,7 +250,10 @@ function ReplaceModal({
             </div>
           </div>
 
-          <div className="replace-help">화면에 적용은 현재 뷰어 미리보기만 변경합니다. 실제 파일 저장은 변환 파일 다운로드를 사용하세요.</div>
+          <div className="replace-help">
+            화면에 적용은 현재 뷰어 미리보기만 변경합니다. 실제 파일 저장은 변환 파일 다운로드를 사용하세요.
+            초기화는 입력값과 결과 목록만 비우며, 이미 화면에 적용된 임시 치환은 되돌리지 않습니다.
+          </div>
 
           {(statusMessage || emptyDocumentMessage) ? <div className={`replace-status ${statusType ? `replace-status-${statusType}` : ''}`} aria-live="polite">{statusMessage || emptyDocumentMessage}</div> : null}
 

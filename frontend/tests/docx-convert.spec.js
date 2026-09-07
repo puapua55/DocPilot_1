@@ -41,7 +41,7 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
   await page.getByLabel('기존 단어').fill('테스트');
   await page.getByLabel('변경 단어').fill('시험');
 
-  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '변환', exact: true }).click()]);
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '변환 파일 다운로드', exact: true }).click()]);
   expect(download.suggestedFilename()).toBe('테스트1_docx_converted.docx');
   const downloadedPath = testInfo.outputPath('테스트1_docx_converted.docx');
   await download.saveAs(downloadedPath);

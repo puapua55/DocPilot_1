@@ -127,14 +127,31 @@ export function replaceTextInHtmlText(htmlText, originalText, newText, options =
     let localCount = 0;
 
     if (matchMode === 'exact') {
-      const parts = before.split(/([\s\n\t]+)/);
-      after = parts.map((part) => {
-        if (part === target) {
+      let cursor = 0;
+      let output = '';
+
+      while (cursor <= before.length - target.length) {
+        const found = before.indexOf(target, cursor);
+        if (found === -1) break;
+
+        const beforeChar = found > 0 ? before[found - 1] : null;
+        const afterIndex = found + target.length;
+        const afterChar = afterIndex < before.length ? before[afterIndex] : null;
+        const beforeOk = beforeChar == null || beforeChar === ' ' || beforeChar === '\n' || beforeChar === '\t';
+        const afterOk = afterChar == null || afterChar === ' ' || afterChar === '\n' || afterChar === '\t';
+
+        if (beforeOk && afterOk) {
+          output += before.slice(cursor, found) + replacement;
+          cursor = afterIndex;
           localCount += 1;
-          return replacement;
+        } else {
+          output += before.slice(cursor, found + target.length);
+          cursor = found + target.length;
         }
-        return part;
-      }).join('');
+      }
+
+      output += before.slice(cursor);
+      after = output;
     } else {
       localCount = before.split(target).length - 1;
       after = before.split(target).join(replacement);
