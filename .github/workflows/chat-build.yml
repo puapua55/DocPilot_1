@@ -8,6 +8,7 @@ on:
       - 'frontend/src/**'
       - 'frontend/tests/ai-document-chat.spec.js'
       - 'frontend/tests/ai-tool-actions.spec.js'
+      - 'frontend/tests/main-page-screenshot.spec.js'
       - 'frontend/package*.json'
       - 'frontend/vite.config.js'
       - 'src/main/java/**'
@@ -21,6 +22,7 @@ on:
       - 'frontend/src/**'
       - 'frontend/tests/ai-document-chat.spec.js'
       - 'frontend/tests/ai-tool-actions.spec.js'
+      - 'frontend/tests/main-page-screenshot.spec.js'
       - 'frontend/package*.json'
       - 'frontend/vite.config.js'
       - 'src/main/java/**'
@@ -58,6 +60,16 @@ jobs:
       - name: Run approved AI document action E2E
         working-directory: frontend
         run: npm run test:e2e:ai-tools
+      - name: Capture DocPilot main page
+        working-directory: frontend
+        run: npx playwright test tests/main-page-screenshot.spec.js
+      - name: Upload main page screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docpilot-main-page-screenshot
+          path: frontend/test-artifacts/docpilot-main-page.png
+          if-no-files-found: warn
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
