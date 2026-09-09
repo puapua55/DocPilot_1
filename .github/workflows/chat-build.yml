@@ -102,6 +102,20 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test tests/main-page-screenshot.spec.js
+      - name: Save DOCX upload fullscreen screenshot to project
+        if: always() && github.event_name == 'push'
+        shell: bash
+        run: |
+          test -f frontend/test-artifacts/docpilot-docx-upload-fullscreen.png
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f frontend/test-artifacts/docpilot-docx-upload-fullscreen.png
+          if git diff --cached --quiet; then
+            echo "Screenshot is unchanged."
+          else
+            git commit -m "test: update DOCX upload fullscreen screenshot"
+            git push origin HEAD:codex/docx-search-highlight-replace
+          fi
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
