@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import './WordViewer.css';
 
 const SEARCH_BLOCK_SELECTOR = 'p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre';
@@ -16,6 +16,7 @@ const DOCX_HIGHLIGHT_COLORS = {
   blue: 'rgba(59, 130, 246, 0.30)',
   pink: 'rgba(236, 72, 153, 0.30)'
 };
+const DOCX_PAGE_BREAK_SELECTOR = 'hr.docx-page-break';
 
 function isSearchExcluded(element) {
   return Boolean(element?.closest?.(SEARCH_EXCLUDED_SELECTOR));
@@ -182,9 +183,65 @@ function serializeModifiedHtml(root) {
   return clone.innerHTML;
 }
 
-const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
+function splitHtmlIntoPages(html) {
+  const parser = new DOMParser();
+  const document = parser.parseFromString(`<div>${html}</div>`, 'text/html');
+  const root = document.body.firstElementChild;
+
+  if (!root) {
+    return [];
+  }
+
+  const pages = [];
+  let currentPage = [];
+
+  Array.from(root.childNodes).forEach((node) => {
+    if (node.nodeType === Node.ELEMENT_NODE && node.matches(DOCX_PAGE_BREAK_SELECTOR)) {
+      pages.push(currentPage.map((child) => child.outerHTML || child.textContent || '').join(''));
+      currentPage = [];
+      return;
+    }
+
+    currentPage.push(node);
+  });
+
+  pages.push(currentPage.map((child) => child.outerHTML || child.textContent || '').join(''));
+  return pages.filter((pageHtml, index) => pageHtml.trim() || index === 0);
+}
+
+const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, ref) {
   const { html, renderError, messages = [] } = previewModel || {};
   const docxContentRef = useRef(null);
+  const scaleContentRef = useRef(null);
+  const [docxSize, setDocxSize] = useState({ width: 0, height: 0 });
+  const pages = html ? splitHtmlIntoPages(html) : [];
+
+  useLayoutEffect(() => {
+    const content = scaleContentRef.current;
+    if (!content) {
+      return undefined;
+    }
+
+    const measure = () => {
+      const width = content.scrollWidth;
+      const height = content.scrollHeight;
+      if (width > 0 && height > 0) {
+        setDocxSize((current) => (
+          current.width === width && current.height === height
+            ? current
+            : { width, height }
+        ));
+      }
+    };
+
+    measure();
+    const observer = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(measure)
+      : null;
+    observer?.observe(content);
+
+    return () => observer?.disconnect();
+  }, [html, pages.length]);
 
   const clearDocxHighlights = () => {
     unwrapHighlightSpans(docxContentRef.current);
@@ -560,11 +617,32 @@ const WordViewer = forwardRef(function WordViewer({ previewModel }, ref) {
         </div>
       ) : null}
       <div className="word-viewer-scroll">
-        <article
-          ref={docxContentRef}
-          className="word-document docx-content"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+        <div className="docx-scale-viewport">
+          <div
+            className="docx-scale-holder"
+            style={docxSize.width && docxSize.height ? {
+              width: `${docxSize.width * scale}px`,
+              height: `${docxSize.height * scale}px`
+            } : undefined}
+          >
+            <div
+              ref={scaleContentRef}
+              className="docx-scale-content"
+              style={{ transform: `scale(${scale})` }}
+            >
+              <div ref={docxContentRef} className="docx-content word-page-stack">
+                {pages.map((pageHtml, index) => (
+                  <article
+                    key={`${index}-${pages.length}`}
+                    className="word-document"
+                    data-virtual-page-number={index + 1}
+                    dangerouslySetInnerHTML={{ __html: pageHtml }}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

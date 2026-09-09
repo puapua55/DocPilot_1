@@ -165,3 +165,24 @@ test('PDF 하이라이트 결과에 실제 1페이지와 2페이지 및 색상�
   await page.getByRole('button', { name: '전체 제거' }).click();
   await expect(page.locator('.highlight-box')).toHaveCount(0);
 });
+
+test('PDF 텍스트 레이어에서 드래그로 글자를 선택할 수 있다', async ({ page }) => {
+  await page.goto('/');
+  await upload(page, {
+    name: 'selectable-text.pdf',
+    mimeType: 'application/pdf',
+    buffer: createHighlightPdfBuffer()
+  });
+
+  const text = page.locator('.textLayer span').filter({ hasText: 'search target alpha' }).first();
+  await expect(text).toBeVisible();
+
+  const box = await text.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box.x + 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 8 });
+  await page.mouse.up();
+
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || '')).toContain('search target alpha');
+});

@@ -106,7 +106,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     }
 
     if (previewModel.type === 'word') {
-      return <WordViewer ref={viewerRef} previewModel={previewModel} />;
+      return <WordViewer ref={viewerRef} previewModel={previewModel} scale={scale} />;
     }
 
     return (
@@ -131,7 +131,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           >
             다시 선택
           </button>
-          {previewModel?.type === 'pdf' ? (
+          {previewModel?.type === 'pdf' || previewModel?.type === 'word' ? (
             <ZoomControls
               scale={scale}
               onZoomOut={() => setScale((current) => Math.max(MIN_SCALE, current - SCALE_STEP))}

@@ -43,8 +43,41 @@
   padding: 18px;
 }
 
+.word-page-stack {
+  width: min(794px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.docx-scale-viewport {
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.docx-scale-holder {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.docx-scale-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+}
+
+.docx-scale-content .word-page-stack {
+  position: relative;
+}
+
 .word-document {
   width: min(794px, 100%);
+  aspect-ratio: 794 / 1123;
   min-height: 1123px;
   margin: 0 auto;
   padding: 72px 68px;
@@ -54,6 +87,7 @@
   font-family: 'Malgun Gothic', '맑은 고딕', Arial, sans-serif;
   line-height: 1.6;
   overflow-wrap: anywhere;
+  overflow: hidden;
 }
 
 .docx-content {
@@ -105,12 +139,17 @@
   white-space: pre-wrap;
 }
 
+.docx-page-break {
+  display: none;
+}
+
 @media (max-width: 720px) {
   .word-viewer-scroll {
     padding: 10px;
   }
 
   .word-document {
+    aspect-ratio: auto;
     min-height: 0;
     padding: 36px 24px;
   }
