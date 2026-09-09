@@ -9,6 +9,7 @@ on:
       - 'frontend/tests/ai-document-chat.spec.js'
       - 'frontend/tests/ai-tool-actions.spec.js'
       - 'frontend/tests/main-page-screenshot.spec.js'
+      - 'frontend/tests/exact-search-screenshot.spec.js'
       - 'frontend/tests/document-search.spec.js'
       - 'frontend/tests/document-highlight.spec.js'
       - 'frontend/tests/document-replace.spec.js'
@@ -26,6 +27,7 @@ on:
       - 'frontend/tests/ai-document-chat.spec.js'
       - 'frontend/tests/ai-tool-actions.spec.js'
       - 'frontend/tests/main-page-screenshot.spec.js'
+      - 'frontend/tests/exact-search-screenshot.spec.js'
       - 'frontend/tests/document-search.spec.js'
       - 'frontend/tests/document-highlight.spec.js'
       - 'frontend/tests/document-replace.spec.js'
@@ -75,6 +77,17 @@ jobs:
       - name: Run instant text replacement E2E
         working-directory: frontend
         run: npm run test:e2e:replace
+      - name: Capture exact search result popup
+        if: always()
+        working-directory: frontend
+        run: npx playwright test tests/exact-search-screenshot.spec.js
+      - name: Upload exact search screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docpilot-exact-search-screenshot
+          path: frontend/test-artifacts/docpilot-exact-search-test-docx.png
+          if-no-files-found: warn
       - name: Capture DocPilot main page
         working-directory: frontend
         run: npx playwright test tests/main-page-screenshot.spec.js
