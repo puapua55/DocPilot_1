@@ -41,6 +41,9 @@ on:
       - '.github/workflows/chat-build.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -81,19 +84,19 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test tests/exact-search-screenshot.spec.js
-      - name: Encode exact search screenshot for chat handoff
-        if: always()
-        working-directory: frontend
+      - name: Save exact search screenshot to project
+        if: always() && github.event_name == 'push'
         shell: bash
         run: |
-          if [ -f test-artifacts/docpilot-exact-search-test-docx.png ]; then
-            echo "DOC_PILOT_SCREENSHOT_BASE64_BEGIN"
-            base64 -w 0 test-artifacts/docpilot-exact-search-test-docx.png
-            echo
-            echo "DOC_PILOT_SCREENSHOT_BASE64_END"
+          test -f frontend/test-artifacts/docpilot-exact-search-test-docx.png
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f frontend/test-artifacts/docpilot-exact-search-test-docx.png
+          if git diff --cached --quiet; then
+            echo "Screenshot is unchanged."
           else
-            echo "Screenshot file was not created."
-            exit 1
+            git commit -m "test: update exact search screenshot"
+            git push origin HEAD:codex/docx-search-highlight-replace
           fi
       - name: Capture DocPilot main page
         if: always()
