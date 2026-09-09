@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const fixturePath = path.join(__dirname, 'fixtures', '테스트1.docx');
+const fixturePath = path.join(__dirname, 'fixtures', '테스트1(3).docx');
 
-test('테스트1.docx 정확한 문서 검색 결과 팝업을 캡처한다', async ({ page }) => {
+test('테스트1(3).docx 정확한 문서 검색 결과 팝업을 캡처한다', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
   await page.goto('/');
 
@@ -16,7 +16,7 @@ test('테스트1.docx 정확한 문서 검색 결과 팝업을 캡처한다', as
   await page.getByText('정확한 문서 검색', { exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('테스트1.docx', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('테스트1(3).docx', { exact: true })).toBeVisible();
   await expect(dialog.getByText('DOCX', { exact: true })).toBeVisible();
 
   await dialog.getByPlaceholder('검색어를 입력하세요').fill('테스트');
