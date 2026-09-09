@@ -81,23 +81,24 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test tests/exact-search-screenshot.spec.js
-      - name: Upload exact search screenshot
+      - name: Encode exact search screenshot for chat handoff
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docpilot-exact-search-screenshot
-          path: frontend/test-artifacts/docpilot-exact-search-test-docx.png
-          if-no-files-found: warn
+        working-directory: frontend
+        shell: bash
+        run: |
+          if [ -f test-artifacts/docpilot-exact-search-test-docx.png ]; then
+            echo "DOC_PILOT_SCREENSHOT_BASE64_BEGIN"
+            base64 -w 0 test-artifacts/docpilot-exact-search-test-docx.png
+            echo
+            echo "DOC_PILOT_SCREENSHOT_BASE64_END"
+          else
+            echo "Screenshot file was not created."
+            exit 1
+          fi
       - name: Capture DocPilot main page
+        if: always()
         working-directory: frontend
         run: npx playwright test tests/main-page-screenshot.spec.js
-      - name: Upload main page screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docpilot-main-page-screenshot
-          path: frontend/test-artifacts/docpilot-main-page.png
-          if-no-files-found: warn
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
