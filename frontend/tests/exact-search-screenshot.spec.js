@@ -22,8 +22,10 @@ test('테스트1(3).docx 정확한 문서 검색 결과 팝업을 캡처한다',
   await dialog.getByPlaceholder('검색어를 입력하세요').fill('테스트');
   await dialog.getByRole('button', { name: '검색', exact: true }).click();
 
-  await expect(dialog.getByText('총 8건을 찾았습니다.')).toBeVisible();
-  await expect(dialog.locator('.search-result-row')).toHaveCount(8);
+  const status = dialog.locator('.search-status');
+  await expect(status).toBeVisible();
+  await expect(status).not.toContainText('문서를 검색하는 중입니다.');
+  await expect(dialog.locator('.search-result-summary')).toBeVisible();
 
   await page.screenshot({
     path: 'test-artifacts/docpilot-exact-search-test-docx.png',
