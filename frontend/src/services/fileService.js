@@ -52,11 +52,3 @@ export function normalizeDocumentFile(file) {
     mimeType: file.type || ''
   };
 }
-
-export async function uploadDocumentForDev(file) {
-  void file;
-
-  // TODO: Spring Boot `/api/...` 연동이 필요해지면 이 함수 안에서만 처리합니다.
-  // TODO: Electron 전환 후에는 preload/IPC 기반 파일 열기 API로 교체합니다.
-  return { mode: 'local-preview' };
-}

@@ -1,6 +1,5 @@
 import {
   normalizeDocumentFile,
-  uploadDocumentForDev,
   validateDocumentFile
 } from './fileService';
 import { extractWordContentForDev, getWordPreviewModel, isWordDocument } from './docxService';
@@ -19,8 +18,6 @@ export async function openDocument(file) {
   }
 
   const documentFile = normalizeDocumentFile(file);
-
-  await uploadDocumentForDev(file);
 
   if (isPdfDocument(documentFile)) {
     const documentText = await extractPdfTextByPages(file);
