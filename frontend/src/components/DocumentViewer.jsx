@@ -115,7 +115,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     }
 
     if (previewModel.type === 'word') {
-      return <WordViewer ref={viewerRef} previewModel={previewModel} scale={scale} />;
+      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} />;
     }
 
     return (

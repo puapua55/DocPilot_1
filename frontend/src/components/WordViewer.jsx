@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
+import { renderAsync } from 'docx-preview';
 import './WordViewer.css';
 
 const SEARCH_BLOCK_SELECTOR = 'p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre';
@@ -217,11 +218,19 @@ function splitHtmlIntoPages(html) {
   return pages.length > 0 ? pages : [''];
 }
 
-const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, ref) {
-  const { html, pageLayout, renderError, messages = [] } = previewModel || {};
+const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 1 }, ref) {
+  const {
+    html,
+    pageLayout,
+    renderError,
+    renderMode,
+    messages = []
+  } = previewModel || {};
   const docxContentRef = useRef(null);
   const scaleContentRef = useRef(null);
   const [docxSize, setDocxSize] = useState({ width: 0, height: 0 });
+  const [fidelityRenderFailed, setFidelityRenderFailed] = useState(false);
+  const [fidelityPageCount, setFidelityPageCount] = useState(0);
   const [viewMode, setViewMode] = useState('scroll');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
@@ -229,16 +238,57 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false, canReset: false });
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const historyRef = useRef({ snapshots: [], index: -1 });
+  const shouldUseFidelityRenderer = renderMode === 'original-page-layout' && Boolean(file);
+  const useFidelityRenderer = shouldUseFidelityRenderer && !fidelityRenderFailed;
   const pages = html ? splitHtmlIntoPages(html) : [];
-  const hasMultiplePages = pages.length > 1;
+  const pageCount = useFidelityRenderer ? fidelityPageCount : pages.length;
+  const hasMultiplePages = pageCount > 1;
   const pageStyle = pageLayout ? {
     '--docx-page-width': `${pageLayout.width}px`,
     '--docx-page-height': `${pageLayout.height}px`,
     '--docx-page-padding': `${pageLayout.top}px ${pageLayout.right}px ${pageLayout.bottom}px ${pageLayout.left}px`
   } : undefined;
 
+  useEffect(() => {
+    setFidelityRenderFailed(false);
+    setFidelityPageCount(0);
+  }, [file, renderMode]);
+
+  useEffect(() => {
+    if (!shouldUseFidelityRenderer || fidelityRenderFailed || !docxContentRef.current) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const container = docxContentRef.current;
+    container.replaceChildren();
+
+    renderAsync(file, container, container, {
+      className: 'docx',
+      inWrapper: true,
+      breakPages: true,
+      ignoreLastRenderedPageBreak: false,
+      renderHeaders: true,
+      renderFooters: true,
+      renderFootnotes: true,
+      renderEndnotes: true,
+      experimental: true,
+      useBase64URL: true
+    }).then(() => {
+      if (cancelled) return;
+      setFidelityPageCount(container.querySelectorAll('section.docx').length);
+    }).catch((error) => {
+      console.error('[WordViewer] original-layout DOCX render failed:', error);
+      if (!cancelled) setFidelityRenderFailed(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file, shouldUseFidelityRenderer, fidelityRenderFailed]);
+
   const captureDocumentSnapshot = () => Array.from(
-    docxContentRef.current?.querySelectorAll('.word-document') || []
+    docxContentRef.current?.querySelectorAll('.word-document, section.docx') || []
   ).map((page) => page.innerHTML);
 
   const updateHistoryState = () => {
@@ -283,7 +333,9 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
   };
 
   const restoreDocumentSnapshot = (snapshot) => {
-    const documentPages = Array.from(docxContentRef.current?.querySelectorAll('.word-document') || []);
+    const documentPages = Array.from(
+      docxContentRef.current?.querySelectorAll('.word-document, section.docx') || []
+    );
     if (!snapshot || documentPages.length !== snapshot.length) {
       return false;
     }
@@ -352,7 +404,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
     observer?.observe(content);
 
     return () => observer?.disconnect();
-  }, [html, pages.length]);
+  }, [html, pages.length, fidelityPageCount]);
 
   useLayoutEffect(() => {
     const snapshot = captureDocumentSnapshot();
@@ -360,11 +412,21 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
       ? { snapshots: [snapshot], index: 0 }
       : { snapshots: [], index: -1 };
     updateHistoryState();
-  }, [html]);
+  }, [html, fidelityPageCount]);
 
   useEffect(() => {
-    setCurrentPage((page) => Math.min(Math.max(page, 1), Math.max(pages.length, 1)));
-  }, [pages.length]);
+    setCurrentPage((page) => Math.min(Math.max(page, 1), Math.max(pageCount, 1)));
+  }, [pageCount]);
+
+  useLayoutEffect(() => {
+    if (!useFidelityRenderer || !docxContentRef.current) {
+      return;
+    }
+
+    docxContentRef.current.querySelectorAll('section.docx').forEach((page, index) => {
+      page.hidden = viewMode === 'page' && currentPage !== index + 1;
+    });
+  }, [currentPage, fidelityPageCount, useFidelityRenderer, viewMode]);
 
   useEffect(() => {
     setPageInput(String(currentPage));
@@ -379,7 +441,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
 
   const handlePageInputSubmit = () => {
     const targetPage = Number(pageInput);
-    if (!Number.isInteger(targetPage) || targetPage < 1 || targetPage > pages.length) {
+    if (!Number.isInteger(targetPage) || targetPage < 1 || targetPage > pageCount) {
       setPageInputError('현재 문서에 존재하지 않는 페이지입니다.');
       return;
     }
@@ -788,9 +850,11 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
 
   return (
     <div className="word-viewer-shell">
-      {messages.length > 0 ? (
+      {(messages.length > 0 || fidelityRenderFailed) ? (
         <div className="word-viewer-warning" role="status">
-          일부 Word 서식은 웹 미리보기에서 단순화될 수 있습니다.
+          {fidelityRenderFailed
+            ? '원본 레이아웃 렌더링에 실패해 일반 미리보기로 표시합니다.'
+            : '일부 Word 서식은 웹 미리보기에서 단순화될 수 있습니다.'}
         </div>
       ) : null}
       <div className="word-viewer-scroll">
@@ -807,26 +871,34 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
               className="docx-scale-content"
               style={{ transform: `scale(${scale})` }}
             >
-              <div ref={docxContentRef} className="docx-content word-page-stack" style={pageStyle}>
-                {pages.map((pageHtml, index) => (
-                  <div
-                    key={`${index}-${pages.length}`}
-                    className={`docx-page-frame ${viewMode === 'page' ? 'page-mode' : ''}`}
-                    hidden={viewMode === 'page' && currentPage !== index + 1}
-                  >
-                    <article
-                      className="word-document"
-                      data-virtual-page-number={index + 1}
-                      dangerouslySetInnerHTML={{ __html: pageHtml }}
-                    />
-                    {viewMode === 'page' ? (
-                      <span className="docx-current-page-indicator" aria-live="polite">
-                        {index + 1} / {pages.length}
-                      </span>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
+              {useFidelityRenderer ? (
+                <div
+                  ref={docxContentRef}
+                  className="docx-content docx-fidelity-content"
+                  aria-label={fidelityPageCount ? `원본 레이아웃 ${fidelityPageCount}페이지` : '원본 레이아웃을 불러오는 중'}
+                />
+              ) : (
+                <div ref={docxContentRef} className="docx-content word-page-stack" style={pageStyle}>
+                  {pages.map((pageHtml, index) => (
+                    <div
+                      key={`${index}-${pages.length}`}
+                      className={`docx-page-frame ${viewMode === 'page' ? 'page-mode' : ''}`}
+                      hidden={viewMode === 'page' && currentPage !== index + 1}
+                    >
+                      <article
+                        className="word-document"
+                        data-virtual-page-number={index + 1}
+                        dangerouslySetInnerHTML={{ __html: pageHtml }}
+                      />
+                      {viewMode === 'page' ? (
+                        <span className="docx-current-page-indicator" aria-live="polite">
+                          {index + 1} / {pages.length}
+                        </span>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -908,12 +980,12 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
                     }
                   }}
                 />
-                <span aria-live="polite">/ {pages.length}</span>
+                <span aria-live="polite">/ {pageCount}</span>
               </label>
               <button
                 type="button"
-                onClick={() => setCurrentPage((page) => Math.min(pages.length, page + 1))}
-                disabled={currentPage === pages.length}
+                onClick={() => setCurrentPage((page) => Math.min(pageCount, page + 1))}
+                disabled={currentPage === pageCount}
               >
                 다음
               </button>

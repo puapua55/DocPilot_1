@@ -109,7 +109,7 @@ test('DOCX 결과 클릭은 active row와 viewer current 위치를 표시하고 
   await expect(row).toHaveClass(/active/);
   await expect(page.locator('.docx-search-current')).toHaveCount(1);
 
-  await page.getByRole('button', { name: '초기화' }).click();
+  await page.getByRole('button', { name: '초기화', exact: true }).click();
   await expect(page.locator('.search-result-row')).toHaveCount(0);
   await expect(page.locator('.docx-search-current')).toHaveCount(0);
   await expect(page.getByPlaceholder('검색어를 입력하세요')).toHaveValue('');
@@ -185,18 +185,56 @@ test('표 사이의 긴 빈 문단 구간은 실제 빈 페이지로 유지한�
   await expect(viewControls).toBeVisible();
   await viewControls.getByRole('button', { name: '페이지 이동' }).click();
   await expect(page.locator('.docx-page-frame:not([hidden]) .word-document')).toHaveCount(1);
-  await expect(page.locator('.docx-current-page-indicator')).toHaveText('1 / 3');
+  await expect(page.locator('.docx-page-frame:not([hidden]) .docx-current-page-indicator')).toHaveText('1 / 3');
   await page.getByRole('button', { name: '다음' }).click();
-  await expect(page.locator('.docx-current-page-indicator')).toHaveText('2 / 3');
+  await expect(page.locator('.docx-page-frame:not([hidden]) .docx-current-page-indicator')).toHaveText('2 / 3');
   const pageInput = page.getByLabel('이동할 페이지');
   await pageInput.fill('3');
   await pageInput.press('Enter');
-  await expect(page.locator('.docx-current-page-indicator')).toHaveText('3 / 3');
+  await expect(page.locator('.docx-page-frame:not([hidden]) .docx-current-page-indicator')).toHaveText('3 / 3');
   await pageInput.fill('9');
   await pageInput.press('Enter');
   await expect(page.getByRole('alert')).toHaveText('현재 문서에 존재하지 않는 페이지입니다.');
   await viewControls.getByRole('button', { name: '스크롤' }).click();
   await expect(page.locator('.docx-page-frame:not([hidden]) .word-document')).toHaveCount(3);
+});
+
+test('강제 페이지 나눔 DOCX는 원본 레이아웃 렌더러와 원본 페이지 구분을 사용한다', async ({ page }) => {
+  await page.goto('/');
+  const beforeBreakParagraphs = Array.from(
+    { length: 12 },
+    (_, index) => `<w:p><w:r><w:t>긴 문서 문단 ${index + 1}</w:t></w:r></w:p>`
+  ).join('');
+
+  await upload(page, {
+    name: 'forced-page-break-overflow.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    buffer: await createSearchDocxBuffer(`
+      ${beforeBreakParagraphs}
+      <w:p><w:r><w:rPr><w:color w:val="0000FF"/><w:sz w:val="24"/></w:rPr><w:t>강제 나눔 전 마지막 문단</w:t></w:r></w:p>
+      <w:p><w:r><w:br w:type="page"/></w:r></w:p>
+      <w:p><w:r><w:t>강제 나눔 다음 문단</w:t></w:r></w:p>
+    `)
+  });
+
+  const pages = page.locator('.docx-fidelity-content section.docx');
+  await expect(pages).toHaveCount(2);
+  await expect(page.getByLabel('원본 레이아웃 2페이지')).toBeVisible();
+  const viewControls = page.getByRole('group', { name: '보기 방식 선택' });
+  await expect(viewControls).toBeVisible();
+  await viewControls.getByRole('button', { name: '페이지 이동' }).click();
+  await expect(page.locator('.docx-fidelity-content section.docx:not([hidden])')).toHaveCount(1);
+  await page.getByRole('button', { name: '다음' }).click();
+  await expect(page.locator('.docx-fidelity-content section.docx:not([hidden])')).toContainText('강제 나눔 다음 문단');
+  await expect(pages.first()).toBeHidden();
+  await expect(pages.nth(1)).toBeVisible();
+  await viewControls.getByRole('button', { name: '스크롤' }).click();
+  await expect(page.locator('.docx-fidelity-content section.docx:not([hidden])')).toHaveCount(2);
+  await expect(pages.first()).toBeVisible();
+  const lastParagraph = pages.first().getByText('강제 나눔 전 마지막 문단', { exact: true });
+  await expect(lastParagraph).toBeVisible();
+  await expect(lastParagraph).toHaveCSS('color', 'rgb(0, 0, 255)');
+  await expect(pages.nth(1)).toContainText('강제 나눔 다음 문단');
 });
 
 test('모달은 배경을 클릭해도 닫히지 않고 X 버튼으로만 닫힌다', async ({ page }) => {

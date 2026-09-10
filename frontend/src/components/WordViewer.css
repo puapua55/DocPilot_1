@@ -270,7 +270,6 @@
 
 .word-document {
   width: var(--docx-page-width, 794px);
-  aspect-ratio: 794 / 1123;
   min-height: var(--docx-page-height, 1123px);
   margin: 0 auto;
   padding: var(--docx-page-padding, 72px 68px);
@@ -280,7 +279,13 @@
   font-family: 'Malgun Gothic', '맑은 고딕', Arial, sans-serif;
   line-height: 1.6;
   overflow-wrap: anywhere;
-  overflow: hidden;
+  /*
+   * A DOCX page break is an explicit boundary, not a guarantee that the
+   * preceding content fits on one physical sheet. Mammoth does not reproduce
+   * Word's automatic pagination, so let an overflowing block grow instead of
+   * cutting off its final lines at the nominal A4 height.
+   */
+  overflow: visible;
 }
 
 .docx-current-page-indicator {
@@ -300,6 +305,32 @@
   position: relative;
   line-height: 1.6;
   word-break: keep-all;
+}
+
+/* docx-preview renders the original Word styles and its own page sections. */
+.docx-fidelity-content {
+  width: max-content;
+  max-width: none;
+  margin: 0 auto;
+  line-height: normal;
+  word-break: normal;
+}
+
+.docx-fidelity-content .docx-wrapper {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.docx-fidelity-content section.docx {
+  margin: 0 0 18px;
+  box-shadow: 0 16px 36px rgba(51, 71, 132, 0.12);
+}
+
+/* docx-preview assigns its own display value to pages, so override it when
+ * page-navigation mode marks a page as hidden. */
+.docx-fidelity-content section.docx[hidden] {
+  display: none !important;
 }
 
 .docx-highlight {

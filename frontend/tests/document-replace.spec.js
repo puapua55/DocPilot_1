@@ -141,14 +141,14 @@ test('DOCX 교체 대상은 확인 뒤 선택한 항목만 화면에 적용한�
   const checkboxes = page.getByRole('checkbox', { name: /교체 대상 \d+ 선택/ });
   await expect(checkboxes).toHaveCount(4);
   for (let index = 0; index < 4; index += 1) {
-    await expect(checkboxes.nth(index)).toBeChecked();
+    await expect(checkboxes.nth(index)).not.toBeChecked();
   }
 
-  await checkboxes.first().uncheck();
   await page.getByRole('button', { name: '전체 선택' }).click();
   for (let index = 0; index < 4; index += 1) {
     await expect(checkboxes.nth(index)).toBeChecked();
   }
+  await expect(page.getByRole('button', { name: '전체 해제' })).toBeVisible();
   await checkboxes.first().uncheck();
 
   await page.getByRole('button', { name: '화면에 적용' }).click();

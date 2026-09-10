@@ -283,6 +283,53 @@ function getDocxPageLayout(documentXml) {
   };
 }
 
+function isWordBooleanEnabled(element) {
+  const value = String(getWordAttribute(element, 'val')).toLowerCase();
+  return value !== '0' && value !== 'false' && value !== 'off';
+}
+
+function getForcedPageBreakInfo(documentXml, stylesXml = '') {
+  const document = new DOMParser().parseFromString(documentXml, 'application/xml');
+  if (document.querySelector('parsererror')) {
+    return { hasForcedPageBreak: false, count: 0 };
+  }
+
+  const manualBreakCount = getWordDescendants(document, 'br').filter((breakElement) => (
+    getWordAttribute(breakElement, 'type') === 'page'
+  )).length;
+  const paragraphPageBreakCount = getWordDescendants(document, 'pageBreakBefore')
+    .filter(isWordBooleanEnabled).length;
+
+  let styledPageBreakCount = 0;
+  if (stylesXml) {
+    const stylesDocument = new DOMParser().parseFromString(stylesXml, 'application/xml');
+    if (!stylesDocument.querySelector('parsererror')) {
+      const styleById = new Map(getWordDescendants(stylesDocument, 'style')
+        .filter((style) => getWordAttribute(style, 'type') === 'paragraph')
+        .map((style) => [getWordAttribute(style, 'styleId'), style]));
+      const hasPageBreakBefore = (styleId, visited = new Set()) => {
+        if (!styleId || visited.has(styleId)) return false;
+        visited.add(styleId);
+        const style = styleById.get(styleId);
+        if (!style) return false;
+        const properties = getWordChild(style, 'pPr');
+        const pageBreakBefore = getWordChild(properties, 'pageBreakBefore');
+        if (pageBreakBefore && isWordBooleanEnabled(pageBreakBefore)) return true;
+        return hasPageBreakBefore(getWordAttribute(getWordChild(properties, 'basedOn'), 'val'), visited);
+      };
+
+      const usedParagraphStyles = new Set(getWordDescendants(document, 'p')
+        .map((paragraph) => getWordAttribute(getWordChild(getWordChild(paragraph, 'pPr'), 'pStyle'), 'val'))
+        .filter(Boolean));
+      styledPageBreakCount = [...usedParagraphStyles].filter((styleId) => hasPageBreakBefore(styleId)).length;
+    }
+  }
+
+  const count = manualBreakCount + paragraphPageBreakCount + styledPageBreakCount;
+
+  return { hasForcedPageBreak: count > 0, count };
+}
+
 function getParagraphAlignment(paragraph) {
   const alignment = getWordAttribute(getWordChild(getWordChild(paragraph, 'pPr'), 'jc'), 'val');
   return {
@@ -445,7 +492,7 @@ async function createLayoutAdjustedHtml(arrayBuffer, html) {
     const documentXml = await zip.file('word/document.xml')?.async('string');
 
     if (!documentXml) {
-      return { html, pageLayout: null };
+      return { html, pageLayout: null, hasForcedPageBreak: false, forcedPageBreakCount: 0 };
     }
 
     let stylesXml = '';
@@ -456,14 +503,17 @@ async function createLayoutAdjustedHtml(arrayBuffer, html) {
     }
 
     const pageLayout = getDocxPageLayout(documentXml);
+    const forcedPageBreak = getForcedPageBreakInfo(documentXml, stylesXml);
     const layoutHtml = applyDocxLayout(html, documentXml, stylesXml);
     return {
       html: insertPageBreaksBeforeTables(layoutHtml, findTablePageSplits(documentXml, pageLayout)),
-      pageLayout
+      pageLayout,
+      hasForcedPageBreak: forcedPageBreak.hasForcedPageBreak,
+      forcedPageBreakCount: forcedPageBreak.count
     };
   } catch (error) {
     console.warn('[DOCX] layout page split detection failed:', error);
-    return { html, pageLayout: null };
+    return { html, pageLayout: null, hasForcedPageBreak: false, forcedPageBreakCount: 0 };
   }
 }
 
@@ -478,6 +528,8 @@ export function getWordPreviewModel(documentFile, docxPreview = {}) {
     fileSize: documentFile.size,
     html: docxPreview.html || '',
     pageLayout: docxPreview.pageLayout || null,
+    renderMode: docxPreview.hasForcedPageBreak ? 'original-page-layout' : 'html-preview',
+    forcedPageBreakCount: docxPreview.forcedPageBreakCount || 0,
     messages: docxPreview.messages || [],
     renderError: docxPreview.renderError || ''
   };
@@ -507,6 +559,8 @@ export async function extractWordContentForDev(file) {
     return {
       html: layoutResult.html,
       pageLayout: layoutResult.pageLayout,
+      hasForcedPageBreak: layoutResult.hasForcedPageBreak,
+      forcedPageBreakCount: layoutResult.forcedPageBreakCount,
       documentText: createSearchText(textResult.value),
       messages: htmlResult.messages || [],
       renderError: ''
@@ -517,6 +571,8 @@ export async function extractWordContentForDev(file) {
       html: '',
       documentText: [],
       messages: [],
+      hasForcedPageBreak: false,
+      forcedPageBreakCount: 0,
       renderError: 'DOCX 문서를 표시하지 못했습니다. 파일이 손상되지 않았는지 확인해주세요.'
     };
   }

@@ -164,7 +164,7 @@ function ReplaceModal({
     setStatusMessage('교체 대상을 확인하는 중입니다.');
     try {
       const normalized = setNormalized(await onPreviewTargets?.(originalText.trim(), newText, { matchMode }));
-      setSelectedResultIds(normalized.results.map((result) => result.id));
+      setSelectedResultIds([]);
       setStatusType(normalized.count ? 'success' : 'empty');
       setStatusMessage(normalized.count ? `총 ${normalized.count}건의 교체 대상을 찾았습니다.` : '교체할 단어를 찾을 수 없습니다.');
     } catch (error) {
@@ -242,6 +242,12 @@ function ReplaceModal({
     ));
   };
 
+  const allResultsSelected = results.length > 0 && selectedResultIds.length === results.length;
+
+  const toggleAllResultSelections = () => {
+    setSelectedResultIds(allResultsSelected ? [] : results.map((result) => result.id));
+  };
+
   const handleClose = () => {
     onReset?.();
     onClose?.();
@@ -299,10 +305,10 @@ function ReplaceModal({
               <button
                 type="button"
                 className="replace-select-all-button secondary-button"
-                onClick={() => setSelectedResultIds(results.map((result) => result.id))}
-                disabled={runningAction !== null || selectedResultIds.length === results.length}
+                onClick={toggleAllResultSelections}
+                disabled={runningAction !== null}
               >
-                전체 선택
+                {allResultsSelected ? '전체 해제' : '전체 선택'}
               </button>
             ) : null}
           </div>
