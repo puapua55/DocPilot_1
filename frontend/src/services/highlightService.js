@@ -316,6 +316,8 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
   const originalText = String(replaceState?.originalText || '').trim();
   const newText = String(replaceState?.newText ?? '');
   const matchMode = replaceState?.matchMode === 'exact' ? 'exact' : 'contains';
+  const selectedTargets = Array.isArray(replaceState?.selectedTargets) ? replaceState.selectedTargets : null;
+  const pageNumber = Number(pageElement?.dataset?.pageNumber);
 
   if (!pageElement || !originalText) {
     return [];
@@ -338,6 +340,14 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
     const matchIndexes = findHighlightMatchIndexes(lineText, originalText, matchMode);
 
     matchIndexes.forEach((foundIndex) => {
+      if (selectedTargets && !selectedTargets.some((target) => {
+        const raw = target?.raw || target || {};
+        return Number(raw.pageNumber ?? raw.page) === pageNumber
+          && Number(raw.lineNumber ?? raw.line) === lineIndex + 1
+          && Number(raw.matchIndex) === foundIndex;
+      })) {
+        return;
+      }
       const endIndex = foundIndex + originalText.length;
       const matchedRects = [];
       let cursor = 0;

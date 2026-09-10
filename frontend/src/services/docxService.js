@@ -13,6 +13,8 @@ const DOCX_STYLE_MAP = [
   "br[type='page'] => hr.docx-page-break:fresh"
 ];
 const EMPTY_PARAGRAPHS_FOR_PAGE_SPLIT = 8;
+const WORDPROCESSINGML_NAMESPACE = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const TWIPS_TO_PIXELS = 96 / 1440;
 
 function isDocxFile(file) {
   return file?.name?.toLowerCase().endsWith(DOCX_EXTENSION);
@@ -84,7 +86,14 @@ function isEmptyParagraph(element) {
   return !String(element.textContent || '').trim();
 }
 
-function findTablePageSplitIndexes(documentXml) {
+function getEstimatedTableHeight(table, pageLayout) {
+  const rowCount = Array.from(table?.children || []).filter(
+    (child) => child.tagName === 'w:tr' || child.localName === 'tr'
+  ).length;
+  return Math.max(rowCount, 1) * (pageLayout?.lineHeight || 24);
+}
+
+function findTablePageSplits(documentXml, pageLayout) {
   const parser = new DOMParser();
   const document = parser.parseFromString(documentXml, 'application/xml');
   const body = document.getElementsByTagName('w:body')[0];
@@ -93,17 +102,50 @@ function findTablePageSplitIndexes(documentXml) {
     return [];
   }
 
-  const splitIndexes = [];
+  const splits = [];
   let tableIndex = 0;
   let emptyParagraphsAfterTable = 0;
   let hasPreviousTable = false;
+  let contentOffset = 0;
+  let previousTablePage = 0;
+  const contentHeight = Math.max(
+    1,
+    (pageLayout?.height || 1123) - (pageLayout?.top || 72) - (pageLayout?.bottom || 72)
+  );
+  const emptyParagraphHeight = pageLayout?.emptyParagraphHeight || 67.2;
 
   Array.from(body.children).forEach((element) => {
     if (element.tagName === 'w:tbl') {
+      const tableHeight = getEstimatedTableHeight(element, pageLayout);
       if (hasPreviousTable && emptyParagraphsAfterTable >= EMPTY_PARAGRAPHS_FOR_PAGE_SPLIT) {
-        splitIndexes.push(tableIndex);
+        let tablePage = Math.floor(contentOffset / contentHeight);
+        let leadingSpace = contentOffset % contentHeight;
+
+        if (leadingSpace + tableHeight > contentHeight) {
+          tablePage += 1;
+          leadingSpace = 0;
+        }
+
+        // The blank paragraph run continues after the inserted blank page.
+        // Keep its remaining vertical position instead of pinning the next
+        // table to the page top when the estimated flow crosses a boundary.
+        if (tablePage > previousTablePage + 1) {
+          leadingSpace = Math.max(leadingSpace, contentHeight * 0.82);
+        }
+
+        splits.push({
+          tableIndex,
+          leadingSpace: Math.max(0, leadingSpace),
+          // A long run of blank paragraphs in this lightweight renderer
+          // represents the single intentional blank page between contents.
+          // Do not turn accumulated grid-estimation error into extra pages.
+          emptyPageCount: Math.min(1, Math.max(0, tablePage - previousTablePage - 1))
+        });
+        contentOffset = (tablePage * contentHeight) + leadingSpace;
+        previousTablePage = tablePage;
       }
 
+      contentOffset += tableHeight;
       tableIndex += 1;
       hasPreviousTable = true;
       emptyParagraphsAfterTable = 0;
@@ -112,17 +154,18 @@ function findTablePageSplitIndexes(documentXml) {
 
     if (hasPreviousTable && isEmptyParagraph(element)) {
       emptyParagraphsAfterTable += 1;
+      contentOffset += emptyParagraphHeight;
       return;
     }
 
     emptyParagraphsAfterTable = 0;
   });
 
-  return splitIndexes;
+  return splits;
 }
 
-function insertPageBreaksBeforeTables(html, tableIndexes) {
-  if (!tableIndexes.length) {
+function insertPageBreaksBeforeTables(html, tableSplits) {
+  if (!tableSplits.length) {
     return html;
   }
 
@@ -143,13 +186,257 @@ function insertPageBreaksBeforeTables(html, tableIndexes) {
       .slice(0, Array.from(root.children).indexOf(element) + 1)
       .filter((child) => child.tagName === 'TABLE').length - 1;
 
-    if (tableIndexes.includes(tableIndex)) {
-      element.before(document.createElement('hr'));
-      element.previousElementSibling.className = 'docx-page-break';
+    const split = tableSplits.find((entry) => entry.tableIndex === tableIndex);
+    if (split) {
+      const addPageBreak = () => {
+        const pageBreak = document.createElement('hr');
+        pageBreak.className = 'docx-page-break';
+        element.before(pageBreak);
+      };
+      addPageBreak();
+      Array.from({ length: split.emptyPageCount || 0 }).forEach(addPageBreak);
+
+      if (split.leadingSpace > 0) {
+        const spacer = document.createElement('div');
+        spacer.className = 'docx-page-leading-spacer';
+        spacer.style.height = `${split.leadingSpace}px`;
+        element.before(spacer);
+      }
     }
   });
 
   return root.innerHTML;
+}
+
+function getWordAttribute(element, name) {
+  if (!element) {
+    return '';
+  }
+
+  return element.getAttribute(`w:${name}`)
+    || element.getAttributeNS(WORDPROCESSINGML_NAMESPACE, name)
+    || element.getAttribute(name)
+    || '';
+}
+
+function getWordChild(element, name) {
+  return Array.from(element?.children || []).find(
+    (child) => child.tagName === `w:${name}` || child.localName === name
+  ) || null;
+}
+
+function getWordDescendants(element, name) {
+  return Array.from(element?.getElementsByTagName(`w:${name}`) || []);
+}
+
+function getDocxWidth(value, type) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return '';
+  }
+
+  if (type === 'pct') {
+    return `${numericValue / 50}%`;
+  }
+
+  if (type === 'dxa' || !type) {
+    return `${numericValue * TWIPS_TO_PIXELS}px`;
+  }
+
+  return '';
+}
+
+function getTwipsInPixels(value, fallback) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue > 0
+    ? numericValue * TWIPS_TO_PIXELS
+    : fallback;
+}
+
+function getDocxPageLayout(documentXml) {
+  const document = new DOMParser().parseFromString(documentXml, 'application/xml');
+  if (document.querySelector('parsererror')) {
+    return null;
+  }
+
+  const sectionProperties = getWordDescendants(document, 'sectPr').at(-1);
+  const pageSize = getWordChild(sectionProperties, 'pgSz');
+  const pageMargins = getWordChild(sectionProperties, 'pgMar');
+  const documentGrid = getWordChild(sectionProperties, 'docGrid');
+  if (!pageSize && !pageMargins) {
+    return null;
+  }
+
+  const lineHeight = getTwipsInPixels(getWordAttribute(documentGrid, 'linePitch'), 24);
+  return {
+    width: getTwipsInPixels(getWordAttribute(pageSize, 'w'), 794),
+    height: getTwipsInPixels(getWordAttribute(pageSize, 'h'), 1123),
+    top: getTwipsInPixels(getWordAttribute(pageMargins, 'top'), 72),
+    right: getTwipsInPixels(getWordAttribute(pageMargins, 'right'), 68),
+    bottom: getTwipsInPixels(getWordAttribute(pageMargins, 'bottom'), 72),
+    left: getTwipsInPixels(getWordAttribute(pageMargins, 'left'), 68),
+    lineHeight,
+    // Mammoth omits empty paragraphs. In this DOCX layout an empty paragraph
+    // advances the Word line grid, paragraph mark, and paragraph-after gap.
+    // Preserve all three so following content stays at its original height.
+    emptyParagraphHeight: lineHeight * 2.8
+  };
+}
+
+function getParagraphAlignment(paragraph) {
+  const alignment = getWordAttribute(getWordChild(getWordChild(paragraph, 'pPr'), 'jc'), 'val');
+  return {
+    center: 'center',
+    right: 'right',
+    both: 'justify',
+    distribute: 'justify',
+    left: 'left'
+  }[alignment] || '';
+}
+
+function getParagraphText(paragraph) {
+  return getWordDescendants(paragraph, 't')
+    .map((text) => text.textContent || '')
+    .join('')
+    .trim();
+}
+
+function getTableStyleProperties(tableXml, stylesDocument) {
+  const tableProperties = getWordChild(tableXml, 'tblPr');
+  const styleId = getWordAttribute(getWordChild(tableProperties, 'tblStyle'), 'val');
+  if (!styleId || !stylesDocument) {
+    return null;
+  }
+
+  const tableStyle = getWordDescendants(stylesDocument, 'style').find((style) => (
+    getWordAttribute(style, 'type') === 'table'
+      && getWordAttribute(style, 'styleId') === styleId
+  ));
+  return getWordChild(tableStyle, 'tblPr');
+}
+
+function getTableBorderCss(tableProperties, styleProperties) {
+  const borders = getWordChild(tableProperties, 'tblBorders')
+    || getWordChild(styleProperties, 'tblBorders');
+  const border = getWordChild(borders, 'insideH')
+    || getWordChild(borders, 'insideV')
+    || getWordChild(borders, 'top');
+  const borderType = getWordAttribute(border, 'val');
+
+  if (!border || borderType === 'nil' || borderType === 'none') {
+    return '';
+  }
+
+  const rawColor = getWordAttribute(border, 'color');
+  const color = /^[0-9a-f]{6}$/i.test(rawColor) ? `#${rawColor}` : '#000000';
+  const width = Math.max(1, (Number(getWordAttribute(border, 'sz')) || 4) / 6);
+  const style = {
+    dashed: 'dashed',
+    dotted: 'dotted',
+    double: 'double'
+  }[borderType] || 'solid';
+
+  return `${width}px ${style} ${color}`;
+}
+
+function getTableCellPadding(tableProperties, styleProperties) {
+  const cellMargins = getWordChild(tableProperties, 'tblCellMar')
+    || getWordChild(styleProperties, 'tblCellMar');
+  if (!cellMargins) {
+    return '';
+  }
+
+  const getSide = (side, fallback) => (
+    getDocxWidth(getWordAttribute(getWordChild(cellMargins, side), 'w'), 'dxa') || fallback
+  );
+  return [
+    getSide('top', '0px'),
+    getSide('right', '7.2px'),
+    getSide('bottom', '0px'),
+    getSide('left', '7.2px')
+  ].join(' ');
+}
+
+function applyTableLayout(table, tableXml, stylesDocument) {
+  const tableProperties = getWordChild(tableXml, 'tblPr');
+  const styleProperties = getTableStyleProperties(tableXml, stylesDocument);
+  const tableWidth = getWordChild(tableProperties, 'tblW');
+  const gridColumns = Array.from(getWordChild(tableXml, 'tblGrid')?.children || [])
+    .filter((column) => column.tagName === 'w:gridCol' || column.localName === 'gridCol')
+    .map((column) => getDocxWidth(getWordAttribute(column, 'w'), 'dxa'))
+    .filter(Boolean);
+  const width = getDocxWidth(
+    getWordAttribute(tableWidth, 'w'),
+    getWordAttribute(tableWidth, 'type')
+  ) || (gridColumns.length > 0
+    ? `${gridColumns.reduce((total, column) => total + Number.parseFloat(column), 0)}px`
+    : '');
+
+  if (width) {
+    table.style.width = width;
+    table.dataset.docxTableWidth = 'true';
+  }
+
+  const border = getTableBorderCss(tableProperties, styleProperties);
+  if (border) {
+    table.style.setProperty('--docx-table-border', border);
+  }
+
+  const cellPadding = getTableCellPadding(tableProperties, styleProperties);
+  if (cellPadding) {
+    table.style.setProperty('--docx-table-cell-padding', cellPadding);
+  }
+
+  if (gridColumns.length > 0) {
+    const colgroup = document.createElement('colgroup');
+    gridColumns.forEach((columnWidth) => {
+      const column = document.createElement('col');
+      column.style.width = columnWidth;
+      colgroup.appendChild(column);
+    });
+    table.prepend(colgroup);
+  }
+}
+
+function applyDocxLayout(html, documentXml, stylesXml = '') {
+  const htmlDocument = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
+  const htmlRoot = htmlDocument.body.firstElementChild;
+  const xmlDocument = new DOMParser().parseFromString(documentXml, 'application/xml');
+  const parsedStylesDocument = stylesXml
+    ? new DOMParser().parseFromString(stylesXml, 'application/xml')
+    : null;
+  const stylesDocument = parsedStylesDocument?.querySelector('parsererror')
+    ? null
+    : parsedStylesDocument;
+
+  if (!htmlRoot || xmlDocument.querySelector('parsererror')) {
+    return html;
+  }
+
+  // Mammoth omits empty Word paragraphs. Match only visible text blocks so a
+  // run of blank paragraphs (for example before a later-page table) cannot
+  // shift the alignment onto the wrong HTML element.
+  const htmlBlocks = Array.from(
+    htmlRoot.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote, pre')
+  ).filter((block) => block.textContent?.trim());
+  const xmlParagraphs = getWordDescendants(xmlDocument, 'p').filter(getParagraphText);
+
+  xmlParagraphs.forEach((paragraph, index) => {
+    const alignment = getParagraphAlignment(paragraph);
+    if (alignment && htmlBlocks[index]) {
+      htmlBlocks[index].style.textAlign = alignment;
+      htmlBlocks[index].dataset.docxTextAlign = alignment;
+    }
+  });
+
+  const htmlTables = Array.from(htmlRoot.querySelectorAll('table'));
+  getWordDescendants(xmlDocument, 'tbl').forEach((tableXml, index) => {
+    if (htmlTables[index]) {
+      applyTableLayout(htmlTables[index], tableXml, stylesDocument);
+    }
+  });
+
+  return htmlRoot.innerHTML;
 }
 
 async function createLayoutAdjustedHtml(arrayBuffer, html) {
@@ -158,13 +445,25 @@ async function createLayoutAdjustedHtml(arrayBuffer, html) {
     const documentXml = await zip.file('word/document.xml')?.async('string');
 
     if (!documentXml) {
-      return html;
+      return { html, pageLayout: null };
     }
 
-    return insertPageBreaksBeforeTables(html, findTablePageSplitIndexes(documentXml));
+    let stylesXml = '';
+    try {
+      stylesXml = await zip.file('word/styles.xml')?.async('string') || '';
+    } catch (error) {
+      console.warn('[DOCX] table style extraction failed:', error);
+    }
+
+    const pageLayout = getDocxPageLayout(documentXml);
+    const layoutHtml = applyDocxLayout(html, documentXml, stylesXml);
+    return {
+      html: insertPageBreaksBeforeTables(layoutHtml, findTablePageSplits(documentXml, pageLayout)),
+      pageLayout
+    };
   } catch (error) {
     console.warn('[DOCX] layout page split detection failed:', error);
-    return html;
+    return { html, pageLayout: null };
   }
 }
 
@@ -178,6 +477,7 @@ export function getWordPreviewModel(documentFile, docxPreview = {}) {
     fileName: documentFile.name,
     fileSize: documentFile.size,
     html: docxPreview.html || '',
+    pageLayout: docxPreview.pageLayout || null,
     messages: docxPreview.messages || [],
     renderError: docxPreview.renderError || ''
   };
@@ -202,8 +502,11 @@ export async function extractWordContentForDev(file) {
 
     const sanitizedHtml = sanitizeMammothHtml(htmlResult.value);
 
+    const layoutResult = await createLayoutAdjustedHtml(arrayBuffer, sanitizedHtml);
+
     return {
-      html: await createLayoutAdjustedHtml(arrayBuffer, sanitizedHtml),
+      html: layoutResult.html,
+      pageLayout: layoutResult.pageLayout,
       documentText: createSearchText(textResult.value),
       messages: htmlResult.messages || [],
       renderError: ''

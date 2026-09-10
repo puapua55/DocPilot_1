@@ -30,6 +30,7 @@ export async function applyTextReplacement({
   if (newText == null || newText === '') throw new Error('변경 단어를 입력해주세요.');
 
   const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
+  const selectedTargets = Array.isArray(options?.selectedTargets) ? options.selectedTargets : null;
   const searchResult = await documentViewerRef?.current?.searchDocument?.(originalText, { matchMode });
   const searchResults = Array.isArray(searchResult)
     ? searchResult
@@ -41,7 +42,7 @@ export async function applyTextReplacement({
     const rawResult = documentViewerRef?.current?.replaceText?.(
       originalText,
       newText,
-      { matchMode }
+      { matchMode, selectedTargets }
     ) ?? { count: 0, results: [] };
     const replaceCount = typeof rawResult === 'number'
       ? rawResult
@@ -51,18 +52,20 @@ export async function applyTextReplacement({
   }
 
   if (fileType === 'pdf') {
-    if (searchResults.length > 0) {
+    const selectedResults = selectedTargets || searchResults;
+    if (selectedResults.length > 0) {
       onPdfApply?.({
         originalText,
         newText,
         matchMode,
+        selectedTargets: selectedResults,
         appliedAt: Date.now()
       });
     }
     return {
-      count: searchResults.length,
-      replaceCount: searchResults.length,
-      results: searchResults,
+      count: selectedResults.length,
+      replaceCount: selectedResults.length,
+      results: selectedResults,
       kind: 'pdf-apply'
     };
   }

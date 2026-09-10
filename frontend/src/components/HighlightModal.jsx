@@ -194,7 +194,7 @@ function HighlightModal({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={handleClose}>
+    <div className="modal-backdrop" role="presentation">
       <div
         className="search-modal highlight-panel"
         role="dialog"

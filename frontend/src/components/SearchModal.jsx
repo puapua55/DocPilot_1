@@ -144,7 +144,7 @@ function SearchModal({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={handleClose}>
+    <div className="modal-backdrop" role="presentation">
       <div
         className="search-modal search-panel"
         role="dialog"

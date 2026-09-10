@@ -41,6 +41,8 @@ function normalizeResult(raw, index, originalText, newText, matchMode) {
     keyword: String(raw?.keyword || originalText),
     newText: String(raw?.newText ?? newText),
     matchIndex: raw?.matchIndex,
+    occurrenceIndex: raw?.occurrenceIndex,
+    blockIndex: raw?.blockIndex,
     raw
   };
 }
@@ -85,6 +87,7 @@ function ReplaceModal({
   const [statusMessage, setStatusMessage] = useState('');
   const [statusType, setStatusType] = useState('');
   const [activeResultId, setActiveResultId] = useState(null);
+  const [selectedResultIds, setSelectedResultIds] = useState([]);
 
   const selectedFile = selectedDocument?.file || null;
   const documentName = selectedFile?.name || '';
@@ -105,6 +108,7 @@ function ReplaceModal({
       setStatusMessage('');
       setStatusType('');
       setActiveResultId(null);
+      setSelectedResultIds([]);
     }
   }, [isOpen]);
 
@@ -146,11 +150,21 @@ function ReplaceModal({
     return normalized;
   };
 
+  const clearConfirmedTargets = () => {
+    setResults([]);
+    setResultCount(0);
+    setSelectedResultIds([]);
+    setActiveResultId(null);
+    setStatusMessage('');
+    setStatusType('');
+  };
+
   const handlePreview = () => run('preview', async () => {
     setStatusType('progress');
     setStatusMessage('교체 대상을 확인하는 중입니다.');
     try {
       const normalized = setNormalized(await onPreviewTargets?.(originalText.trim(), newText, { matchMode }));
+      setSelectedResultIds(normalized.results.map((result) => result.id));
       setStatusType(normalized.count ? 'success' : 'empty');
       setStatusMessage(normalized.count ? `총 ${normalized.count}건의 교체 대상을 찾았습니다.` : '교체할 단어를 찾을 수 없습니다.');
     } catch (error) {
@@ -160,11 +174,22 @@ function ReplaceModal({
     }
   });
 
-  const handleApply = () => run('apply', async () => {
+  const handleApply = () => {
+    const selectedResults = results.filter((result) => selectedResultIds.includes(result.id));
+    if (selectedResults.length === 0) {
+      setStatusType('error');
+      setStatusMessage('적용할 교체 대상을 하나 이상 선택해주세요.');
+      return;
+    }
+
+    return run('apply', async () => {
     setStatusType('progress');
     setStatusMessage('화면에 텍스트 교체를 적용하는 중입니다.');
     try {
-      const normalized = setNormalized(await onApply?.(originalText.trim(), newText, { matchMode }));
+      const normalized = normalizeResponse(await onApply?.(originalText.trim(), newText, {
+        matchMode,
+        selectedTargets: selectedResults
+      }), originalText.trim(), newText, matchMode);
       setStatusType(normalized.count ? 'success' : 'empty');
       setStatusMessage(normalized.count ? `화면에 총 ${normalized.count}건을 적용했습니다.` : '교체할 단어를 찾을 수 없습니다.');
     } catch (error) {
@@ -172,14 +197,16 @@ function ReplaceModal({
       setStatusType('error');
       setStatusMessage('텍스트 교체 중 오류가 발생했습니다. 다시 시도해주세요.');
     }
-  });
+    });
+  };
 
   const handleConvert = () => run('convert', async () => {
     setStatusType('progress');
     setStatusMessage('변환 파일을 생성하는 중입니다.');
     try {
       if (results.length === 0) {
-        setNormalized(await onPreviewTargets?.(originalText.trim(), newText, { matchMode }));
+        const normalized = setNormalized(await onPreviewTargets?.(originalText.trim(), newText, { matchMode }));
+        setSelectedResultIds(normalized.results.map((item) => item.id));
       }
       const result = await onConvert?.(originalText.trim(), newText, { matchMode });
       const fileName = result?.fileName || result?.outputFileName || '변환 파일';
@@ -203,7 +230,16 @@ function ReplaceModal({
     setStatusMessage('');
     setStatusType('');
     setActiveResultId(null);
+    setSelectedResultIds([]);
     onReset?.();
+  };
+
+  const toggleResultSelection = (resultId) => {
+    setSelectedResultIds((current) => (
+      current.includes(resultId)
+        ? current.filter((id) => id !== resultId)
+        : [...current, resultId]
+    ));
   };
 
   const handleClose = () => {
@@ -212,7 +248,7 @@ function ReplaceModal({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={handleClose}>
+    <div className="modal-backdrop" role="presentation">
       <div className="search-modal replace-panel" role="dialog" aria-modal="true" aria-labelledby="replace-modal-title" onClick={(event) => event.stopPropagation()}>
         <div className="search-modal-header">
           <button type="button" className="search-modal-close" onClick={handleClose} aria-label="텍스트 교체 모달 닫기">x</button>
@@ -229,22 +265,22 @@ function ReplaceModal({
           <div className="replace-form">
             <label className="replace-field" htmlFor="replace-original-input">
               <span>기존 단어</span>
-              <input id="replace-original-input" className="replace-input search-modal-input" value={originalText} onChange={(e) => setOriginalText(e.target.value)} placeholder="예: 테스트" disabled={runningAction !== null} />
+              <input id="replace-original-input" className="replace-input search-modal-input" value={originalText} onChange={(e) => { setOriginalText(e.target.value); clearConfirmedTargets(); }} placeholder="예: 테스트" disabled={runningAction !== null} />
             </label>
             <label className="replace-field" htmlFor="replace-new-input">
               <span>변경 단어</span>
-              <input id="replace-new-input" className="replace-input search-modal-input" value={newText} onChange={(e) => setNewText(e.target.value)} placeholder="예: 시험" disabled={runningAction !== null} />
+              <input id="replace-new-input" className="replace-input search-modal-input" value={newText} onChange={(e) => { setNewText(e.target.value); clearConfirmedTargets(); }} placeholder="예: 시험" disabled={runningAction !== null} />
             </label>
 
             <div className="replace-options" role="radiogroup" aria-label="교체 방식">
               <span>교체 방식</span>
-              <label><input type="radio" name="replace-match-mode" checked={matchMode === 'contains'} onChange={() => setMatchMode('contains')} disabled={runningAction !== null} /> 포함 교체</label>
-              <label><input type="radio" name="replace-match-mode" checked={matchMode === 'exact'} onChange={() => setMatchMode('exact')} disabled={runningAction !== null} /> 정확히 일치</label>
+              <label><input type="radio" name="replace-match-mode" checked={matchMode === 'contains'} onChange={() => { setMatchMode('contains'); clearConfirmedTargets(); }} disabled={runningAction !== null} /> 포함 교체</label>
+              <label><input type="radio" name="replace-match-mode" checked={matchMode === 'exact'} onChange={() => { setMatchMode('exact'); clearConfirmedTargets(); }} disabled={runningAction !== null} /> 정확히 일치</label>
             </div>
 
             <div className="replace-form-actions">
               <button type="button" className="replace-button secondary-button" onClick={handlePreview} disabled={runningAction !== null}>{runningAction === 'preview' ? '대상 확인 중...' : '대상 확인'}</button>
-              <button type="button" className="replace-apply-button secondary-button" onClick={handleApply} disabled={runningAction !== null}>{runningAction === 'apply' ? '적용 중...' : '화면에 적용'}</button>
+              {results.length > 0 ? <button type="button" className="replace-apply-button secondary-button" onClick={handleApply} disabled={runningAction !== null}>{runningAction === 'apply' ? '적용 중...' : '화면에 적용'}</button> : null}
               <button type="button" className="replace-convert-button search-modal-button" onClick={handleConvert} disabled={runningAction !== null}>{runningAction === 'convert' ? '변환 중...' : '변환 파일 다운로드'}</button>
               <button type="button" className="replace-reset-button" onClick={handleReset} disabled={runningAction !== null}>초기화</button>
             </div>
@@ -257,12 +293,24 @@ function ReplaceModal({
 
           {(statusMessage || emptyDocumentMessage) ? <div className={`replace-status ${statusType ? `replace-status-${statusType}` : ''}`} aria-live="polite">{statusMessage || emptyDocumentMessage}</div> : null}
 
-          <div className="replace-result-summary">교체 대상: 총 <strong>{resultCount}</strong>건</div>
+          <div className="replace-result-summary-row">
+            <div className="replace-result-summary">교체 대상: 총 <strong>{resultCount}</strong>건</div>
+            {results.length > 0 ? (
+              <button
+                type="button"
+                className="replace-select-all-button secondary-button"
+                onClick={() => setSelectedResultIds(results.map((result) => result.id))}
+                disabled={runningAction !== null || selectedResultIds.length === results.length}
+              >
+                전체 선택
+              </button>
+            ) : null}
+          </div>
 
           {results.length > 0 ? (
             <div className="replace-result-table-wrap">
               <table className="replace-result-table">
-                <thead><tr><th>페이지</th><th>위치</th><th>기존 내용</th><th>변경 후</th></tr></thead>
+                <thead><tr><th>선택</th><th>페이지</th><th>위치</th><th>기존 내용</th><th>변경 후</th></tr></thead>
                 <tbody>
                   {results.map((result, index) => (
                     <tr
@@ -279,6 +327,16 @@ function ReplaceModal({
                       role="button"
                       tabIndex={0}
                     >
+                      <td className="replace-result-check-cell" onClick={(event) => event.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`교체 대상 ${index + 1} 선택`}
+                          checked={selectedResultIds.includes(result.id)}
+                          disabled={runningAction !== null}
+                          onChange={() => toggleResultSelection(result.id)}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        />
+                      </td>
                       <td>{result.pageNumber ? `${result.pageNumber}페이지` : '-'}</td>
                       <td>{formatLocation(result, index)}</td>
                       <td className="replace-result-text" title={result.originalText}>{result.originalText || '-'}</td>

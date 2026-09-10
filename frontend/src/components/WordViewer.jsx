@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import './WordViewer.css';
 
 const SEARCH_BLOCK_SELECTOR = 'p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre';
@@ -27,7 +27,14 @@ function getSearchBlocks(root) {
     return [];
   }
 
-  const primaryBlocks = Array.from(root.querySelectorAll(SEARCH_BLOCK_SELECTOR));
+  const primaryBlocks = Array.from(root.querySelectorAll(SEARCH_BLOCK_SELECTOR)).filter((element) => {
+    // A table cell often contains one or more paragraph elements. Searching both
+    // the cell and its paragraphs reports the same text twice, so retain only the
+    // innermost meaningful block.
+    return !Array.from(element.querySelectorAll(SEARCH_BLOCK_SELECTOR)).some(
+      (child) => child !== element && child.textContent?.trim() && !isSearchExcluded(child)
+    );
+  });
   const fallbackDivs = Array.from(root.querySelectorAll('div')).filter(
     (element) => !element.querySelector(SEARCH_BLOCK_SELECTOR)
   );
@@ -206,15 +213,119 @@ function splitHtmlIntoPages(html) {
   });
 
   pages.push(currentPage.map((child) => child.outerHTML || child.textContent || '').join(''));
-  return pages.filter((pageHtml, index) => pageHtml.trim() || index === 0);
+  // An empty string between two DOCX page breaks represents a real blank page.
+  return pages.length > 0 ? pages : [''];
 }
 
 const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, ref) {
-  const { html, renderError, messages = [] } = previewModel || {};
+  const { html, pageLayout, renderError, messages = [] } = previewModel || {};
   const docxContentRef = useRef(null);
   const scaleContentRef = useRef(null);
   const [docxSize, setDocxSize] = useState({ width: 0, height: 0 });
+  const [viewMode, setViewMode] = useState('scroll');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageInput, setPageInput] = useState('1');
+  const [pageInputError, setPageInputError] = useState('');
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false, canReset: false });
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+  const historyRef = useRef({ snapshots: [], index: -1 });
   const pages = html ? splitHtmlIntoPages(html) : [];
+  const hasMultiplePages = pages.length > 1;
+  const pageStyle = pageLayout ? {
+    '--docx-page-width': `${pageLayout.width}px`,
+    '--docx-page-height': `${pageLayout.height}px`,
+    '--docx-page-padding': `${pageLayout.top}px ${pageLayout.right}px ${pageLayout.bottom}px ${pageLayout.left}px`
+  } : undefined;
+
+  const captureDocumentSnapshot = () => Array.from(
+    docxContentRef.current?.querySelectorAll('.word-document') || []
+  ).map((page) => page.innerHTML);
+
+  const updateHistoryState = () => {
+    const { snapshots, index } = historyRef.current;
+    setHistoryState({
+      canUndo: index > 0,
+      canRedo: index >= 0 && index < snapshots.length - 1,
+      canReset: index > 0
+    });
+  };
+
+  const ensureInitialHistorySnapshot = () => {
+    if (historyRef.current.snapshots.length > 0) {
+      return;
+    }
+
+    const snapshot = captureDocumentSnapshot();
+    if (snapshot.length > 0) {
+      historyRef.current = { snapshots: [snapshot], index: 0 };
+      updateHistoryState();
+    }
+  };
+
+  const commitDocumentChange = () => {
+    ensureInitialHistorySnapshot();
+    const snapshot = captureDocumentSnapshot();
+    const { snapshots, index } = historyRef.current;
+    const currentSnapshot = snapshots[index];
+
+    if (!snapshot.length || (
+      currentSnapshot?.length === snapshot.length
+      && currentSnapshot.every((page, pageIndex) => page === snapshot[pageIndex])
+    )) {
+      return;
+    }
+
+    historyRef.current = {
+      snapshots: [...snapshots.slice(0, index + 1), snapshot],
+      index: index + 1
+    };
+    updateHistoryState();
+  };
+
+  const restoreDocumentSnapshot = (snapshot) => {
+    const documentPages = Array.from(docxContentRef.current?.querySelectorAll('.word-document') || []);
+    if (!snapshot || documentPages.length !== snapshot.length) {
+      return false;
+    }
+
+    documentPages.forEach((page, index) => {
+      page.innerHTML = snapshot[index];
+    });
+    return true;
+  };
+
+  const undoDocumentChange = () => {
+    const history = historyRef.current;
+    if (history.index <= 0 || !restoreDocumentSnapshot(history.snapshots[history.index - 1])) {
+      return false;
+    }
+
+    history.index -= 1;
+    updateHistoryState();
+    return true;
+  };
+
+  const redoDocumentChange = () => {
+    const history = historyRef.current;
+    if (history.index >= history.snapshots.length - 1 || !restoreDocumentSnapshot(history.snapshots[history.index + 1])) {
+      return false;
+    }
+
+    history.index += 1;
+    updateHistoryState();
+    return true;
+  };
+
+  const resetAllDocumentChanges = () => {
+    const history = historyRef.current;
+    if (!history.snapshots[0] || !restoreDocumentSnapshot(history.snapshots[0])) {
+      return false;
+    }
+
+    history.index = 0;
+    updateHistoryState();
+    return true;
+  };
 
   useLayoutEffect(() => {
     const content = scaleContentRef.current;
@@ -242,6 +353,39 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
 
     return () => observer?.disconnect();
   }, [html, pages.length]);
+
+  useLayoutEffect(() => {
+    const snapshot = captureDocumentSnapshot();
+    historyRef.current = snapshot.length > 0
+      ? { snapshots: [snapshot], index: 0 }
+      : { snapshots: [], index: -1 };
+    updateHistoryState();
+  }, [html]);
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(Math.max(page, 1), Math.max(pages.length, 1)));
+  }, [pages.length]);
+
+  useEffect(() => {
+    setPageInput(String(currentPage));
+    setPageInputError('');
+  }, [currentPage]);
+
+  const handlePageInputChange = (event) => {
+    const numericValue = event.target.value.replace(/\D/g, '');
+    setPageInput(numericValue);
+    setPageInputError('');
+  };
+
+  const handlePageInputSubmit = () => {
+    const targetPage = Number(pageInput);
+    if (!Number.isInteger(targetPage) || targetPage < 1 || targetPage > pages.length) {
+      setPageInputError('현재 문서에 존재하지 않는 페이지입니다.');
+      return;
+    }
+
+    setCurrentPage(targetPage);
+  };
 
   const clearDocxHighlights = () => {
     unwrapHighlightSpans(docxContentRef.current);
@@ -317,10 +461,18 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
     }
 
     element.classList.add('docx-search-current');
-    element.scrollIntoView({
+    const targetPage = getDocxPageNumber(root, element);
+    const scrollToTarget = () => element.scrollIntoView({
       behavior: 'smooth',
       block: 'center'
     });
+
+    if (viewMode === 'page' && targetPage !== currentPage) {
+      setCurrentPage(targetPage);
+      requestAnimationFrame(scrollToTarget);
+    } else {
+      scrollToTarget();
+    }
     return true;
   };
 
@@ -336,6 +488,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
       return { count: 0, results: [] };
     }
 
+    ensureInitialHistorySnapshot();
     clearDocxHighlights();
 
     const blockMetadata = getDocxBlockMetadata(root);
@@ -422,6 +575,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
       node.parentNode?.replaceChild(fragment, node);
     });
 
+    commitDocumentChange();
     return {
       count: results.length,
       results
@@ -461,11 +615,18 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
     const target = String(originalText || '').trim();
     const replacement = String(newText ?? '');
     const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
+    const selectedTargets = Array.isArray(options?.selectedTargets) ? options.selectedTargets : null;
+    const selectedBlockIndexes = selectedTargets
+      ? new Set(selectedTargets
+        .map((selectedTarget) => Number(selectedTarget?.raw?.blockIndex ?? selectedTarget?.blockIndex))
+        .filter(Number.isFinite))
+      : null;
 
-    if (!root || !target) {
+    if (!root || !target || (selectedTargets && selectedBlockIndexes.size === 0)) {
       return { count: 0, replaceCount: 0, results: [] };
     }
 
+    ensureInitialHistorySnapshot();
     clearDocxHighlights();
     clearSearchSelection(root);
 
@@ -505,6 +666,9 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
         paragraphNumber: undefined,
         blockIndex: undefined
       };
+      if (selectedBlockIndexes && !selectedBlockIndexes.has(metadata.blockIndex)) {
+        return;
+      }
       const originalBlockText = String(block?.textContent || before).trim();
 
       let cursor = 0;
@@ -533,6 +697,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
       node.nodeValue = after;
     });
 
+    commitDocumentChange();
     return {
       count: results.length,
       replaceCount: results.length,
@@ -585,7 +750,19 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
       return true;
     },
     clearHighlights() {
+      ensureInitialHistorySnapshot();
       clearDocxHighlights();
+      commitDocumentChange();
+      return true;
+    },
+    undoDocumentChange() {
+      return undoDocumentChange();
+    },
+    redoDocumentChange() {
+      return redoDocumentChange();
+    },
+    resetAllDocumentChanges() {
+      return resetAllDocumentChanges();
     },
     getModifiedHtml() {
       return serializeModifiedHtml(docxContentRef.current);
@@ -630,20 +807,144 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, scale = 1 }, r
               className="docx-scale-content"
               style={{ transform: `scale(${scale})` }}
             >
-              <div ref={docxContentRef} className="docx-content word-page-stack">
+              <div ref={docxContentRef} className="docx-content word-page-stack" style={pageStyle}>
                 {pages.map((pageHtml, index) => (
-                  <article
+                  <div
                     key={`${index}-${pages.length}`}
-                    className="word-document"
-                    data-virtual-page-number={index + 1}
-                    dangerouslySetInnerHTML={{ __html: pageHtml }}
-                  />
+                    className={`docx-page-frame ${viewMode === 'page' ? 'page-mode' : ''}`}
+                    hidden={viewMode === 'page' && currentPage !== index + 1}
+                  >
+                    <article
+                      className="word-document"
+                      data-virtual-page-number={index + 1}
+                      dangerouslySetInnerHTML={{ __html: pageHtml }}
+                    />
+                    {viewMode === 'page' ? (
+                      <span className="docx-current-page-indicator" aria-live="polite">
+                        {index + 1} / {pages.length}
+                      </span>
+                    ) : null}
+                  </div>
                 ))}
               </div>
             </div>
           </div>
         </div>
       </div>
+      <div className="docx-view-mode-controls" aria-label="DOCX 보기 방식">
+        <div className="docx-document-history" role="group" aria-label="문서 변경 이력">
+          <button
+            type="button"
+            onClick={undoDocumentChange}
+            disabled={!historyState.canUndo}
+            aria-label="적용 전으로 되돌리기"
+            title="적용 전으로 되돌리기"
+          >
+            &lt;
+          </button>
+          <button
+            type="button"
+            onClick={redoDocumentChange}
+            disabled={!historyState.canRedo}
+            aria-label="다시 적용하기"
+            title="다시 적용하기"
+          >
+            &gt;
+          </button>
+          <button
+            type="button"
+            className="docx-reset-all-button"
+            onClick={() => setIsResetConfirmOpen(true)}
+            disabled={!historyState.canReset}
+          >
+            전체 초기화
+          </button>
+        </div>
+        {hasMultiplePages ? (
+          <div className="docx-view-mode-options">
+          <div className="docx-view-mode-toggle" role="group" aria-label="보기 방식 선택">
+            <button
+              type="button"
+              className={viewMode === 'scroll' ? 'active' : ''}
+              onClick={() => setViewMode('scroll')}
+              aria-pressed={viewMode === 'scroll'}
+            >
+              스크롤
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'page' ? 'active' : ''}
+              onClick={() => setViewMode('page')}
+              aria-pressed={viewMode === 'page'}
+            >
+              페이지 이동
+            </button>
+          </div>
+          {viewMode === 'page' ? (
+            <div className="docx-page-navigation-wrap">
+              <div className="docx-page-navigation" aria-label="페이지 이동">
+              <button
+                type="button"
+                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                disabled={currentPage === 1}
+              >
+                이전
+              </button>
+              <label className="docx-page-input-label">
+                <span className="sr-only">이동할 페이지</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  aria-label="이동할 페이지"
+                  value={pageInput}
+                  onChange={handlePageInputChange}
+                  onBlur={handlePageInputSubmit}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      handlePageInputSubmit();
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
+                <span aria-live="polite">/ {pages.length}</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setCurrentPage((page) => Math.min(pages.length, page + 1))}
+                disabled={currentPage === pages.length}
+              >
+                다음
+              </button>
+            </div>
+              {pageInputError ? (
+                <p className="docx-page-input-error" role="alert">{pageInputError}</p>
+              ) : null}
+            </div>
+          ) : null}
+          </div>
+        ) : null}
+      </div>
+      {isResetConfirmOpen ? (
+        <div className="docx-reset-confirm-backdrop" role="presentation">
+          <div className="docx-reset-confirm" role="dialog" aria-modal="true" aria-labelledby="docx-reset-confirm-title">
+            <p id="docx-reset-confirm-title">모든 기능 적용전으로 초기화 하시겠습니다?</p>
+            <div>
+              <button
+                type="button"
+                onClick={() => {
+                  resetAllDocumentChanges();
+                  setIsResetConfirmOpen(false);
+                }}
+              >
+                예
+              </button>
+              <button type="button" onClick={() => setIsResetConfirmOpen(false)}>아니요</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 });

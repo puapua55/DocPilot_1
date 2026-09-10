@@ -5,10 +5,10 @@ import PreviewInfoBox from './PreviewInfoBox';
 import WordViewer from './WordViewer';
 import ZoomControls from './ZoomControls';
 
-const DEFAULT_SCALE = 1;
+const DEFAULT_SCALE = 0.6;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
-const SCALE_STEP = 0.25;
+const SCALE_STEP = 0.1;
 
 const DocumentViewer = forwardRef(function DocumentViewer({
   file,
@@ -65,6 +65,15 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     },
     clearHighlights() {
       viewerRef.current?.clearHighlights?.();
+    },
+    undoDocumentChange() {
+      return viewerRef.current?.undoDocumentChange?.() ?? false;
+    },
+    redoDocumentChange() {
+      return viewerRef.current?.redoDocumentChange?.() ?? false;
+    },
+    resetAllDocumentChanges() {
+      return viewerRef.current?.resetAllDocumentChanges?.() ?? false;
     },
     getModifiedHtml() {
       return viewerRef.current?.getModifiedHtml?.() ?? '';

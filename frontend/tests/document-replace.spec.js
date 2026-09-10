@@ -117,6 +117,7 @@ test('DOCX 화면 적용은 현재 뷰어만 바꾸고 정확히 일치를 지�
   await openReplace(page);
   await fillReplace(page, '테스트', '시험');
   await page.getByLabel('정확히 일치').check();
+  await page.getByRole('button', { name: '대상 확인' }).click();
   await page.getByRole('button', { name: '화면에 적용' }).click();
 
   await expect(page.getByRole('dialog').getByText('화면에 총 1건을 적용했습니다.')).toBeVisible();
@@ -126,6 +127,38 @@ test('DOCX 화면 적용은 현재 뷰어만 바꾸고 정확히 일치를 지�
   expect(viewerText).toContain('테스트3');
   expect(viewerText.split(/\s+/)).toContain('시험');
   expect(downloadCount).toBe(0);
+});
+
+test('DOCX 교체 대상은 확인 뒤 선택한 항목만 화면에 적용한다', async ({ page }) => {
+  await page.goto('/');
+  await uploadDocx(page, 'selected-targets.docx');
+  await openReplace(page);
+  await fillReplace(page, '테스트', '시험');
+
+  await expect(page.getByRole('button', { name: '화면에 적용' })).toHaveCount(0);
+  await page.getByRole('button', { name: '대상 확인' }).click();
+
+  const checkboxes = page.getByRole('checkbox', { name: /교체 대상 \d+ 선택/ });
+  await expect(checkboxes).toHaveCount(4);
+  for (let index = 0; index < 4; index += 1) {
+    await expect(checkboxes.nth(index)).toBeChecked();
+  }
+
+  await checkboxes.first().uncheck();
+  await page.getByRole('button', { name: '전체 선택' }).click();
+  for (let index = 0; index < 4; index += 1) {
+    await expect(checkboxes.nth(index)).toBeChecked();
+  }
+  await checkboxes.first().uncheck();
+
+  await page.getByRole('button', { name: '화면에 적용' }).click();
+  await expect(page.getByRole('dialog').getByText('화면에 총 3건을 적용했습니다.')).toBeVisible();
+
+  const viewerText = await page.locator('.word-document').innerText();
+  expect(viewerText).toContain('테스트1');
+  expect(viewerText).toContain('시험2');
+  expect(viewerText).toContain('시험3');
+  expect(viewerText.split(/\s+/)).toContain('시험');
 });
 
 test('DOCX 변환 다운로드는 원본 ZIP을 기준으로 실제 파일을 생성하고 exact를 유지한다', async ({ page }) => {

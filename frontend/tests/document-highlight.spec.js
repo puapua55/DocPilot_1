@@ -111,6 +111,39 @@ test('DOCX 정확히 일치 하이라이트는 독립된 테스트만 적용한�
   await expect(page.locator('.highlight-result-row')).toHaveCount(1);
 });
 
+test('DOCX 하이라이트 적용 이력은 되돌리기·다시 적용·전체 초기화를 지원한다', async ({ page }) => {
+  await page.goto('/');
+  await uploadDocx(page, 'history.docx');
+  await openHighlight(page);
+
+  await page.getByPlaceholder('하이라이트할 단어 또는 문장을 입력하세요').fill('테스트2');
+  await page.getByRole('button', { name: '하이라이트 적용' }).click();
+  await expect(page.locator('.docx-highlight')).toHaveCount(1);
+  await page.getByRole('button', { name: '하이라이트 모달 닫기' }).click();
+
+  const undo = page.getByRole('button', { name: '적용 전으로 되돌리기' });
+  const redo = page.getByRole('button', { name: '다시 적용하기' });
+  await expect(undo).toBeEnabled();
+
+  await undo.click();
+  await expect(page.locator('.docx-highlight')).toHaveCount(0);
+  await expect(redo).toBeEnabled();
+
+  await redo.click();
+  await expect(page.locator('.docx-highlight')).toHaveCount(1);
+
+  await page.getByRole('button', { name: '전체 초기화' }).click();
+  const confirmDialog = page.getByRole('dialog');
+  await expect(confirmDialog).toContainText('모든 기능 적용전으로 초기화 하시겠습니다?');
+  await confirmDialog.getByRole('button', { name: '아니요' }).click();
+  await expect(confirmDialog).toHaveCount(0);
+  await expect(page.locator('.docx-highlight')).toHaveCount(1);
+
+  await page.getByRole('button', { name: '전체 초기화' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '예' }).click();
+  await expect(page.locator('.docx-highlight')).toHaveCount(0);
+});
+
 test('DOCX 초록 색상과 전체 제거가 동작하며 초기화는 문서 하이라이트를 유지한다', async ({ page }) => {
   await page.goto('/');
   await uploadDocx(page, 'highlight-color.docx');

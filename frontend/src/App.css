@@ -1657,6 +1657,17 @@ button:disabled {
   color: #334b7a;
   font-size: 0.92rem;
 }
+.replace-result-summary-row {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.replace-select-all-button {
+  min-height: 34px;
+  margin-top: 14px;
+  white-space: nowrap;
+}
 .replace-result-table-wrap {
   width: 100%;
   overflow-x: auto;
@@ -1684,13 +1695,21 @@ button:disabled {
   font-weight: 700;
 }
 .replace-result-table th:nth-child(1),
-.replace-result-table td:nth-child(1) { width: 100px; }
+.replace-result-table td:nth-child(1) { width: 64px; text-align: center; }
 .replace-result-table th:nth-child(2),
-.replace-result-table td:nth-child(2) { width: 150px; }
+.replace-result-table td:nth-child(2) { width: 100px; }
 .replace-result-table th:nth-child(3),
-.replace-result-table td:nth-child(3),
+.replace-result-table td:nth-child(3) { width: 150px; }
 .replace-result-table th:nth-child(4),
-.replace-result-table td:nth-child(4) { width: 255px; }
+.replace-result-table td:nth-child(4),
+.replace-result-table th:nth-child(5),
+.replace-result-table td:nth-child(5) { width: 225px; }
+.replace-result-check-cell input {
+  width: 16px;
+  height: 16px;
+  accent-color: #4e7cff;
+  cursor: pointer;
+}
 .replace-result-row {
   cursor: pointer;
   transition: background-color .2s ease;
