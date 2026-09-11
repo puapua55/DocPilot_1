@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { formatFileSize, isPdfFile } from '../utils/fileUtils';
 import PdfViewer from './PdfViewer';
 import PreviewInfoBox from './PreviewInfoBox';
@@ -8,9 +8,9 @@ import ZoomControls from './ZoomControls';
 const DEFAULT_SCALE = 1;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
-const SCALE_STEP = 0.25;
+const SCALE_STEP = 0.1;
 
-function DocumentViewer({
+const DocumentViewer = forwardRef(function DocumentViewer({
   file,
   previewModel,
   highlightKeyword,
@@ -20,9 +20,65 @@ function DocumentViewer({
   onClose,
   onChangeFile,
   onReselect
-}) {
+}, ref) {
   const inputRef = useRef(null);
+  const viewerRef = useRef(null);
   const [scale, setScale] = useState(DEFAULT_SCALE);
+
+  useImperativeHandle(ref, () => ({
+    async getDocumentText() {
+      try {
+        return await viewerRef.current?.getDocumentText?.() ?? '';
+      } catch (error) {
+        console.warn('[DocumentViewer] document text extraction failed:', error);
+        return '';
+      }
+    },
+    searchDocument(keyword, options) {
+      return viewerRef.current?.searchDocument?.(keyword, options) ?? [];
+    },
+    scrollToSearchResult(result) {
+      return viewerRef.current?.scrollToSearchResult?.(result) ?? false;
+    },
+    clearSearchSelection() {
+      viewerRef.current?.clearSearchSelection?.();
+    },
+    highlightText(keyword, options) {
+      return viewerRef.current?.highlightText?.(keyword, options) ?? { count: 0, results: [] };
+    },
+    scrollToHighlightResult(result) {
+      return viewerRef.current?.scrollToHighlightResult?.(result)
+        ?? viewerRef.current?.scrollToSearchResult?.(result)
+        ?? false;
+    },
+    clearHighlightSelection() {
+      viewerRef.current?.clearHighlightSelection?.();
+    },
+    replaceText(originalText, newText, options) {
+      return viewerRef.current?.replaceText?.(originalText, newText, options)
+        ?? { count: 0, replaceCount: 0, results: [] };
+    },
+    scrollToReplaceResult(result) {
+      return viewerRef.current?.scrollToReplaceResult?.(result)
+        ?? viewerRef.current?.scrollToSearchResult?.(result)
+        ?? false;
+    },
+    clearHighlights() {
+      viewerRef.current?.clearHighlights?.();
+    },
+    undoDocumentChange() {
+      return viewerRef.current?.undoDocumentChange?.() ?? false;
+    },
+    redoDocumentChange() {
+      return viewerRef.current?.redoDocumentChange?.() ?? false;
+    },
+    resetAllDocumentChanges() {
+      return viewerRef.current?.resetAllDocumentChanges?.() ?? false;
+    },
+    getModifiedHtml() {
+      return viewerRef.current?.getModifiedHtml?.() ?? '';
+    }
+  }));
 
   if (file) {
     console.log('[DocumentViewer] file:', file);
@@ -40,6 +96,32 @@ function DocumentViewer({
     event.target.value = '';
   };
 
+  const viewerActions = (
+        <div className="document-viewer-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={onReselect}
+          >
+            다시 선택
+          </button>
+          {previewModel?.type === 'pdf' || previewModel?.type === 'word' ? (
+            <ZoomControls
+              scale={scale}
+              onZoomOut={() => setScale((current) => Math.max(MIN_SCALE, current - SCALE_STEP))}
+              onZoomIn={() => setScale((current) => Math.min(MAX_SCALE, current + SCALE_STEP))}
+            />
+          ) : null}
+          <input
+            ref={inputRef}
+            className="sr-only"
+            type="file"
+            accept=".pdf,.doc,.docx"
+            onChange={handleFileChange}
+          />
+        </div>
+  );
+
   const renderContent = () => {
     if (!previewModel) {
       return <PreviewInfoBox />;
@@ -48,6 +130,7 @@ function DocumentViewer({
     if (previewModel.type === 'pdf') {
       return (
         <PdfViewer
+          ref={viewerRef}
           file={file}
           highlightKeyword={highlightKeyword}
           replacePreview={replacePreview}
@@ -58,7 +141,7 @@ function DocumentViewer({
     }
 
     if (previewModel.type === 'word') {
-      return <WordViewer previewModel={previewModel} />;
+      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} toolbarActions={viewerActions} />;
     }
 
     return (
@@ -75,29 +158,7 @@ function DocumentViewer({
           <strong>{file?.name}</strong>
           <span>{formatFileSize(file?.size ?? 0)}</span>
         </div>
-        <div className="document-viewer-actions">
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={onReselect}
-          >
-            다시 선택
-          </button>
-          {previewModel?.type === 'pdf' ? (
-            <ZoomControls
-              scale={scale}
-              onZoomOut={() => setScale((current) => Math.max(MIN_SCALE, current - SCALE_STEP))}
-              onZoomIn={() => setScale((current) => Math.min(MAX_SCALE, current + SCALE_STEP))}
-            />
-          ) : null}
-          <input
-            ref={inputRef}
-            className="sr-only"
-            type="file"
-            accept=".pdf,.doc,.docx"
-            onChange={handleFileChange}
-          />
-        </div>
+        {previewModel?.type !== 'word' ? viewerActions : null}
       </div>
       {highlightStatusMessage ? (
         <div className="inline-notice" role="status">
@@ -107,6 +168,6 @@ function DocumentViewer({
       {renderContent()}
     </section>
   );
-}
+});
 
 export default DocumentViewer;

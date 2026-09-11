@@ -3,6 +3,253 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
+}
+
+.docx-view-mode-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-areas:
+    "view-toggle view-toggle view-toggle"
+    "history page-nav toolbar";
+  align-items: flex-start;
+  justify-content: stretch;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.docx-view-mode-controls > .document-viewer-actions {
+  grid-area: toolbar;
+  justify-self: end;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.docx-view-mode-controls > .document-viewer-actions .secondary-button {
+  height: 32px;
+  min-height: 32px;
+  border-color: #7c9eff;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: #315fc7;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.docx-view-mode-controls > .document-viewer-actions .zoom-controls {
+  gap: 6px;
+}
+
+.docx-view-mode-controls > .document-viewer-actions .zoom-button {
+  min-width: 34px;
+  height: 32px;
+  min-height: 32px;
+  border-color: #cbd9ff;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: #315fc7;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.docx-view-mode-controls > .document-viewer-actions .zoom-value {
+  min-width: 48px;
+  color: #315fc7;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.docx-view-mode-options {
+  display: contents;
+}
+
+.docx-document-history,
+.docx-view-mode-toggle,
+.docx-page-navigation-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.docx-document-history {
+  grid-area: history;
+  justify-self: start;
+}
+
+.docx-view-mode-toggle {
+  grid-area: view-toggle;
+  justify-self: start;
+}
+
+.docx-page-navigation-wrap {
+  grid-area: page-nav;
+  justify-self: center;
+}
+
+.docx-document-history button {
+  min-width: 34px;
+  min-height: 32px;
+  border: 1px solid #cbd9ff;
+  border-radius: 9px;
+  padding: 0 9px;
+  background: #ffffff;
+  color: #315fc7;
+  font-size: 1rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.docx-document-history .docx-reset-all-button {
+  margin-left: 8px;
+  border-color: #7c9eff;
+  color: #315fc7;
+  font-size: 0.8rem;
+}
+
+.docx-document-history button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.docx-view-mode-toggle,
+.docx-page-navigation {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 0 3px;
+  border: 1px solid #d7e2ff;
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+.docx-page-navigation-wrap {
+  position: relative;
+}
+
+.docx-view-mode-toggle button,
+.docx-page-navigation button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: transparent;
+  color: #53617f;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.docx-view-mode-toggle button.active {
+  background: #eaf0ff;
+  color: #315fc7;
+}
+
+.docx-page-input-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #53617f;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.docx-page-input-label input {
+  width: 34px;
+  height: 28px;
+  border: 1px solid #cbd9ff;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #315fc7;
+  font: inherit;
+  font-weight: 800;
+  text-align: center;
+}
+
+.docx-page-input-label input:focus {
+  outline: 2px solid rgba(78, 124, 255, 0.32);
+  border-color: #7c9eff;
+}
+
+.docx-page-input-label span:last-child {
+  min-width: 24px;
+  color: #53617f;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.docx-page-input-error {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 1;
+  width: max-content;
+  max-width: 240px;
+  margin: 0;
+  padding: 5px 8px;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  background: #fff7f7;
+  color: #b42318;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.docx-page-navigation button:disabled {
+  opacity: 0.45;
+}
+
+.docx-reset-confirm-backdrop {
+  position: fixed;
+  z-index: 1100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(23, 34, 65, 0.32);
+}
+
+.docx-reset-confirm {
+  width: min(100%, 360px);
+  padding: 24px;
+  border: 1px solid #d7e2ff;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 20px 48px rgba(27, 47, 99, 0.24);
+  color: #1f2a44;
+}
+
+.docx-reset-confirm p {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.docx-reset-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.docx-reset-confirm button {
+  min-width: 64px;
+  min-height: 36px;
+  border: 1px solid #cbd9ff;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #53617f;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.docx-reset-confirm button:first-child {
+  border-color: #4e7cff;
+  background: #4e7cff;
+  color: #ffffff;
 }
 
 .word-viewer,
@@ -35,7 +282,9 @@
 }
 
 .word-viewer-scroll {
-  max-height: 700px;
+  flex: 0 0 750px;
+  min-height: 750px;
+  max-height: 750px;
   overflow: auto;
   border: 1px solid #d7e2ff;
   border-radius: 16px;
@@ -43,17 +292,124 @@
   padding: 18px;
 }
 
-.word-document {
-  width: min(794px, 100%);
-  min-height: 1123px;
+.word-page-stack {
+  width: var(--docx-page-width, 794px);
   margin: 0 auto;
-  padding: 72px 68px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.docx-page-frame {
+  position: relative;
+  width: var(--docx-page-width, 794px);
+}
+
+.docx-page-frame.page-mode {
+  padding-bottom: 42px;
+}
+
+.docx-scale-viewport {
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  /* Keep the left edge reachable when a full-size DOCX page overflows. */
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
+.docx-scale-holder {
+  position: relative;
+  flex: 0 0 auto;
+  margin-inline: auto;
+}
+
+.docx-scale-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+}
+
+.docx-scale-content .word-page-stack {
+  position: relative;
+}
+
+.word-document {
+  width: var(--docx-page-width, 794px);
+  min-height: var(--docx-page-height, 1123px);
+  margin: 0 auto;
+  padding: var(--docx-page-padding, 72px 68px);
   background: #ffffff;
   color: #111827;
   box-shadow: 0 16px 36px rgba(51, 71, 132, 0.12);
   font-family: 'Malgun Gothic', '맑은 고딕', Arial, sans-serif;
   line-height: 1.6;
   overflow-wrap: anywhere;
+  /*
+   * A DOCX page break is an explicit boundary, not a guarantee that the
+   * preceding content fits on one physical sheet. Mammoth does not reproduce
+   * Word's automatic pagination, so let an overflowing block grow instead of
+   * cutting off its final lines at the nominal A4 height.
+   */
+  overflow: visible;
+}
+
+.docx-current-page-indicator {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  min-width: 76px;
+  transform: translateX(-50%);
+  color: #53617f;
+  font-size: 1.05rem;
+  font-weight: 800;
+  line-height: 32px;
+  text-align: center;
+}
+
+.docx-content {
+  position: relative;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+/* docx-preview renders the original Word styles and its own page sections. */
+.docx-fidelity-content {
+  width: max-content;
+  max-width: none;
+  margin: 0 auto;
+  line-height: normal;
+  word-break: normal;
+}
+
+.docx-fidelity-content .docx-wrapper {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.docx-fidelity-content section.docx {
+  margin: 0 0 18px;
+  box-shadow: 0 16px 36px rgba(51, 71, 132, 0.12);
+}
+
+/* docx-preview assigns its own display value to pages, so override it when
+ * page-navigation mode marks a page as hidden. */
+.docx-fidelity-content section.docx[hidden] {
+  display: none !important;
+}
+
+.docx-highlight {
+  background: rgba(255, 230, 0, 0.75);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.docx-search-current {
+  outline: 2px solid rgba(99, 102, 241, 0.8);
+  background: rgba(99, 102, 241, 0.08);
+  scroll-margin-block: 40px;
 }
 
 .word-document > :first-child {
@@ -67,15 +423,27 @@
 
 .word-document table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   margin: 1em 0;
 }
 
+.word-document table[data-docx-table-width] {
+  /* The width is calculated from the DOCX table grid and written inline. */
+  table-layout: fixed;
+}
+
 .word-document th,
 .word-document td {
-  border: 1px solid #9ca3af;
-  padding: 6px 8px;
+  border: var(--docx-table-border, 1px solid #000000);
+  padding: var(--docx-table-cell-padding, 2px 8px);
   vertical-align: top;
+}
+
+.word-document td > p,
+.word-document th > p {
+  margin: 0;
+  line-height: 1.4;
 }
 
 .word-document a {
@@ -87,13 +455,36 @@
   white-space: pre-wrap;
 }
 
+.docx-page-break {
+  display: none;
+}
+
+.docx-page-leading-spacer {
+  width: 100%;
+  pointer-events: none;
+}
+
 @media (max-width: 720px) {
   .word-viewer-scroll {
     padding: 10px;
   }
 
   .word-document {
+    width: 100%;
+    aspect-ratio: auto;
     min-height: 0;
     padding: 36px 24px;
   }
+
+  .docx-page-frame {
+    width: 100%;
+  }
+}
+
+
+.docx-highlight-current {
+  outline: 2px solid rgba(79, 124, 255, 0.9);
+  outline-offset: 2px;
+  border-radius: 3px;
+  scroll-margin-block: 40px;
 }

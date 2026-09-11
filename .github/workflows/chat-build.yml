@@ -1,0 +1,126 @@
+name: Chat Build
+
+on:
+  push:
+    branches:
+      - 'codex/docx-search-highlight-replace'
+    paths:
+      - 'frontend/src/**'
+      - 'frontend/tests/ai-document-chat.spec.js'
+      - 'frontend/tests/ai-tool-actions.spec.js'
+      - 'frontend/tests/main-page-screenshot.spec.js'
+      - 'frontend/tests/exact-search-screenshot.spec.js'
+      - 'frontend/tests/document-search.spec.js'
+      - 'frontend/tests/document-highlight.spec.js'
+      - 'frontend/tests/document-replace.spec.js'
+      - 'frontend/package*.json'
+      - 'frontend/vite.config.js'
+      - 'src/main/java/**'
+      - 'src/test/java/**'
+      - 'src/main/resources/**'
+      - 'docs/ai-document-chat-test-checklist.md'
+      - 'pom.xml'
+      - '.github/workflows/chat-build.yml'
+  pull_request:
+    paths:
+      - 'frontend/src/**'
+      - 'frontend/tests/ai-document-chat.spec.js'
+      - 'frontend/tests/ai-tool-actions.spec.js'
+      - 'frontend/tests/main-page-screenshot.spec.js'
+      - 'frontend/tests/exact-search-screenshot.spec.js'
+      - 'frontend/tests/document-search.spec.js'
+      - 'frontend/tests/document-highlight.spec.js'
+      - 'frontend/tests/document-replace.spec.js'
+      - 'frontend/package*.json'
+      - 'frontend/vite.config.js'
+      - 'src/main/java/**'
+      - 'src/test/java/**'
+      - 'src/main/resources/**'
+      - 'docs/ai-document-chat-test-checklist.md'
+      - 'pom.xml'
+      - '.github/workflows/chat-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Install Chromium for document chat E2E
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run PDF and DOCX document chat E2E
+        working-directory: frontend
+        run: npm run test:e2e:chat-doc
+      - name: Run approved AI document action E2E
+        working-directory: frontend
+        run: npm run test:e2e:ai-tools
+      - name: Run exact document search E2E
+        working-directory: frontend
+        run: npm run test:e2e:search
+      - name: Run location highlight E2E
+        working-directory: frontend
+        run: npm run test:e2e:highlight
+      - name: Run instant text replacement E2E
+        working-directory: frontend
+        run: npm run test:e2e:replace
+      - name: Capture exact search result popup
+        if: always()
+        working-directory: frontend
+        run: npx playwright test tests/exact-search-screenshot.spec.js
+      - name: Save exact search screenshot to project
+        if: always() && github.event_name == 'push'
+        shell: bash
+        run: |
+          test -f frontend/test-artifacts/docpilot-exact-search-test-docx.png
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f frontend/test-artifacts/docpilot-exact-search-test-docx.png
+          if git diff --cached --quiet; then
+            echo "Screenshot is unchanged."
+          else
+            git commit -m "test: update exact search screenshot"
+            git push origin HEAD:codex/docx-search-highlight-replace
+          fi
+      - name: Capture DocPilot main page
+        if: always()
+        working-directory: frontend
+        run: npx playwright test tests/main-page-screenshot.spec.js
+      - name: Save DOCX upload fullscreen screenshot to project
+        if: always() && github.event_name == 'push'
+        shell: bash
+        run: |
+          test -f frontend/test-artifacts/docpilot-docx-upload-fullscreen.png
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f frontend/test-artifacts/docpilot-docx-upload-fullscreen.png
+          if git diff --cached --quiet; then
+            echo "Screenshot is unchanged."
+          else
+            git commit -m "test: update DOCX upload fullscreen screenshot"
+            git push origin HEAD:codex/docx-search-highlight-replace
+          fi
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Test backend
+        run: mvn -B test

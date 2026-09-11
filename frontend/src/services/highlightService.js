@@ -12,6 +12,42 @@ const REPLACE_PREVIEW_TUNING = {
   fontSizeRatio: 0.95
 };
 
+function isWordSeparator(char) {
+  return char == null || char === ' ' || char === '\n' || char === '\t';
+}
+
+function findHighlightMatchIndexes(text, keyword, matchMode = 'contains') {
+  const sourceText = String(text || '');
+  const targetText = String(keyword || '');
+  const source = sourceText.toLowerCase();
+  const target = targetText.toLowerCase();
+  const indexes = [];
+
+  if (!target) {
+    return indexes;
+  }
+
+  let startIndex = 0;
+  while (startIndex <= source.length - target.length) {
+    const foundIndex = source.indexOf(target, startIndex);
+    if (foundIndex === -1) {
+      break;
+    }
+
+    const before = foundIndex > 0 ? sourceText[foundIndex - 1] : null;
+    const afterIndex = foundIndex + targetText.length;
+    const after = afterIndex < sourceText.length ? sourceText[afterIndex] : null;
+
+    if (matchMode !== 'exact' || (isWordSeparator(before) && isWordSeparator(after))) {
+      indexes.push(foundIndex);
+    }
+
+    startIndex = foundIndex + Math.max(target.length, 1);
+  }
+
+  return indexes;
+}
+
 export function createViewportTextSpans(textItems, viewport) {
   if (!Array.isArray(textItems) || !viewport) {
     return [];
@@ -54,8 +90,9 @@ export function createViewportTextSpans(textItems, viewport) {
     .filter(Boolean);
 }
 
-export function countKeywordMatches(documentText, keyword) {
-  const normalizedKeyword = String(keyword || '').trim().toLowerCase();
+export function countKeywordMatches(documentText, keyword, options = {}) {
+  const normalizedKeyword = String(keyword || '').trim();
+  const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
 
   if (!normalizedKeyword || !Array.isArray(documentText)) {
     return 0;
@@ -67,19 +104,7 @@ export function countKeywordMatches(documentText, keyword) {
     const lines = Array.isArray(pageData?.lines) ? pageData.lines : [];
 
     lines.forEach((line) => {
-      const normalizedLine = String(line || '').toLowerCase();
-      let startIndex = 0;
-
-      while (true) {
-        const foundIndex = normalizedLine.indexOf(normalizedKeyword, startIndex);
-
-        if (foundIndex === -1) {
-          break;
-        }
-
-        count += 1;
-        startIndex = foundIndex + normalizedKeyword.length;
-      }
+      count += findHighlightMatchIndexes(String(line || ''), normalizedKeyword, matchMode).length;
     });
   });
 
@@ -92,7 +117,8 @@ export function calculateHighlightBoxes({
   textItems: rawTextItems,
   viewport: rawViewport,
   paddingX = DEFAULT_PADDING_X,
-  paddingY = DEFAULT_PADDING_Y
+  paddingY = DEFAULT_PADDING_Y,
+  matchMode = 'contains'
 }) {
   const normalizedKeyword = String(keyword || '').trim();
   const viewport = rawViewport;
@@ -102,7 +128,6 @@ export function calculateHighlightBoxes({
     return [];
   }
 
-  const loweredKeyword = normalizedKeyword.toLowerCase();
   const highlightBoxes = [];
 
   textItems.forEach((item) => {
@@ -112,7 +137,6 @@ export function calculateHighlightBoxes({
       return;
     }
 
-    const normalizedText = fullText.toLowerCase();
     const itemLength = fullText.length;
     const itemWidth = Number(item?.width) || 0;
     const itemHeight = Number(item?.height) || 0;
@@ -124,14 +148,9 @@ export function calculateHighlightBoxes({
     }
 
     const charWidth = itemWidth / itemLength;
-    let startIndex = 0;
+    const matchIndexes = findHighlightMatchIndexes(fullText, normalizedKeyword, matchMode);
 
-    while (true) {
-      const foundIndex = normalizedText.indexOf(loweredKeyword, startIndex);
-
-      if (foundIndex === -1) {
-        break;
-      }
+    matchIndexes.forEach((foundIndex) => {
 
       const highlightX = baseX + charWidth * foundIndex;
       const highlightWidth = charWidth * normalizedKeyword.length;
@@ -147,8 +166,7 @@ export function calculateHighlightBoxes({
       const height = clamp(rawHeight, MIN_BOX_SIZE, maxHeight);
 
       if (![left, top, width, height].every(Number.isFinite)) {
-        startIndex = foundIndex + loweredKeyword.length;
-        continue;
+        return;
       }
 
       highlightBoxes.push({
@@ -161,16 +179,16 @@ export function calculateHighlightBoxes({
         height
       });
 
-      startIndex = foundIndex + loweredKeyword.length;
-    }
+    });
   });
 
   return highlightBoxes;
 }
 
-export function createHighlightBoxesFromTextLayer(pageElement, keyword) {
+export function createHighlightBoxesFromTextLayer(pageElement, keyword, options = {}) {
   const boxes = [];
   const normalizedKeyword = String(keyword || '').trim();
+  const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
   const LINE_Y_TOLERANCE = 5;
 
   if (!pageElement || !normalizedKeyword) {
@@ -189,7 +207,6 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword) {
     return boxes;
   }
 
-  const loweredKeyword = normalizedKeyword.toLowerCase();
   const spans = Array.from(textLayer.querySelectorAll('span')).filter(
     (span) => (span.textContent || '').length > 0
   );
@@ -233,18 +250,10 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword) {
 
   lineGroups.forEach((lineGroup) => {
     const lineText = lineGroup.text || '';
-    const loweredText = lineText.toLowerCase();
-    let startIndex = 0;
-
     console.log('[Highlight] lineText:', lineText);
 
-    while (true) {
-      const foundIndex = loweredText.indexOf(loweredKeyword, startIndex);
-
-      if (foundIndex === -1) {
-        break;
-      }
-
+    const matchIndexes = findHighlightMatchIndexes(lineText, normalizedKeyword, matchMode);
+    matchIndexes.forEach((foundIndex) => {
       const endIndex = foundIndex + normalizedKeyword.length;
 
       console.log('[Highlight] match range:', { foundIndex, endIndex });
@@ -295,8 +304,7 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword) {
         range.detach?.();
       });
 
-      startIndex = foundIndex + normalizedKeyword.length;
-    }
+    });
   });
 
   console.log('[Highlight] boxes:', boxes);
@@ -307,6 +315,9 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword) {
 export function createReplacementPreviewFromTextLayer(pageElement, replaceState) {
   const originalText = String(replaceState?.originalText || '').trim();
   const newText = String(replaceState?.newText ?? '');
+  const matchMode = replaceState?.matchMode === 'exact' ? 'exact' : 'contains';
+  const selectedTargets = Array.isArray(replaceState?.selectedTargets) ? replaceState.selectedTargets : null;
+  const pageNumber = Number(pageElement?.dataset?.pageNumber);
 
   if (!pageElement || !originalText) {
     return [];
@@ -322,21 +333,21 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
     (span) => (span.textContent || '').length > 0
   );
   const lineGroups = buildTextLayerLineGroups(spans);
-  const loweredKeyword = originalText.toLowerCase();
   const previewItems = [];
 
   lineGroups.forEach((lineGroup, lineIndex) => {
     const lineText = lineGroup.text || '';
-    const loweredText = lineText.toLowerCase();
-    let startIndex = 0;
+    const matchIndexes = findHighlightMatchIndexes(lineText, originalText, matchMode);
 
-    while (true) {
-      const foundIndex = loweredText.indexOf(loweredKeyword, startIndex);
-
-      if (foundIndex === -1) {
-        break;
+    matchIndexes.forEach((foundIndex) => {
+      if (selectedTargets && !selectedTargets.some((target) => {
+        const raw = target?.raw || target || {};
+        return Number(raw.pageNumber ?? raw.page) === pageNumber
+          && Number(raw.lineNumber ?? raw.line) === lineIndex + 1
+          && Number(raw.matchIndex) === foundIndex;
+      })) {
+        return;
       }
-
       const endIndex = foundIndex + originalText.length;
       const matchedRects = [];
       let cursor = 0;
@@ -397,8 +408,7 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
         });
       }
 
-      startIndex = foundIndex + originalText.length;
-    }
+    });
   });
 
   return previewItems;

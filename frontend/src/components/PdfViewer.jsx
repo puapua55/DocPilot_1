@@ -1,8 +1,10 @@
+import { forwardRef } from 'react';
 import PdfJsViewer from './PdfJsViewer';
 
-function PdfViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale }) {
+const PdfViewer = forwardRef(function PdfViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale }, ref) {
   return (
     <PdfJsViewer
+      ref={ref}
       file={file}
       highlightKeyword={highlightKeyword}
       selectedSearchResult={selectedSearchResult}
@@ -10,6 +12,6 @@ function PdfViewer({ file, highlightKeyword, selectedSearchResult, replacePrevie
       scale={scale}
     />
   );
-}
+});
 
 export default PdfViewer;

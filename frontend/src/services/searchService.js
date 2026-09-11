@@ -5,75 +5,78 @@ export function getFeatureMessage(featureKey) {
 }
 
 function isWordSeparator(char) {
-  return char === ' ' || char === '\n' || char === '\t';
+  return char == null || char === ' ' || char === '\n' || char === '\t';
 }
 
-function extractMatchedWord(lineText, foundIndex, keyword) {
-  const startTarget = foundIndex;
-  const endTarget = foundIndex + keyword.length;
-
-  let start = startTarget;
-  let end = endTarget;
-
-  while (start > 0 && !isWordSeparator(lineText[start - 1])) {
-    start -= 1;
-  }
-
-  while (end < lineText.length && !isWordSeparator(lineText[end])) {
-    end += 1;
-  }
-
-  return lineText.slice(start, end).trim();
+function isExactMatch(text, startIndex, keywordLength) {
+  const before = startIndex > 0 ? text[startIndex - 1] : null;
+  const afterIndex = startIndex + keywordLength;
+  const after = afterIndex < text.length ? text[afterIndex] : null;
+  return isWordSeparator(before) && isWordSeparator(after);
 }
 
-export function searchKeywordInDocument(documentText, keyword) {
+function findKeywordMatches(lineText, keyword, matchMode) {
+  const loweredLine = lineText.toLowerCase();
+  const loweredKeyword = keyword.toLowerCase();
+  const matches = [];
+  let startIndex = 0;
+
+  while (startIndex <= loweredLine.length - loweredKeyword.length) {
+    const foundIndex = loweredLine.indexOf(loweredKeyword, startIndex);
+    if (foundIndex === -1) break;
+
+    if (matchMode !== 'exact' || isExactMatch(lineText, foundIndex, keyword.length)) {
+      matches.push(foundIndex);
+    }
+
+    startIndex = foundIndex + Math.max(loweredKeyword.length, 1);
+  }
+
+  return matches;
+}
+
+export function searchKeywordInDocument(documentText, keyword, options = {}) {
   const normalizedKeyword = keyword?.trim();
+  const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
 
-  if (!normalizedKeyword) {
+  if (!normalizedKeyword || !Array.isArray(documentText) || documentText.length === 0) {
     return [];
   }
 
-  if (!Array.isArray(documentText) || documentText.length === 0) {
-    return [];
-  }
-
-  const loweredKeyword = normalizedKeyword.toLowerCase();
   const results = [];
 
-  documentText.forEach((pageData) => {
-    const pageNumber = pageData.page;
-    const lines = Array.isArray(pageData.lines) ? pageData.lines : [];
+  documentText.forEach((pageData, pageIndex) => {
+    const pageNumber = Number(pageData?.page ?? pageData?.pageNumber ?? pageIndex + 1) || pageIndex + 1;
+    const lines = Array.isArray(pageData?.lines) ? pageData.lines : [];
 
-    lines.forEach((lineText, index) => {
-      const rawLineText = String(lineText);
-      const normalizedLine = rawLineText.toLowerCase();
-      let startIndex = 0;
+    lines.forEach((lineValue, lineIndex) => {
+      const rawLineText = typeof lineValue === 'string'
+        ? lineValue
+        : String(lineValue?.text ?? '');
 
-      while (true) {
-        const foundIndex = normalizedLine.indexOf(loweredKeyword, startIndex);
-
-        if (foundIndex === -1) {
-          break;
-        }
-
+      findKeywordMatches(rawLineText, normalizedKeyword, matchMode).forEach((matchIndex, occurrenceIndex) => {
         results.push({
-          id: `search-result-${pageNumber}-${index + 1}-${foundIndex}-${results.length}`,
+          id: `pdf-${pageNumber}-${lineIndex + 1}-${matchIndex}-${occurrenceIndex}`,
+          type: 'pdf',
+          pageNumber,
+          lineNumber: lineIndex + 1,
+          text: rawLineText,
+          keyword: normalizedKeyword,
+          matchIndex,
           page: pageNumber,
-          line: index + 1,
-          keyword: extractMatchedWord(rawLineText, foundIndex, normalizedKeyword),
+          line: lineIndex + 1,
           fullText: rawLineText,
           x: null,
           y: null,
           width: null,
           height: null
         });
-
-        startIndex = foundIndex + loweredKeyword.length;
-      }
+      });
     });
   });
 
   console.log('[search keyword]', normalizedKeyword);
+  console.log('[search mode]', matchMode);
   console.log('[search results]', results);
 
   return results;
