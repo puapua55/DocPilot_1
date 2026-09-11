@@ -7,18 +7,84 @@
 }
 
 .docx-view-mode-controls {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-areas:
+    "view-toggle view-toggle view-toggle"
+    "history page-nav toolbar";
+  align-items: flex-start;
+  justify-content: stretch;
   gap: 8px;
   min-height: 38px;
 }
 
-.docx-document-history,
+.docx-view-mode-controls > .document-viewer-actions {
+  grid-area: toolbar;
+  justify-self: end;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.docx-view-mode-controls > .document-viewer-actions .secondary-button {
+  height: 32px;
+  min-height: 32px;
+  border-color: #7c9eff;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: #315fc7;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.docx-view-mode-controls > .document-viewer-actions .zoom-controls {
+  gap: 6px;
+}
+
+.docx-view-mode-controls > .document-viewer-actions .zoom-button {
+  min-width: 34px;
+  height: 32px;
+  min-height: 32px;
+  border-color: #cbd9ff;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: #315fc7;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.docx-view-mode-controls > .document-viewer-actions .zoom-value {
+  min-width: 48px;
+  color: #315fc7;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
 .docx-view-mode-options {
+  display: contents;
+}
+
+.docx-document-history,
+.docx-view-mode-toggle,
+.docx-page-navigation-wrap {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.docx-document-history {
+  grid-area: history;
+  justify-self: start;
+}
+
+.docx-view-mode-toggle {
+  grid-area: view-toggle;
+  justify-self: start;
+}
+
+.docx-page-navigation-wrap {
+  grid-area: page-nav;
+  justify-self: center;
 }
 
 .docx-document-history button {
@@ -51,9 +117,10 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px;
+  min-height: 32px;
+  padding: 0 3px;
   border: 1px solid #d7e2ff;
-  border-radius: 11px;
+  border-radius: 9px;
   background: #ffffff;
 }
 
@@ -65,7 +132,7 @@
 .docx-page-navigation button {
   min-height: 30px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 0 10px;
   background: transparent;
   color: #53617f;
@@ -90,7 +157,7 @@
 
 .docx-page-input-label input {
   width: 34px;
-  height: 30px;
+  height: 28px;
   border: 1px solid #cbd9ff;
   border-radius: 7px;
   background: #ffffff;

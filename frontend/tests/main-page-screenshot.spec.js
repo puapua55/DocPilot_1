@@ -24,7 +24,7 @@ test('capture full DocPilot screen after DOCX upload', async ({ page }) => {
   await page.locator('input[type="file"]').first().setInputFiles(fixturePath);
 
   await expect(page.getByText('테스트1(3).docx', { exact: true })).toBeVisible();
-  await expect(page.locator('.word-document')).toBeVisible();
+  await expect(page.locator('.word-document').first()).toBeVisible();
   await expect(page.getByText('DocPilot AI', { exact: true })).toBeVisible();
   await expect(page.getByText('정확한 문서 검색', { exact: true })).toBeVisible();
   await expect(page.getByText('위치 하이라이트', { exact: true })).toBeVisible();

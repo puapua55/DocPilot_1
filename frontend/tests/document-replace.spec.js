@@ -118,6 +118,7 @@ test('DOCX 화면 적용은 현재 뷰어만 바꾸고 정확히 일치를 지�
   await fillReplace(page, '테스트', '시험');
   await page.getByLabel('정확히 일치').check();
   await page.getByRole('button', { name: '대상 확인' }).click();
+  await page.getByRole('button', { name: '전체 선택', exact: true }).click();
   await page.getByRole('button', { name: '화면에 적용' }).click();
 
   await expect(page.getByRole('dialog').getByText('화면에 총 1건을 적용했습니다.')).toBeVisible();
@@ -168,10 +169,17 @@ test('DOCX 변환 다운로드는 원본 ZIP을 기준으로 실제 파일을 �
   await fillReplace(page, '테스트', '시험');
   await page.getByLabel('정확히 일치').check();
 
+  await page.getByRole('button', { name: '변환 파일 다운로드' }).evaluate((button) => {
+    window.__conversionWasDisabled = false;
+    const observer = new MutationObserver(() => {
+      if (button.disabled) window.__conversionWasDisabled = true;
+    });
+    observer.observe(button, { attributes: true, attributeFilter: ['disabled'] });
+  });
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: '변환 파일 다운로드' }).click();
-  await expect(page.getByRole('button', { name: '변환 중...' })).toBeDisabled();
   const download = await downloadPromise;
+  expect(await page.evaluate(() => window.__conversionWasDisabled)).toBe(true);
 
   expect(download.suggestedFilename()).toBe('exact-convert_docx_converted.docx');
   const buffer = await readFile(await download.path());
@@ -202,6 +210,7 @@ test('PDF 대상 확인과 화면 적용은 exact 기준으로 preview overlay�
   await expect(page.locator('.replace-result-row')).toHaveCount(1);
   await expect(page.locator('.replace-result-row').first()).toContainText('2페이지');
 
+  await page.getByRole('button', { name: '전체 선택', exact: true }).click();
   await page.getByRole('button', { name: '화면에 적용' }).click();
   await expect(page.getByRole('dialog').getByText('화면에 총 1건을 적용했습니다.')).toBeVisible();
   await expect(page.locator('.replacement-text')).toHaveCount(1);

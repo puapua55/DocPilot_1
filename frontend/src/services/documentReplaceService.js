@@ -52,7 +52,12 @@ export async function applyTextReplacement({
   }
 
   if (fileType === 'pdf') {
-    const selectedResults = selectedTargets || searchResults;
+    const viewerResult = await documentViewerRef?.current?.replaceText?.(
+      originalText, newText, { matchMode, selectedTargets }
+    );
+    const selectedResults = Array.isArray(viewerResult?.results)
+      ? viewerResult.results
+      : selectedTargets || searchResults;
     if (selectedResults.length > 0) {
       onPdfApply?.({
         originalText,
@@ -95,7 +100,6 @@ export async function convertTextReplacement({ file, fileType, originalText, new
   const totalLineCount = parsedStructure.pages.reduce((sum, page) => sum + page.lines.length, 0);
 
   if (totalTextCount === 0) throw new Error('HTML 구조에서 .pdf-text를 찾지 못했습니다.');
-  if (totalLineCount === 0) throw new Error('HTML 구조에서 .pdf-line을 찾지 못했습니다.');
 
   const outputFileName = makeHtmlConvertedFileName(file.name);
   if (replaceResult.replaceCount > 0) {

@@ -377,7 +377,7 @@ button:disabled {
 .document-viewer-file strong {
   min-width: 0;
   word-break: break-word;
-  font-size: 0.94rem;
+  font-size: 0.88rem;
 }
 
 .document-viewer-file span {
@@ -466,6 +466,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
+  min-width: max-content;
   gap: 18px;
 }
 
@@ -511,6 +512,10 @@ button:disabled {
   opacity: 1;
   z-index: 2;
   line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  -webkit-text-size-adjust: none;
   text-size-adjust: none;
   forced-color-adjust: none;
   transform-origin: 0 0;
@@ -518,6 +523,18 @@ button:disabled {
   user-select: text;
   -webkit-user-select: text;
   caret-color: CanvasText;
+}
+
+.textLayer[data-main-rotation="90"] {
+  transform: rotate(90deg) translateY(-100%);
+}
+
+.textLayer[data-main-rotation="180"] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+
+.textLayer[data-main-rotation="270"] {
+  transform: rotate(270deg) translateX(-100%);
 }
 
 .textLayer-item {

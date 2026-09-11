@@ -26,9 +26,6 @@ const FONT_DEFINITIONS = [
     ]
   }
 ];
-const registeredFonts = new Set();
-let preferredFontRegistrationAttempted = false;
-let selectedKoreanFontName = null;
 
 function parsePx(value) {
   return Number(String(value || '').replace('px', '').trim()) || 0;
@@ -290,7 +287,7 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
       const drawX = textItem.left || 0;
       const drawY = (textItem.top || 0) + fontSize * TEXT_BASELINE_RATIO;
       const requestedFontName = normalizeHtmlFontToPdfFont(textItem.fontFamily);
-      const drawFontName = registeredFonts.has(requestedFontName)
+      const drawFontName = requestedFontName === selectedFontName
         ? requestedFontName
         : selectedFontName;
 
@@ -332,17 +329,6 @@ export function makeHtmlConvertedFileName(fileName = 'document.pdf') {
 }
 
 async function registerPreferredKoreanFont(doc) {
-  if (selectedKoreanFontName) {
-    doc.setFont(selectedKoreanFontName, 'normal');
-    return selectedKoreanFontName;
-  }
-
-  if (preferredFontRegistrationAttempted) {
-    return null;
-  }
-
-  preferredFontRegistrationAttempted = true;
-
   for (const fontDefinition of FONT_DEFINITIONS) {
     try {
       const fontBase64 = await loadFontBase64(fontDefinition.candidates);
@@ -354,9 +340,11 @@ async function registerPreferredKoreanFont(doc) {
 
       doc.addFileToVFS(fontDefinition.fileName, fontBase64);
       doc.addFont(fontDefinition.fileName, fontDefinition.pdfFontName, 'normal');
+      const font = doc.internal.getFont(fontDefinition.pdfFontName, 'normal');
+      if (typeof font?.metadata?.characterToGlyph !== 'function') {
+        throw new Error('Font registration did not produce usable glyph data.');
+      }
       doc.setFont(fontDefinition.pdfFontName, 'normal');
-      registeredFonts.add(fontDefinition.pdfFontName);
-      selectedKoreanFontName = fontDefinition.pdfFontName;
 
       if (fontDefinition.pdfFontName === 'MalgunGothic') {
         console.log('[PdfFont] MalgunGothic registered and selected');
@@ -364,7 +352,7 @@ async function registerPreferredKoreanFont(doc) {
         console.log('[PdfFont] fallback NotoSansKR registered and selected');
       }
 
-      return selectedKoreanFontName;
+      return fontDefinition.pdfFontName;
     } catch (error) {
       console.warn(`[PdfFont] failed to register ${fontDefinition.pdfFontName}:`, error);
     }
@@ -405,7 +393,7 @@ async function loadFontBase64(candidates) {
 
       const base64 = (await response.text()).trim();
 
-      if (base64) {
+      if (/^(AAEA|T1RU)/.test(base64) && /^[A-Za-z0-9+/=\s]+$/.test(base64)) {
         return base64;
       }
     } catch (error) {

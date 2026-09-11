@@ -156,7 +156,7 @@ test('DOCX 초록 색상과 전체 제거가 동작하며 초기화는 문서 �
   await expect(page.locator('.docx-highlight[data-highlight-color="green"]')).toHaveCount(1);
   await expect(page.locator('.highlight-result-row').first()).toContainText('초록');
 
-  await page.getByRole('button', { name: '초기화' }).click();
+  await page.getByRole('button', { name: '초기화', exact: true }).click();
   await expect(page.locator('.highlight-result-row')).toHaveCount(0);
   await expect(page.locator('.docx-highlight[data-highlight-color="green"]')).toHaveCount(1);
   await expect(page.getByPlaceholder('하이라이트할 단어 또는 문장을 입력하세요')).toHaveValue('');

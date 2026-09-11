@@ -11,6 +11,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = 
   const canvasRef = useRef(null);
   const pageRef = useRef(null);
   const renderTaskRef = useRef(null);
+  const [renderError, setRenderError] = useState('');
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
   const [highlightBoxes, setHighlightBoxes] = useState([]);
   const [fallbackBoxes, setFallbackBoxes] = useState([]);
@@ -35,6 +36,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = 
         renderTaskRef.current = null;
       }
 
+      setRenderError('');
       console.log('[PdfPage] render page:', pageNumber);
 
       const page = await pdf.getPage(pageNumber);
@@ -80,23 +82,8 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = 
       }
 
       const textContent = await page.getTextContent();
-      const nextTextItems = Array.isArray(textContent.items) ? textContent.items : [];
-      const nextBoxes = calculateHighlightBoxes({
-        keyword: highlightKeyword,
-        pageNumber,
-        textItems: nextTextItems,
-        viewport,
-        matchMode: highlightOptions.matchMode
-      });
-
-      console.log('[PdfPage] viewport:', viewport.width, viewport.height);
-      console.log('[PdfPage] textContent items:', nextTextItems);
-      console.log('[Highlight] keyword:', highlightKeyword);
-      console.log('[Highlight] boxes:', nextBoxes);
-
       if (!cancelled) {
         setTextContent(textContent);
-        setFallbackBoxes(nextBoxes);
         setReplacementPreviewItems([]);
       }
     }
@@ -109,6 +96,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = 
       console.error(`[PdfPage] Failed to render page ${pageNumber}`, error);
 
       if (!cancelled) {
+        setRenderError(`${pageNumber}페이지를 표시하지 못했습니다. 파일을 다시 선택해주세요.`);
         setFallbackBoxes([]);
         setHighlightBoxes([]);
         setReplacementPreviewItems([]);
@@ -123,7 +111,15 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = 
         renderTaskRef.current = null;
       }
     };
-  }, [highlightKeyword, highlightOptions.matchMode, pageNumber, pdf, scale]);
+  }, [pageNumber, pdf, scale]);
+
+  useEffect(() => {
+    setFallbackBoxes(calculateHighlightBoxes({
+      keyword: highlightKeyword, pageNumber,
+      textItems: textContent?.items, viewport,
+      matchMode: highlightOptions.matchMode
+    }));
+  }, [highlightKeyword, highlightOptions.matchMode, pageNumber, textContent, viewport]);
 
   useLayoutEffect(() => {
     if (!pageRef.current) {
@@ -196,6 +192,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = 
       }}
     >
       <div className="pdf-page-debug-label">page {pageNumber}</div>
+      {renderError ? <div role="alert">{renderError}</div> : null}
       <canvas ref={canvasRef} className="pdf-canvas" />
       <PdfTextLayer
         textContent={textContent}

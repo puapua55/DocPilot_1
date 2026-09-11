@@ -5,7 +5,7 @@ import PreviewInfoBox from './PreviewInfoBox';
 import WordViewer from './WordViewer';
 import ZoomControls from './ZoomControls';
 
-const DEFAULT_SCALE = 0.6;
+const DEFAULT_SCALE = 1;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
 const SCALE_STEP = 0.1;
@@ -96,42 +96,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     event.target.value = '';
   };
 
-  const renderContent = () => {
-    if (!previewModel) {
-      return <PreviewInfoBox />;
-    }
-
-    if (previewModel.type === 'pdf') {
-      return (
-        <PdfViewer
-          ref={viewerRef}
-          file={file}
-          highlightKeyword={highlightKeyword}
-          replacePreview={replacePreview}
-          selectedSearchResult={selectedSearchResult}
-          scale={scale}
-        />
-      );
-    }
-
-    if (previewModel.type === 'word') {
-      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} />;
-    }
-
-    return (
-      <div className="unsupported-document">
-        지원하지 않는 문서 형식입니다.
-      </div>
-    );
-  };
-
-  return (
-    <section className="document-viewer">
-      <div className="document-viewer-header">
-        <div className="document-viewer-file">
-          <strong>{file?.name}</strong>
-          <span>{formatFileSize(file?.size ?? 0)}</span>
-        </div>
+  const viewerActions = (
         <div className="document-viewer-actions">
           <button
             type="button"
@@ -155,6 +120,45 @@ const DocumentViewer = forwardRef(function DocumentViewer({
             onChange={handleFileChange}
           />
         </div>
+  );
+
+  const renderContent = () => {
+    if (!previewModel) {
+      return <PreviewInfoBox />;
+    }
+
+    if (previewModel.type === 'pdf') {
+      return (
+        <PdfViewer
+          ref={viewerRef}
+          file={file}
+          highlightKeyword={highlightKeyword}
+          replacePreview={replacePreview}
+          selectedSearchResult={selectedSearchResult}
+          scale={scale}
+        />
+      );
+    }
+
+    if (previewModel.type === 'word') {
+      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} toolbarActions={viewerActions} />;
+    }
+
+    return (
+      <div className="unsupported-document">
+        지원하지 않는 문서 형식입니다.
+      </div>
+    );
+  };
+
+  return (
+    <section className="document-viewer">
+      <div className="document-viewer-header">
+        <div className="document-viewer-file">
+          <strong>{file?.name}</strong>
+          <span>{formatFileSize(file?.size ?? 0)}</span>
+        </div>
+        {previewModel?.type !== 'word' ? viewerActions : null}
       </div>
       {highlightStatusMessage ? (
         <div className="inline-notice" role="status">

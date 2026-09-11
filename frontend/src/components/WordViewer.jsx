@@ -218,7 +218,7 @@ function splitHtmlIntoPages(html) {
   return pages.length > 0 ? pages : [''];
 }
 
-const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 1 }, ref) {
+const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 1, toolbarActions }, ref) {
   const {
     html,
     pageLayout,
@@ -226,9 +226,11 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     renderMode,
     messages = []
   } = previewModel || {};
+  const viewerBodyRef = useRef(null);
   const docxContentRef = useRef(null);
   const scaleContentRef = useRef(null);
   const [docxSize, setDocxSize] = useState({ width: 0, height: 0 });
+  const [baseFitScale, setBaseFitScale] = useState(1);
   const [fidelityRenderFailed, setFidelityRenderFailed] = useState(false);
   const [fidelityPageCount, setFidelityPageCount] = useState(0);
   const [viewMode, setViewMode] = useState('scroll');
@@ -248,6 +250,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     '--docx-page-height': `${pageLayout.height}px`,
     '--docx-page-padding': `${pageLayout.top}px ${pageLayout.right}px ${pageLayout.bottom}px ${pageLayout.left}px`
   } : undefined;
+  const actualScale = baseFitScale * scale;
 
   useEffect(() => {
     setFidelityRenderFailed(false);
@@ -380,14 +383,17 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   };
 
   useLayoutEffect(() => {
+    const viewer = viewerBodyRef.current;
     const content = scaleContentRef.current;
-    if (!content) {
+    if (!viewer || !content) {
       return undefined;
     }
 
     const measure = () => {
-      const width = content.scrollWidth;
-      const height = content.scrollHeight;
+      const documentRoot = content.querySelector('.docx-wrapper, .word-page-stack, section.docx') || content.firstElementChild;
+      const width = documentRoot?.scrollWidth || content.scrollWidth;
+      const height = documentRoot?.scrollHeight || content.scrollHeight;
+
       if (width > 0 && height > 0) {
         setDocxSize((current) => (
           current.width === width && current.height === height
@@ -395,16 +401,34 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
             : { width, height }
         ));
       }
+
+      const viewerStyle = window.getComputedStyle(viewer);
+      const horizontalPadding =
+        Number.parseFloat(viewerStyle.paddingLeft || '0')
+        + Number.parseFloat(viewerStyle.paddingRight || '0');
+      const availableWidth = Math.max(0, viewer.clientWidth - horizontalPadding);
+      const nextBaseFitScale = width > 0 && availableWidth > 0
+        ? Math.min(1, availableWidth / width)
+        : 1;
+
+      setBaseFitScale((current) => (
+        Math.abs(current - nextBaseFitScale) < 0.001 ? current : nextBaseFitScale
+      ));
     };
 
     measure();
     const observer = typeof ResizeObserver === 'function'
       ? new ResizeObserver(measure)
       : null;
+    observer?.observe(viewer);
     observer?.observe(content);
+    window.addEventListener('resize', measure);
 
-    return () => observer?.disconnect();
-  }, [html, pages.length, fidelityPageCount]);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [html, pages.length, fidelityPageCount, useFidelityRenderer, viewMode, currentPage]);
 
   useLayoutEffect(() => {
     const snapshot = captureDocumentSnapshot();
@@ -834,6 +858,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   if (renderError) {
     return (
       <div className="word-viewer word-viewer-state" role="status">
+        {toolbarActions}
         <strong>Word 문서를 표시할 수 없습니다.</strong>
         <span>{renderError}</span>
       </div>
@@ -843,6 +868,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   if (!html) {
     return (
       <div className="word-viewer word-viewer-state" role="status">
+        {toolbarActions}
         <strong>표시할 DOCX 내용이 없습니다.</strong>
       </div>
     );
@@ -850,59 +876,6 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
 
   return (
     <div className="word-viewer-shell">
-      {(messages.length > 0 || fidelityRenderFailed) ? (
-        <div className="word-viewer-warning" role="status">
-          {fidelityRenderFailed
-            ? '원본 레이아웃 렌더링에 실패해 일반 미리보기로 표시합니다.'
-            : '일부 Word 서식은 웹 미리보기에서 단순화될 수 있습니다.'}
-        </div>
-      ) : null}
-      <div className="word-viewer-scroll">
-        <div className="docx-scale-viewport">
-          <div
-            className="docx-scale-holder"
-            style={docxSize.width && docxSize.height ? {
-              width: `${docxSize.width * scale}px`,
-              height: `${docxSize.height * scale}px`
-            } : undefined}
-          >
-            <div
-              ref={scaleContentRef}
-              className="docx-scale-content"
-              style={{ transform: `scale(${scale})` }}
-            >
-              {useFidelityRenderer ? (
-                <div
-                  ref={docxContentRef}
-                  className="docx-content docx-fidelity-content"
-                  aria-label={fidelityPageCount ? `원본 레이아웃 ${fidelityPageCount}페이지` : '원본 레이아웃을 불러오는 중'}
-                />
-              ) : (
-                <div ref={docxContentRef} className="docx-content word-page-stack" style={pageStyle}>
-                  {pages.map((pageHtml, index) => (
-                    <div
-                      key={`${index}-${pages.length}`}
-                      className={`docx-page-frame ${viewMode === 'page' ? 'page-mode' : ''}`}
-                      hidden={viewMode === 'page' && currentPage !== index + 1}
-                    >
-                      <article
-                        className="word-document"
-                        data-virtual-page-number={index + 1}
-                        dangerouslySetInnerHTML={{ __html: pageHtml }}
-                      />
-                      {viewMode === 'page' ? (
-                        <span className="docx-current-page-indicator" aria-live="polite">
-                          {index + 1} / {pages.length}
-                        </span>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
       <div className="docx-view-mode-controls" aria-label="DOCX 보기 방식">
         <div className="docx-document-history" role="group" aria-label="문서 변경 이력">
           <button
@@ -997,6 +970,60 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
           ) : null}
           </div>
         ) : null}
+        {toolbarActions}
+      </div>
+      {(messages.length > 0 || fidelityRenderFailed) ? (
+        <div className="word-viewer-warning" role="status">
+          {fidelityRenderFailed
+            ? '원본 레이아웃 렌더링에 실패해 일반 미리보기로 표시합니다.'
+            : '일부 Word 서식은 웹 미리보기에서 단순화될 수 있습니다.'}
+        </div>
+      ) : null}
+      <div className="word-viewer-scroll" ref={viewerBodyRef}>
+        <div className="docx-scale-viewport">
+          <div
+            className="docx-scale-holder"
+            style={docxSize.width && docxSize.height ? {
+              width: `${docxSize.width * actualScale}px`,
+              height: `${docxSize.height * actualScale}px`
+            } : undefined}
+          >
+            <div
+              ref={scaleContentRef}
+              className="docx-scale-content"
+              style={{ transform: `scale(${actualScale})` }}
+            >
+              {useFidelityRenderer ? (
+                <div
+                  ref={docxContentRef}
+                  className="docx-content docx-fidelity-content"
+                  aria-label={fidelityPageCount ? `원본 레이아웃 ${fidelityPageCount}페이지` : '원본 레이아웃을 불러오는 중'}
+                />
+              ) : (
+                <div ref={docxContentRef} className="docx-content word-page-stack" style={pageStyle}>
+                  {pages.map((pageHtml, index) => (
+                    <div
+                      key={`${index}-${pages.length}`}
+                      className={`docx-page-frame ${viewMode === 'page' ? 'page-mode' : ''}`}
+                      hidden={viewMode === 'page' && currentPage !== index + 1}
+                    >
+                      <article
+                        className="word-document"
+                        data-virtual-page-number={index + 1}
+                        dangerouslySetInnerHTML={{ __html: pageHtml }}
+                      />
+                      {viewMode === 'page' ? (
+                        <span className="docx-current-page-indicator" aria-live="polite">
+                          {index + 1} / {pages.length}
+                        </span>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
       {isResetConfirmOpen ? (
         <div className="docx-reset-confirm-backdrop" role="presentation">
