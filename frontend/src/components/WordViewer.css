@@ -10,7 +10,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   grid-template-areas:
-    "view-toggle view-toggle view-toggle"
+    "view-toggle view-toggle download"
     "history page-nav toolbar";
   align-items: flex-start;
   justify-content: stretch;
@@ -24,6 +24,12 @@
   flex-wrap: nowrap;
   flex-shrink: 0;
   gap: 6px;
+}
+
+.docx-view-mode-controls > .docx-download-actions {
+  grid-area: download;
+  justify-self: end;
+  align-self: start;
 }
 
 .docx-view-mode-controls > .document-viewer-actions .secondary-button {
@@ -387,11 +393,24 @@
   min-width: 0;
   padding: 0;
   background: transparent;
+  --docx-majorHAnsi-font: 'Malgun Gothic', '맑은 고딕', 'Noto Sans KR', 'Noto Sans CJK KR', 'Apple SD Gothic Neo', Arial, sans-serif !important;
+  --docx-minorHAnsi-font: 'Malgun Gothic', '맑은 고딕', 'Noto Sans KR', 'Noto Sans CJK KR', 'Apple SD Gothic Neo', Arial, sans-serif !important;
 }
 
 .docx-fidelity-content section.docx {
+  box-sizing: border-box;
   margin: 0 0 18px;
   box-shadow: 0 16px 36px rgba(51, 71, 132, 0.12);
+}
+
+/* The application uses border-box globally, while docx-preview calculates
+ * Word table grids and inline widths with the browser content-box model. */
+.docx-fidelity-content section.docx * {
+  box-sizing: content-box;
+}
+
+.docx-fidelity-content .docx-page-break-placeholder {
+  display: none !important;
 }
 
 /* docx-preview assigns its own display value to pages, so override it when

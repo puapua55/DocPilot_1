@@ -25,6 +25,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   const inputRef = useRef(null);
   const viewerRef = useRef(null);
   const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [docxPdfDownloadState, setDocxPdfDownloadState] = useState('idle');
 
   useImperativeHandle(ref, () => ({
     async getDocumentText() {
@@ -100,6 +101,41 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     event.target.value = '';
   };
 
+  const downloadCurrentDocx = () => {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = file.name;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const downloadCurrentDocxAsPdf = async () => {
+    if (docxPdfDownloadState !== 'idle') return;
+    setDocxPdfDownloadState('running');
+    try {
+      await viewerRef.current?.downloadAsPdf?.();
+      setDocxPdfDownloadState('idle');
+    } catch (error) {
+      console.error('[DocumentViewer] DOCX PDF download failed:', error);
+      setDocxPdfDownloadState('error');
+      window.setTimeout(() => setDocxPdfDownloadState('idle'), 2500);
+    }
+  };
+
+  const docxDownloadActions = (
+    <div className="viewer-download-actions docx-download-actions" aria-label="DOCX 다운로드">
+      <span className="viewer-download-label">다운로드</span>
+      <button type="button" className="viewer-download-button pdf" onClick={downloadCurrentDocxAsPdf} disabled={docxPdfDownloadState === 'running'} aria-label="PDF 다운로드">
+        {docxPdfDownloadState === 'running' ? 'PDF 생성 중...' : docxPdfDownloadState === 'error' ? 'PDF 실패' : 'PDF'}
+      </button>
+      <button type="button" className="viewer-download-button docx" onClick={downloadCurrentDocx} aria-label="DOCX 다운로드">
+        DOCX
+      </button>
+    </div>
+  );
+
   const viewerActions = (
         <div className="document-viewer-actions">
           <button
@@ -140,13 +176,14 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           replacePreview={replacePreview}
           selectedSearchResult={selectedSearchResult}
           scale={scale}
+          toolbarActions={viewerActions}
           onVisualConvert={onVisualPdfConvert}
         />
       );
     }
 
     if (previewModel.type === 'word') {
-      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} toolbarActions={viewerActions} />;
+      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} toolbarActions={viewerActions} downloadActions={docxDownloadActions} />;
     }
 
     return (
@@ -163,7 +200,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           <strong>{file?.name}</strong>
           <span>{formatFileSize(file?.size ?? 0)}</span>
         </div>
-        {previewModel?.type !== 'word' ? viewerActions : null}
+        {previewModel?.type !== 'word' && previewModel?.type !== 'pdf' ? viewerActions : null}
       </div>
       {highlightStatusMessage ? (
         <div className="inline-notice" role="status">

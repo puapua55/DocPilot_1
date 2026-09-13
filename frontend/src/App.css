@@ -414,6 +414,198 @@ button:disabled {
   gap: 4px;
 }
 
+.pdf-view-mode-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-areas:
+    "view view convert"
+    "history page toolbar";
+  align-items: start;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.pdf-view-mode-toggle,
+.pdf-page-navigation,
+.pdf-document-history {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pdf-view-mode-toggle {
+  grid-area: view;
+  justify-self: start;
+  min-height: 32px;
+  padding: 0 3px;
+  border: 1px solid #d7e2ff;
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+.pdf-view-mode-toggle button,
+.pdf-page-navigation button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 9px;
+  background: transparent;
+  color: #657292;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pdf-view-mode-toggle button.active {
+  background: #edf3ff;
+  color: #315fc7;
+}
+
+.pdf-page-navigation {
+  grid-area: page;
+  min-height: 32px;
+  padding: 0 3px;
+  border: 1px solid #d7e2ff;
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+.pdf-page-navigation span {
+  min-width: 55px;
+  text-align: center;
+  color: #315fc7;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.pdf-page-navigation button:disabled,
+.pdf-document-history button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.pdf-document-history {
+  grid-area: history;
+  justify-self: start;
+  gap: 6px;
+}
+
+.pdf-document-history button {
+  min-width: 34px;
+  min-height: 32px;
+  border: 1px solid #cbd9ff;
+  border-radius: 9px;
+  padding: 0 9px;
+  background: #ffffff;
+  color: #315fc7;
+  font-size: 1rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pdf-document-history .pdf-reset-all-button {
+  margin-left: 8px;
+  border-color: #7c9eff;
+  font-size: 0.8rem;
+}
+
+.pdf-view-mode-controls > .document-viewer-actions {
+  grid-area: toolbar;
+  justify-self: end;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.pdf-view-mode-controls > .viewer-download-actions {
+  position: relative;
+  top: auto;
+  right: auto;
+  grid-area: convert;
+  justify-self: end;
+  align-self: start;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+}
+
+.viewer-download-label {
+  color: #596784;
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 32px;
+  white-space: nowrap;
+}
+
+.viewer-download-button {
+  min-width: 44px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid #8aa8ff;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #3159b7;
+  box-shadow: 0 6px 18px rgba(49, 89, 183, 0.16);
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.viewer-download-button:hover:not(:disabled) {
+  background: #edf3ff;
+}
+
+.viewer-download-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.docx-download-actions {
+  position: static;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+}
+
+.pdf-view-mode-controls > .document-viewer-actions .secondary-button {
+  height: 32px;
+  min-height: 32px;
+  border-color: #7c9eff;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: #315fc7;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.pdf-view-mode-controls > .document-viewer-actions .zoom-controls {
+  gap: 6px;
+}
+
+.pdf-view-mode-controls > .document-viewer-actions .zoom-button {
+  min-width: 34px;
+  height: 32px;
+  min-height: 32px;
+  border-color: #cbd9ff;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: #315fc7;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.pdf-view-mode-controls > .document-viewer-actions .zoom-value {
+  min-width: 48px;
+  color: #315fc7;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
 .pdf-visual-convert-action {
   position: absolute;
   top: 12px;
@@ -426,7 +618,8 @@ button:disabled {
 }
 
 .pdf-visual-convert-button {
-  min-height: 34px;
+  min-height: 32px;
+  height: 32px;
   padding: 0 13px;
   border: 1px solid #8aa8ff;
   border-radius: 10px;

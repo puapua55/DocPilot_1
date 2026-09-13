@@ -56,22 +56,100 @@ function formatPdfPagesText(pages) {
     .trim();
 }
 
-const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, onVisualConvert }, ref) {
+const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, toolbarActions, onVisualConvert }, ref) {
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumbers, setPageNumbers] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [appliedReplacePreview, setAppliedReplacePreview] = useState(replacePreview);
   const [visualConvertStatus, setVisualConvertStatus] = useState('idle');
   const [visualConvertMessage, setVisualConvertMessage] = useState('');
+  const [downloadStatus, setDownloadStatus] = useState('idle');
+  const [downloadMessage, setDownloadMessage] = useState('');
   const pdfDocumentRef = useRef(null);
   const pagesTextRef = useRef([]);
   const viewerRef = useRef(null);
   const pageRefs = useRef({});
+  const historyRef = useRef({ snapshots: [], index: -1 });
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false, canReset: false });
+  const [viewMode, setViewMode] = useState('scroll');
+  const [currentPage, setCurrentPage] = useState(1);
   const [userHighlight, setUserHighlight] = useState({
     keyword: String(highlightKeyword || ''),
     color: 'yellow',
     matchMode: 'contains'
   });
+
+  const updateHistoryState = () => {
+    const { snapshots, index } = historyRef.current;
+    setHistoryState({ canUndo: index > 0, canRedo: index >= 0 && index < snapshots.length - 1, canReset: index > 0 });
+  };
+
+  const commitPdfChange = (highlight, replace) => {
+    const history = historyRef.current;
+    const snapshot = { highlight, replace };
+    const current = history.snapshots[history.index];
+    if (current && JSON.stringify(current) === JSON.stringify(snapshot)) return;
+    historyRef.current = history.index < 0
+      ? { snapshots: [snapshot], index: 0 }
+      : { snapshots: [...history.snapshots.slice(0, history.index + 1), snapshot], index: history.index + 1 };
+    updateHistoryState();
+  };
+
+  const restorePdfSnapshot = (snapshot) => {
+    if (!snapshot) return false;
+    setUserHighlight(snapshot.highlight);
+    setAppliedReplacePreview(snapshot.replace);
+    return true;
+  };
+
+  const undoDocumentChange = () => {
+    const history = historyRef.current;
+    if (history.index <= 0) return false;
+    history.index -= 1;
+    restorePdfSnapshot(history.snapshots[history.index]);
+    updateHistoryState();
+    return true;
+  };
+
+  const redoDocumentChange = () => {
+    const history = historyRef.current;
+    if (history.index >= history.snapshots.length - 1) return false;
+    history.index += 1;
+    restorePdfSnapshot(history.snapshots[history.index]);
+    updateHistoryState();
+    return true;
+  };
+
+  const resetAllDocumentChanges = () => {
+    const history = historyRef.current;
+    if (history.index <= 0) return false;
+    history.index = 0;
+    restorePdfSnapshot(history.snapshots[0]);
+    updateHistoryState();
+    return true;
+  };
+
+  const downloadAsPdf = async () => {
+    if (downloadStatus !== 'idle') return;
+    setDownloadStatus('pdf-running');
+    setDownloadMessage('');
+    try {
+      if (appliedReplacePreview?.originalText) {
+        await onVisualConvert?.(appliedReplacePreview);
+      } else {
+        const url = URL.createObjectURL(file);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = file.name;
+        anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      setDownloadStatus('idle');
+    } catch (error) {
+      setDownloadStatus('idle');
+      setDownloadMessage(`PDF 다운로드에 실패했습니다. ${error?.message || ''}`.trim());
+    }
+  };
 
   console.log('[PdfJsViewer] file:', file);
 
@@ -187,6 +265,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       }));
 
       setUserHighlight({ keyword: normalizedKeyword, color, matchMode });
+      commitPdfChange({ keyword: normalizedKeyword, color, matchMode }, appliedReplacePreview);
       return { count: results.length, results };
     },
     async replaceText(originalText, newText, options = {}) {
@@ -204,7 +283,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         }))
         : matches;
       if (results.length) {
-        setAppliedReplacePreview({ originalText, newText, matchMode, selectedTargets: results });
+        const nextReplace = { originalText, newText, matchMode, selectedTargets: results };
+        setAppliedReplacePreview(nextReplace);
+        commitPdfChange(userHighlight, nextReplace);
       }
       return { count: results.length, replaceCount: results.length, results };
     },
@@ -217,8 +298,19 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         color: 'yellow',
         matchMode: 'contains'
       });
+      commitPdfChange({ keyword: '', color: 'yellow', matchMode: 'contains' }, appliedReplacePreview);
       return true;
     },
+    undoDocumentChange() {
+      return undoDocumentChange();
+    },
+    redoDocumentChange() {
+      return redoDocumentChange();
+    },
+    resetAllDocumentChanges() {
+      return resetAllDocumentChanges();
+    },
+    downloadAsPdf,
     scrollToHighlightResult(result) {
       return scrollToPdfSearchResult(result);
     }
@@ -267,8 +359,18 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     async function loadPdf() {
       pagesTextRef.current = [];
       pdfDocumentRef.current = null;
+      historyRef.current = {
+        snapshots: [{
+          highlight: { keyword: String(highlightKeyword || ''), color: 'yellow', matchMode: 'contains' },
+          replace: replacePreview
+        }],
+        index: 0
+      };
+      updateHistoryState();
       setPdfDocument(null);
       setPageNumbers([]);
+      setCurrentPage(1);
+      setViewMode('scroll');
       setErrorMessage('');
 
       if (!file || !isPdfFile(file)) {
@@ -399,43 +501,59 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   return (
     <div className="pdf-viewer-shell">
-      <div className="pdf-visual-convert-action">
-        <button
-          type="button"
-          className="pdf-visual-convert-button"
-          onClick={handleVisualConvert}
-          disabled={visualConvertStatus === 'running' || !appliedReplacePreview?.originalText}
-          title={appliedReplacePreview?.originalText ? '현재 화면의 교체 결과를 원본형 PDF로 저장' : '즉시 텍스트 교체에서 먼저 화면에 적용해주세요.'}
-          aria-label="원본형 변환 다운로드"
-        >
-          {visualConvertStatus === 'running' ? '변환 중...' : '변환 다운로드'}
-        </button>
-        {visualConvertMessage ? (
-          <span className={`pdf-visual-convert-message is-${visualConvertStatus}`} role="status">
-            {visualConvertMessage}
-          </span>
+      <div className="pdf-view-mode-controls" aria-label="PDF 보기 방식">
+        {pageNumbers.length > 1 ? (
+          <>
+            <div className="pdf-view-mode-toggle" role="group" aria-label="보기 방식 선택">
+              <button type="button" className={viewMode === 'scroll' ? 'active' : ''} onClick={() => setViewMode('scroll')} aria-pressed={viewMode === 'scroll'}>스크롤</button>
+              <button type="button" className={viewMode === 'page' ? 'active' : ''} onClick={() => setViewMode('page')} aria-pressed={viewMode === 'page'}>페이지 이동</button>
+            </div>
+            {viewMode === 'page' ? (
+              <div className="pdf-page-navigation" role="group" aria-label="페이지 이동">
+                <button type="button" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1}>이전</button>
+                <span aria-live="polite">{currentPage} / {pageNumbers.length}</span>
+                <button type="button" onClick={() => setCurrentPage((page) => Math.min(pageNumbers.length, page + 1))} disabled={currentPage === pageNumbers.length}>다음</button>
+              </div>
+            ) : null}
+          </>
         ) : null}
+        <div className="pdf-document-history" role="group" aria-label="문서 변경 이력">
+          <button type="button" onClick={undoDocumentChange} disabled={!historyState.canUndo} aria-label="적용 전으로 되돌리기">&lt;</button>
+          <button type="button" onClick={redoDocumentChange} disabled={!historyState.canRedo} aria-label="다시 적용하기">&gt;</button>
+          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!historyState.canReset}>전체 초기화</button>
+        </div>
+        {toolbarActions}
+        <div className="viewer-download-actions">
+          <span className="viewer-download-label">다운로드</span>
+          <button
+            type="button"
+            className="viewer-download-button pdf"
+            onClick={downloadAsPdf}
+            disabled={downloadStatus !== 'idle'}
+            aria-label="PDF 다운로드"
+          >
+            {downloadStatus === 'pdf-running' ? 'PDF 변환 중...' : 'PDF'}
+          </button>
+        </div>
       </div>
+      {downloadMessage ? <div className="pdf-visual-convert-message is-error" role="alert">{downloadMessage}</div> : null}
       <div ref={viewerRef} className="pdf-viewer pdf-viewer-scroll">
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (
-            <PdfPage
-              key={`${pageNumber}-${scale}`}
-              pdf={pdfDocument}
-              pageNumber={pageNumber}
-              scale={scale}
-              highlightKeyword={userHighlight.keyword}
-              highlightOptions={userHighlight}
-              replacePreview={appliedReplacePreview}
-              onPageReady={(element) => {
-                if (element) {
-                  pageRefs.current[pageNumber] = element;
-                  return;
-                }
-
-                delete pageRefs.current[pageNumber];
-              }}
-            />
+            <div key={`${pageNumber}-${scale}`} hidden={viewMode === 'page' && currentPage !== pageNumber}>
+              <PdfPage
+                pdf={pdfDocument}
+                pageNumber={pageNumber}
+                scale={scale}
+                highlightKeyword={userHighlight.keyword}
+                highlightOptions={userHighlight}
+                replacePreview={appliedReplacePreview}
+                onPageReady={(element) => {
+                  if (element) pageRefs.current[pageNumber] = element;
+                  else delete pageRefs.current[pageNumber];
+                }}
+              />
+            </div>
           ))}
         </div>
       </div>

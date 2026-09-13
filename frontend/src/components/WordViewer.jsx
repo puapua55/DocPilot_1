@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import { renderAsync } from 'docx-preview';
+import { convertDocxDomToPdf } from '../services/docxPdfConvertService';
 import './WordViewer.css';
 
 const SEARCH_BLOCK_SELECTOR = 'p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre';
@@ -218,7 +219,72 @@ function splitHtmlIntoPages(html) {
   return pages.length > 0 ? pages : [''];
 }
 
-const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 1, toolbarActions }, ref) {
+function normalizeFidelityPageLayout(container) {
+  const sections = Array.from(container?.querySelectorAll?.('section.docx') || []);
+
+  sections.forEach((section) => {
+    // docx-preview exposes the DOCX page height as min-height. Fixing the
+    // actual height keeps a nearly-full page from growing beyond its pgSz.
+    if (section.style.minHeight) {
+      section.style.height = section.style.minHeight;
+    }
+  });
+
+  sections.slice(0, -1).forEach((section) => {
+    const article = Array.from(section.children).find((element) => element.tagName === 'ARTICLE');
+    const lastParagraph = article?.lastElementChild;
+    const hasRenderableContent = lastParagraph?.textContent?.trim() || lastParagraph?.querySelector?.(
+      'img, svg, canvas, table, object, embed, iframe'
+    );
+
+    // An explicit w:br[type="page"] is already consumed when docx-preview
+    // creates the next section. Its empty carrier paragraph must not consume
+    // another line plus paragraph-after spacing at the bottom of this page.
+    if (lastParagraph?.tagName === 'P' && !hasRenderableContent) {
+      lastParagraph.classList.add('docx-page-break-placeholder');
+      lastParagraph.setAttribute('aria-hidden', 'true');
+    }
+  });
+
+  sections.forEach((section) => {
+    const articles = Array.from(section.children).filter((element) => element.tagName === 'ARTICLE');
+    const lastArticle = articles.at(-1);
+    const lastContent = Array.from(lastArticle?.children || []).filter((element) => (
+      !element.classList.contains('docx-page-break-placeholder')
+    )).at(-1);
+    if (!articles.length || !lastContent) return;
+
+    articles.forEach((article) => {
+      article.style.transform = '';
+      article.style.transformOrigin = '';
+    });
+
+    const sectionRect = section.getBoundingClientRect();
+    const firstArticleRect = articles[0].getBoundingClientRect();
+    const lastContentRect = lastContent.getBoundingClientRect();
+    const renderedScale = section.offsetHeight ? sectionRect.height / section.offsetHeight : 1;
+    const paddingBottom = Number.parseFloat(window.getComputedStyle(section).paddingBottom) || 0;
+    const availableBottom = sectionRect.bottom - paddingBottom * renderedScale;
+    const contentHeight = lastContentRect.bottom - firstArticleRect.top;
+    const availableHeight = availableBottom - firstArticleRect.top;
+
+    if (contentHeight > availableHeight + 1 && availableHeight > 0) {
+      // Browser fallback-font metrics can add a few pixels per paragraph even
+      // though Word keeps all content before the explicit page break. A small
+      // vertical-only correction preserves line wrapping and page membership.
+      const fitScale = Math.max(0.94, Math.min(1, availableHeight / contentHeight));
+      articles.forEach((article) => {
+        article.style.transformOrigin = 'top left';
+        article.style.transform = `scaleY(${fitScale})`;
+      });
+      section.dataset.docxPageFitScale = fitScale.toFixed(4);
+    } else {
+      delete section.dataset.docxPageFitScale;
+    }
+  });
+}
+
+const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 1, toolbarActions, downloadActions }, ref) {
   const {
     html,
     pageLayout,
@@ -277,8 +343,12 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       renderEndnotes: true,
       experimental: true,
       useBase64URL: true
-    }).then(() => {
+    }).then(async () => {
       if (cancelled) return;
+      if (document.fonts?.ready) await document.fonts.ready;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (cancelled) return;
+      normalizeFidelityPageLayout(container);
       setFidelityPageCount(container.querySelectorAll('section.docx').length);
     }).catch((error) => {
       console.error('[WordViewer] original-layout DOCX render failed:', error);
@@ -852,6 +922,9 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     },
     getModifiedHtml() {
       return serializeModifiedHtml(docxContentRef.current);
+    },
+    async downloadAsPdf() {
+      return convertDocxDomToPdf({ root: viewerBodyRef.current, fileName: file?.name, file });
     }
   }));
 
@@ -877,6 +950,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   return (
     <div className="word-viewer-shell">
       <div className="docx-view-mode-controls" aria-label="DOCX 보기 방식">
+        {downloadActions}
         <div className="docx-document-history" role="group" aria-label="문서 변경 이력">
           <button
             type="button"

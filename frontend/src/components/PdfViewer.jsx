@@ -1,7 +1,7 @@
 import { forwardRef } from 'react';
 import PdfJsViewer from './PdfJsViewer';
 
-const PdfViewer = forwardRef(function PdfViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale, onVisualConvert }, ref) {
+const PdfViewer = forwardRef(function PdfViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale, toolbarActions, onVisualConvert }, ref) {
   return (
     <PdfJsViewer
       ref={ref}
@@ -10,6 +10,7 @@ const PdfViewer = forwardRef(function PdfViewer({ file, highlightKeyword, select
       selectedSearchResult={selectedSearchResult}
       replacePreview={replacePreview}
       scale={scale}
+      toolbarActions={toolbarActions}
       onVisualConvert={onVisualConvert}
     />
   );
