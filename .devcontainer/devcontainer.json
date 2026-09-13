@@ -4,7 +4,8 @@
     "dockerfile": "Dockerfile",
     "context": "..",
     "args": {
-      "MAVEN_VERSION": "3.9.16"
+      "MAVEN_VERSION": "3.9.16",
+      "GIT_LFS_VERSION": "2.13.2-1+b5"
     }
   },
   "features": {},
