@@ -1,6 +1,12 @@
 {
   "name": "docpilot-java21",
-  "image": "mcr.microsoft.com/devcontainers/java:1-21-bullseye",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": {
+      "MAVEN_VERSION": "3.9.16"
+    }
+  },
   "features": {},
   "customizations": {
     "vscode": {
