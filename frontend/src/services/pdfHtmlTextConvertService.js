@@ -93,8 +93,8 @@ export async function convertPdfViaHtmlText(file, originalText, newText) {
   };
 }
 
-export async function extractPdfToHtmlText(file) {
-  const htmlStructure = await extractPdfToHtmlStructure(file);
+export async function extractPdfToHtmlText(file, options = {}) {
+  const htmlStructure = await extractPdfToHtmlStructure(file, options);
   const htmlText = String(htmlStructure?.html ?? '');
 
   if (!htmlText.includes('pdf-page') || !htmlText.includes('pdf-text')) {
@@ -187,6 +187,7 @@ export function parseHtmlTextStructure(htmlText) {
   return {
     pages: pageElements.map((pageElement, pageIndex) => {
       const lines = Array.from(pageElement.querySelectorAll('.pdf-line'));
+      const highlights = Array.from(pageElement.querySelectorAll('.pdf-highlight'));
       const texts = Array.from(pageElement.querySelectorAll('.pdf-text'));
 
       console.log('[HtmlTextConvert] page:', pageIndex + 1);
@@ -229,6 +230,13 @@ export function parseHtmlTextStructure(htmlText) {
             height: getStylePx(lineElement, 'height')
           }))
           .filter((line) => !isPageEdgeArtifactLine(line, getStylePx(pageElement, 'width'), getStylePx(pageElement, 'height'))),
+        highlights: highlights.map((highlightElement) => ({
+          left: getStylePx(highlightElement, 'left'),
+          top: getStylePx(highlightElement, 'top'),
+          width: getStylePx(highlightElement, 'width'),
+          height: getStylePx(highlightElement, 'height'),
+          color: highlightElement.style.backgroundColor || 'rgba(255, 255, 0, 0.35)'
+        })),
         texts: parsedTexts
       };
     })
@@ -268,6 +276,17 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
     const cleanLines = page.lines.filter((line) => !isPageEdgeArtifactLine(line, page.width, page.height));
 
     console.log('[HtmlTextConvert] clean lines count:', cleanLines.length);
+
+    (page.highlights || []).forEach((highlight) => {
+      const color = parseHighlightColor(highlight.color);
+      doc.setFillColor(color.red, color.green, color.blue);
+      if (typeof doc.saveGraphicsState === 'function') doc.saveGraphicsState();
+      if (typeof doc.setGState === 'function' && typeof doc.GState === 'function') {
+        doc.setGState(new doc.GState({ opacity: color.opacity }));
+      }
+      doc.rect(highlight.left, highlight.top, highlight.width, highlight.height, 'F');
+      if (typeof doc.restoreGraphicsState === 'function') doc.restoreGraphicsState();
+    });
 
     cleanLines.forEach((line) => {
       doc.setDrawColor(0, 0, 0);
@@ -313,6 +332,14 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
   });
 
   downloadBlob(doc.output('blob'), outputFileName);
+}
+
+function parseHighlightColor(value) {
+  const values = String(value || '').match(/[\d.]+/g)?.map(Number) || [255, 255, 0, 0.35];
+  if (String(value).startsWith('rgba')) {
+    return { red: values[0] || 255, green: values[1] || 255, blue: values[2] || 0, opacity: values[3] ?? 0.35 };
+  }
+  return { red: values[0] || 255, green: values[1] || 255, blue: values[2] || 0, opacity: 0.35 };
 }
 
 export function downloadHtmlTextFile(htmlText, fileName = 'document.pdf') {

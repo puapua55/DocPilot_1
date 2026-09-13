@@ -93,7 +93,7 @@ export async function convertTextReplacement({ file, fileType, originalText, new
 
   if (fileType !== 'pdf') throw new Error('지원하지 않는 파일 형식입니다.');
 
-  const htmlText = await extractPdfToHtmlText(file);
+  const htmlText = await extractPdfToHtmlText(file, options);
   const replaceResult = replaceTextInHtmlText(htmlText, originalText, newText, options);
   const parsedStructure = parseHtmlTextStructure(replaceResult.htmlText);
   const totalTextCount = parsedStructure.pages.reduce((sum, page) => sum + page.texts.length, 0);

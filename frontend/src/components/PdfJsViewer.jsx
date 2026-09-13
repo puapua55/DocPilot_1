@@ -56,11 +56,13 @@ function formatPdfPagesText(pages) {
     .trim();
 }
 
-const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1 }, ref) {
+const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, onVisualConvert }, ref) {
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumbers, setPageNumbers] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [appliedReplacePreview, setAppliedReplacePreview] = useState(replacePreview);
+  const [visualConvertStatus, setVisualConvertStatus] = useState('idle');
+  const [visualConvertMessage, setVisualConvertMessage] = useState('');
   const pdfDocumentRef = useRef(null);
   const pagesTextRef = useRef([]);
   const viewerRef = useRef(null);
@@ -133,6 +135,23 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         lines: page.lines.map((line) => line.text)
       }));
       return searchKeywordInDocument(documentText, keyword, options);
+    },
+    getPdfHighlights() {
+      return Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
+        const pageWidth = pageElement.clientWidth || pageElement.getBoundingClientRect().width;
+        const pageHeight = pageElement.clientHeight || pageElement.getBoundingClientRect().height;
+        const pageNumber = Number(pageElement.dataset.pageNumber);
+        return Array.from(pageElement.querySelectorAll('.highlight-box')).map((box) => ({
+          pageNumber,
+          sourcePageWidth: pageWidth,
+          sourcePageHeight: pageHeight,
+          left: Number.parseFloat(box.style.left),
+          top: Number.parseFloat(box.style.top),
+          width: Number.parseFloat(box.style.width),
+          height: Number.parseFloat(box.style.height),
+          color: window.getComputedStyle(box).backgroundColor
+        }));
+      });
     },
     scrollToSearchResult(result) {
       return scrollToPdfSearchResult(result);
@@ -207,7 +226,25 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   useEffect(() => {
     setAppliedReplacePreview(replacePreview);
+    setVisualConvertStatus('idle');
+    setVisualConvertMessage('');
   }, [file, replacePreview]);
+
+  const handleVisualConvert = async () => {
+    if (!appliedReplacePreview?.originalText || appliedReplacePreview?.newText == null) return;
+
+    setVisualConvertStatus('running');
+    setVisualConvertMessage('');
+    try {
+      const result = await onVisualConvert?.(appliedReplacePreview);
+      setVisualConvertStatus('success');
+      setVisualConvertMessage(`${result?.replaceCount ?? 0}건 변환 완료`);
+    } catch (error) {
+      console.error('[PdfJsViewer] visual PDF conversion failed:', error);
+      setVisualConvertStatus('error');
+      setVisualConvertMessage(error?.message || '변환 파일을 생성하지 못했습니다.');
+    }
+  };
 
   useEffect(() => {
     console.log('[PdfJsViewer] highlightKeyword:', highlightKeyword);
@@ -362,6 +399,23 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   return (
     <div className="pdf-viewer-shell">
+      <div className="pdf-visual-convert-action">
+        <button
+          type="button"
+          className="pdf-visual-convert-button"
+          onClick={handleVisualConvert}
+          disabled={visualConvertStatus === 'running' || !appliedReplacePreview?.originalText}
+          title={appliedReplacePreview?.originalText ? '현재 화면의 교체 결과를 원본형 PDF로 저장' : '즉시 텍스트 교체에서 먼저 화면에 적용해주세요.'}
+          aria-label="원본형 변환 다운로드"
+        >
+          {visualConvertStatus === 'running' ? '변환 중...' : '변환 다운로드'}
+        </button>
+        {visualConvertMessage ? (
+          <span className={`pdf-visual-convert-message is-${visualConvertStatus}`} role="status">
+            {visualConvertMessage}
+          </span>
+        ) : null}
+      </div>
       <div ref={viewerRef} className="pdf-viewer pdf-viewer-scroll">
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (

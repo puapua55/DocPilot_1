@@ -416,6 +416,14 @@
   margin-top: 0;
 }
 
+/* Mammoth emits regular HTML headings and paragraphs. Clear the browser's
+ * user-agent margins so the DOCX w:spacing values applied inline are the only
+ * paragraph spacing used by the preview. */
+.word-document :where(p, h1, h2, h3, h4, h5, h6, blockquote, pre, ul, ol) {
+  margin-block-start: 0;
+  margin-block-end: 0;
+}
+
 .word-document img {
   max-width: 100%;
   height: auto;

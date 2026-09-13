@@ -12,7 +12,8 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
   errorMessage,
   onDocumentSelect,
   onDocumentClear,
-  onDocumentReselect
+  onDocumentReselect,
+  onVisualPdfConvert
 }, ref) {
   return (
     <section className="panel document-panel">
@@ -28,6 +29,7 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
           onClose={onDocumentClear}
           onChangeFile={onDocumentSelect}
           onReselect={onDocumentReselect}
+          onVisualPdfConvert={onVisualPdfConvert}
         />
       ) : (
         <UploadPanel

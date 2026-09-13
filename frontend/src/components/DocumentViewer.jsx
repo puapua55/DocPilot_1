@@ -19,7 +19,8 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   selectedSearchResult,
   onClose,
   onChangeFile,
-  onReselect
+  onReselect,
+  onVisualPdfConvert
 }, ref) {
   const inputRef = useRef(null);
   const viewerRef = useRef(null);
@@ -36,6 +37,9 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     },
     searchDocument(keyword, options) {
       return viewerRef.current?.searchDocument?.(keyword, options) ?? [];
+    },
+    getPdfHighlights() {
+      return viewerRef.current?.getPdfHighlights?.() ?? [];
     },
     scrollToSearchResult(result) {
       return viewerRef.current?.scrollToSearchResult?.(result) ?? false;
@@ -136,6 +140,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           replacePreview={replacePreview}
           selectedSearchResult={selectedSearchResult}
           scale={scale}
+          onVisualConvert={onVisualPdfConvert}
         />
       );
     }

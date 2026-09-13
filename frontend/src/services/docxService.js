@@ -220,8 +220,9 @@ function getWordAttribute(element, name) {
 }
 
 function getWordChild(element, name) {
-  return Array.from(element?.children || []).find(
-    (child) => child.tagName === `w:${name}` || child.localName === name
+  return Array.from(element?.childNodes || []).find(
+    (child) => child.nodeType === 1
+      && (child.tagName === `w:${name}` || child.localName === name)
   ) || null;
 }
 
@@ -339,6 +340,105 @@ function getParagraphAlignment(paragraph) {
     distribute: 'justify',
     left: 'left'
   }[alignment] || '';
+}
+
+function getParagraphStyle(paragraph, stylesDocument) {
+  const styleId = getWordAttribute(
+    getWordChild(getWordChild(paragraph, 'pPr'), 'pStyle'),
+    'val'
+  );
+  if (!styleId || !stylesDocument) {
+    return null;
+  }
+
+  return getWordDescendants(stylesDocument, 'style').find((style) => (
+    getWordAttribute(style, 'type') === 'paragraph'
+      && getWordAttribute(style, 'styleId') === styleId
+  )) || null;
+}
+
+function getParagraphSpacing(paragraph, stylesDocument) {
+  const spacing = {};
+  const applySpacing = (properties) => {
+    const element = getWordChild(properties, 'spacing');
+    if (!element) {
+      return;
+    }
+
+    ['before', 'after', 'beforeLines', 'afterLines', 'line', 'lineRule'].forEach((name) => {
+      const value = getWordAttribute(element, name);
+      if (value !== '') {
+        spacing[name] = value;
+      }
+    });
+  };
+
+  // Word resolves paragraph formatting from document defaults, the style
+  // hierarchy, then the paragraph's own properties. Apply in that order so a
+  // direct paragraph value wins over its named style.
+  const stylesRoot = stylesDocument?.documentElement || stylesDocument;
+  const defaults = getWordChild(
+    getWordChild(stylesRoot, 'docDefaults'),
+    'pPrDefault'
+  );
+  applySpacing(getWordChild(defaults, 'pPr'));
+
+  const styleById = new Map(getWordDescendants(stylesDocument, 'style')
+    .filter((style) => getWordAttribute(style, 'type') === 'paragraph')
+    .map((style) => [getWordAttribute(style, 'styleId'), style]));
+  const styleChain = [];
+  let style = getParagraphStyle(paragraph, stylesDocument);
+  const visited = new Set();
+  while (style && !visited.has(style)) {
+    visited.add(style);
+    styleChain.unshift(style);
+    style = styleById.get(getWordAttribute(getWordChild(getWordChild(style, 'pPr'), 'basedOn'), 'val'));
+  }
+  styleChain.forEach((item) => applySpacing(getWordChild(item, 'pPr')));
+  applySpacing(getWordChild(paragraph, 'pPr'));
+
+  return Object.keys(spacing).length > 0 ? spacing : null;
+}
+
+function getSpacingPixels(value, fallback = 0) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue >= 0
+    ? numericValue * TWIPS_TO_PIXELS
+    : fallback;
+}
+
+function applyParagraphSpacing(element, paragraph, stylesDocument) {
+  const spacing = getParagraphSpacing(paragraph, stylesDocument);
+  if (!spacing) {
+    return;
+  }
+
+  const before = spacing.before !== undefined
+    ? getSpacingPixels(spacing.before)
+    : spacing.beforeLines !== undefined
+      ? Number(spacing.beforeLines) / 100 * 16
+      : null;
+  const after = spacing.after !== undefined
+    ? getSpacingPixels(spacing.after)
+    : spacing.afterLines !== undefined
+      ? Number(spacing.afterLines) / 100 * 16
+      : null;
+
+  if (before !== null && Number.isFinite(before)) {
+    element.style.marginTop = `${before}px`;
+  }
+  if (after !== null && Number.isFinite(after)) {
+    element.style.marginBottom = `${after}px`;
+  }
+
+  if (spacing.line !== undefined) {
+    const line = Number(spacing.line);
+    if (Number.isFinite(line) && line > 0) {
+      element.style.lineHeight = ['exact', 'atLeast'].includes(spacing.lineRule)
+        ? `${line * TWIPS_TO_PIXELS}px`
+        : String(line / 240);
+    }
+  }
 }
 
 function getParagraphText(paragraph) {
@@ -473,6 +573,9 @@ function applyDocxLayout(html, documentXml, stylesXml = '') {
     if (alignment && htmlBlocks[index]) {
       htmlBlocks[index].style.textAlign = alignment;
       htmlBlocks[index].dataset.docxTextAlign = alignment;
+    }
+    if (htmlBlocks[index]) {
+      applyParagraphSpacing(htmlBlocks[index], paragraph, stylesDocument);
     }
   });
 

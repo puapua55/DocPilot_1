@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import HighlightLayer from './HighlightLayer';
 import PdfTextLayer from './PdfTextLayer';
+import { ensureReplacementFont } from '../services/pdfReplacementFont';
 import {
   calculateHighlightBoxes,
   createHighlightBoxesFromTextLayer,
@@ -81,6 +82,7 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = 
         return;
       }
 
+      await ensureReplacementFont();
       const textContent = await page.getTextContent();
       if (!cancelled) {
         setTextContent(textContent);
@@ -233,10 +235,17 @@ function ReplacementPreviewLayer({ items, width, height }) {
           />
           <div
             className="replacement-text"
+            data-baseline={item.text.baseline}
+            data-max-width={item.text.maxWidth}
             style={{
               left: `${item.text.x}px`,
               top: `${item.text.y}px`,
-              fontSize: `${item.text.fontSize}px`
+              fontSize: `${item.text.fontSize}px`,
+              lineHeight: `${item.text.lineHeight}px`,
+              fontFamily: item.text.fontFamily,
+              fontWeight: item.text.fontWeight,
+              fontStyle: item.text.fontStyle,
+              letterSpacing: item.text.letterSpacing
             }}
           >
             {item.text.value}

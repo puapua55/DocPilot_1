@@ -407,10 +407,54 @@ button:disabled {
 }
 
 .pdf-viewer-shell {
+  position: relative;
   width: 100%;
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.pdf-visual-convert-action {
+  position: absolute;
+  top: 12px;
+  right: 30px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.pdf-visual-convert-button {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid #8aa8ff;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #3159b7;
+  box-shadow: 0 6px 18px rgba(49, 89, 183, 0.16);
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.pdf-visual-convert-button:hover:not(:disabled) {
+  background: #edf3ff;
+}
+
+.pdf-visual-convert-message {
+  max-width: 190px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #3159b7;
+  box-shadow: 0 4px 12px rgba(49, 89, 183, 0.12);
+  font-size: 0.72rem;
+}
+
+.pdf-visual-convert-message.is-error {
+  color: #b3394a;
 }
 
 .zoom-controls {

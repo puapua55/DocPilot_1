@@ -1,15 +1,19 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import { fitReplacementWidth, findNextTextX, findCellRight } from './pdfReplacementLayout';
 
 const DEFAULT_PADDING_X = 1;
 const DEFAULT_PADDING_Y = 1;
 const MIN_BOX_SIZE = 2;
 const REPLACE_PREVIEW_TUNING = {
   xOffset: 0,
-  yOffset: 3,
-  coverTopExtra: 3,
-  coverBottomExtra: 5,
-  coverXExtra: 2,
-  fontSizeRatio: 0.95
+  yOffset: 0,
+  // The replacement object must be the selected glyph range itself.
+  // Expanding this box hides table borders and creates visible gaps around
+  // the following text when the replacement is shorter than the source.
+  coverTopExtra: 0,
+  coverBottomExtra: 0,
+  coverXExtra: 0,
+  fontSizeRatio: 1
 };
 
 function isWordSeparator(char) {
@@ -382,18 +386,36 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
       if (lineBox) {
         const sourceSpan = findSourceSpanForPreview(lineGroup.spans, matchedRects[0]);
         const computedStyle = sourceSpan ? window.getComputedStyle(sourceSpan) : null;
-        const sourceFontSize = Number.parseFloat(computedStyle?.fontSize || '') || lineBox.height;
-        const fontSize = Math.max(sourceFontSize * REPLACE_PREVIEW_TUNING.fontSizeRatio, 8);
+        const minFontScale = Number.parseFloat(textLayer.style.getPropertyValue('--min-font-size')) || 1;
+        const sourceFontSize = (Number.parseFloat(computedStyle?.fontSize || '') || lineBox.height) / minFontScale;
+        const lineHeight = Math.max(lineBox.height, 1);
+        const context = document.createElement('canvas').getContext('2d');
+        context.font = `${sourceFontSize}px DocPilotReplacement`;
+        const originalMetrics = context.measureText(newText || '한');
+        const nextTextX = findNextTextX(lineGroup, endIndex, pageElement);
+        const pageRight = parseFloat(pageElement.style.width);
+        const cellRight = findCellRight(pageElement, lineBox, Math.min(pageRight, nextTextX ?? pageRight));
+        const { fontSize, maxWidth } = fitReplacementWidth({
+          sourceSize: sourceFontSize, measuredWidth: originalMetrics.width,
+          startX: lineBox.x, pageRight, nextTextX, cellRight,
+          gap: sourceFontSize * 0.08
+        });
+        if (maxWidth <= 0) return;
+        context.font = `${fontSize}px DocPilotReplacement`;
+        const metrics = context.measureText(newText || '한');
+        const ascent = metrics.fontBoundingBoxAscent ?? metrics.actualBoundingBoxAscent;
+        const descent = metrics.fontBoundingBoxDescent ?? metrics.actualBoundingBoxDescent;
+        const baseline = lineBox.y + (lineHeight - ascent - descent) / 2 + ascent;
 
         previewItems.push({
           id: `${lineIndex}-${foundIndex}-${newText}`,
           cover: {
             x: lineBox.x - REPLACE_PREVIEW_TUNING.coverXExtra,
             y: lineBox.y - REPLACE_PREVIEW_TUNING.coverTopExtra,
-            width: Math.max(
-              lineBox.width + REPLACE_PREVIEW_TUNING.coverXExtra * 2,
-              estimateReplacementWidth(newText, fontSize)
-            ),
+            // Keep the cover exactly as wide as the dragged source text.
+            // The new glyph may be shorter or longer, but it must not change
+            // the area that is cleared from the original page.
+            width: lineBox.width + REPLACE_PREVIEW_TUNING.coverXExtra * 2,
             height:
               lineBox.height +
               REPLACE_PREVIEW_TUNING.coverTopExtra +
@@ -403,7 +425,14 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
             x: lineBox.x + REPLACE_PREVIEW_TUNING.xOffset,
             y: lineBox.y + REPLACE_PREVIEW_TUNING.yOffset,
             value: newText,
-            fontSize
+            fontSize,
+            maxWidth,
+            lineHeight,
+            baseline,
+            fontFamily: 'DocPilotReplacement',
+            fontWeight: '400',
+            fontStyle: 'normal',
+            letterSpacing: 'normal'
           }
         });
       }
@@ -485,10 +514,6 @@ function findSourceSpanForPreview(spans, firstRect) {
     rect.right + 1 >= firstRect.left &&
     Math.abs(rect.top - firstRect.top) <= 3
   ))?.span || null;
-}
-
-function estimateReplacementWidth(text, fontSize) {
-  return Math.max(String(text || '').length * fontSize * 0.62, MIN_BOX_SIZE);
 }
 
 function clamp(value, min, max) {

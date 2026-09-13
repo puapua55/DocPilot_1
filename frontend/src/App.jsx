@@ -200,7 +200,22 @@ function App() {
     if (!selectedDocument?.file) throw new Error('현재 선택된 문서가 없습니다.');
     const file = selectedDocument.file;
     const fileType = getDocumentFileType(file);
-    return convertTextReplacement({ file, fileType, originalText, newText, options });
+    return convertTextReplacement({
+      file, fileType, originalText, newText,
+      options: { ...options, viewerHighlights: documentViewerRef.current?.getPdfHighlights?.() }
+    });
+  };
+
+  const handleVisualPdfConvert = async (replacement) => {
+    if (!selectedDocument?.file || previewModel?.type !== 'pdf') {
+      throw new Error('현재 선택된 PDF 문서가 없습니다.');
+    }
+
+    if (!replacement?.originalText || replacement?.newText == null) {
+      throw new Error('화면에 적용된 교체 결과가 없습니다.');
+    }
+    const { convertPdfWithOriginalOverlay } = await import('./services/pdfOverlayConvertService');
+    return convertPdfWithOriginalOverlay({ file: selectedDocument.file });
   };
 
   const handleReplaceResultClick = (result) => {
@@ -309,7 +324,10 @@ function App() {
         fileType,
         originalText: action.originalText,
         newText: action.newText,
-        options: { matchMode: 'contains' }
+        options: {
+          matchMode: 'contains',
+          viewerHighlights: documentViewerRef.current?.getPdfHighlights?.()
+        }
       });
       const fileName = result?.fileName || result?.outputFileName || `${file.name} 변환 파일`;
       appendAssistantMessage(`변환 파일 다운로드를 실행했습니다.\n기존 단어: ${action.originalText}\n변경 단어: ${action.newText}\n파일명: ${fileName}${result?.replaceCount != null ? `\n치환 건수: ${result.replaceCount}건` : ''}`);
@@ -318,7 +336,7 @@ function App() {
 
   const appContent = (
     <div className="app-page"><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
-      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} replacePreview={replacePreview} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} />
+      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} replacePreview={replacePreview} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
       <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onReplaceCardClick={() => setIsReplaceModalOpen(true)} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteReplaceApplyAction={executeReplaceApplyAction} onExecuteReplaceConvertAction={executeReplaceConvertAction} />
     </main></div>
     {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
