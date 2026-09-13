@@ -1,12 +1,17 @@
 package com.documentai;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -19,6 +24,7 @@ import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
 
 @Service
 public class OpenAiChatService {
+    private static final Logger log = LoggerFactory.getLogger(OpenAiChatService.class);
     static final int MAX_HISTORY = 10;
     static final int MAX_DOCUMENT_TEXT = 20_000;
     static final int DOCUMENT_EDGE_LENGTH = MAX_DOCUMENT_TEXT / 2;
@@ -47,11 +53,12 @@ public class OpenAiChatService {
 
     public OpenAiChatService(RestClient.Builder restClientBuilder, ObjectMapper objectMapper,
                              @Value("${openai.api-key:}") String apiKey,
-                             @Value("${openai.model:gpt-5.6-luna}") String model) {
+                             @Value("${openai.model:gpt-5-mini}") String model) {
         this.restClient = restClientBuilder.baseUrl("https://api.openai.com/v1").build();
         this.objectMapper = objectMapper;
         this.apiKey = apiKey == null ? "" : apiKey.trim();
-        this.model = model;
+        this.model = model == null || model.isBlank() ? "gpt-5-mini" : model.trim();
+        log.info("[OpenAI] configuration: apiKeyPresent={}, model={}", !this.apiKey.isBlank(), this.model);
     }
 
     public ChatResult chat(ChatController.ChatRequest request) {
@@ -59,9 +66,9 @@ public class OpenAiChatService {
             throw new ResponseStatusException(SERVICE_UNAVAILABLE, "OPENAI_API_KEY가 설정되지 않았습니다. 백엔드 환경변수에 API Key를 설정해주세요.");
         }
         String rawDocumentText = request.documentText() == null ? "" : request.documentText();
-        System.out.println("[Chat] documentName=" + safeLogValue(request.documentName()));
-        System.out.println("[Chat] documentType=" + safeLogValue(request.documentType()));
-        System.out.println("[Chat] documentTextLength=" + rawDocumentText.length());
+        log.info("[Chat] request: documentName={}, documentType={}, documentTextPresent={}, documentTextLength={}, historySize={}",
+                safeLogValue(request.documentName()), safeLogValue(request.documentType()), !rawDocumentText.isBlank(),
+                rawDocumentText.length(), request.history() == null ? 0 : request.history().size());
 
         LimitedDocumentText limitedDocument = limitDocumentText(rawDocumentText);
         List<Map<String, Object>> input = new ArrayList<>();
@@ -83,15 +90,55 @@ public class OpenAiChatService {
         body.put("input", input);
 
         try {
-            JsonNode response = restClient.post().uri("/responses").contentType(MediaType.APPLICATION_JSON)
-                    .header("Authorization", "Bearer " + apiKey).body(body).retrieve().body(JsonNode.class);
+            String responseBody = restClient.post().uri("/responses").contentType(MediaType.APPLICATION_JSON)
+                    .header("Authorization", "Bearer " + apiKey).body(body).retrieve().body(String.class);
+            JsonNode response = objectMapper.readTree(responseBody);
             String rawAnswer = extractOutputText(response);
             if (rawAnswer.isBlank()) throw new ResponseStatusException(BAD_GATEWAY, "OpenAI 응답에서 텍스트를 찾지 못했습니다.");
             return parseChatResult(rawAnswer);
         } catch (ResponseStatusException error) {
             throw error;
-        } catch (Exception error) {
-            throw new ResponseStatusException(BAD_GATEWAY, "OpenAI API 호출에 실패했습니다.", error);
+        } catch (RestClientResponseException error) {
+            OpenAiErrorDetails details = parseOpenAiError(error);
+            String category = classifyOpenAiError(error.getStatusCode().value(), details);
+            log.warn("[OpenAI] request failed: status={}, category={}, type={}, code={}",
+                    error.getStatusCode().value(), category, details.type(), details.code());
+            throw new ResponseStatusException(error.getStatusCode().is4xxClientError()
+                    ? error.getStatusCode() : BAD_GATEWAY, userMessage(category, details), error);
+        } catch (JsonProcessingException error) {
+            log.warn("[OpenAI] response parsing failed: response format error");
+            throw new ResponseStatusException(BAD_GATEWAY, "OpenAI 응답 형식 오류입니다. OpenAI API 응답을 확인해주세요.", error);
+        } catch (RestClientException error) {
+            log.warn("[OpenAI] request failed: communication error={}", error.getClass().getSimpleName());
+            throw new ResponseStatusException(BAD_GATEWAY, "OpenAI 서버와 통신하지 못했습니다. 네트워크 또는 OpenAI 서버 상태를 확인해주세요.", error);
+        }
+    }
+
+    static String classifyOpenAiError(int status, OpenAiErrorDetails details) {
+        String type = details.type().toLowerCase();
+        String code = details.code().toLowerCase();
+        String message = details.message().toLowerCase();
+        if (status == 401) return "API Key 오류";
+        if (status == 403) return "권한/결제 오류";
+        if (status == 404 || code.contains("model") || message.contains("model") && message.contains("not found")) return "모델명 오류";
+        if (status == 429 && (type.contains("quota") || code.contains("quota") || code.contains("credit") || message.contains("quota") || message.contains("credit"))) return "사용량/한도 오류";
+        if (status == 429) return "사용량/한도 오류";
+        if (status >= 400 && status < 500) return "요청 형식 오류";
+        return "OpenAI 서버/API 통신 오류";
+    }
+
+    private String userMessage(String category, OpenAiErrorDetails details) {
+        String suffix = details.code().isBlank() ? "" : " (" + details.code() + ")";
+        return "OpenAI " + category + "입니다." + suffix + " OpenAI 설정과 사용량 상태를 확인해주세요.";
+    }
+
+    private OpenAiErrorDetails parseOpenAiError(RestClientResponseException error) {
+        try {
+            JsonNode root = objectMapper.readTree(error.getResponseBodyAsString());
+            JsonNode details = root.path("error");
+            return new OpenAiErrorDetails(details.path("type").asText(""), details.path("code").asText(""), details.path("message").asText(""));
+        } catch (Exception ignored) {
+            return new OpenAiErrorDetails("", "", "");
         }
     }
 
@@ -176,4 +223,5 @@ public class OpenAiChatService {
 
     record LimitedDocumentText(String text, boolean truncated) {}
     record ChatResult(String answer, String intent, ChatController.ChatAction action) {}
+    record OpenAiErrorDetails(String type, String code, String message) {}
 }

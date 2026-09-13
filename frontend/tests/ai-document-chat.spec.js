@@ -83,6 +83,27 @@ test('문서 없이 일반 질문은 빈 documentText로 전송된다', async ({
   expect(requests[0].documentName).toBe('');
 });
 
+test('백엔드의 OpenAI 원인 구분 오류를 채팅 패널에 표시한다', async ({ page }) => {
+  let requestBody;
+  await page.route('**/api/chat', async (route) => {
+    requestBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 429,
+      contentType: 'application/json',
+      body: JSON.stringify({ message: 'OpenAI 사용량/한도 오류입니다. (credit_balance_exhausted) OpenAI 설정과 사용량 상태를 확인해주세요.' })
+    });
+  });
+  await page.goto('/');
+
+  const input = page.getByPlaceholder('DocPilot AI에게 질문해보세요.');
+  await input.fill('안녕');
+  await input.press('Enter');
+
+  await expect(page.locator('.chat-error')).toContainText('사용량/한도 오류');
+  await expect(page.locator('.chat-error')).toContainText('credit_balance_exhausted');
+  expect(requestBody.message).toBe('안녕');
+});
+
 test('PDF 업로드 후 AI 질문은 페이지 번호가 포함된 PDF 텍스트를 전송한다', async ({ page }) => {
   const requests = await interceptChat(page);
   await page.goto('/');
