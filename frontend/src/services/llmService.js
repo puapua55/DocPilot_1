@@ -1,5 +1,6 @@
 export async function sendChatMessage(message, context = {}) {
-  const response = await fetch('/api/chat', {
+  const apiBase = window.location.protocol === 'file:' ? 'http://localhost:8080' : '';
+  const response = await fetch(`${apiBase}/api/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -21,6 +22,12 @@ export async function sendChatMessage(message, context = {}) {
   }
 
   if (!response.ok) {
+    if (response.status === 503 && data?.message?.includes('OPENAI_API_KEY')) {
+      const isElectron = typeof window !== 'undefined' && Boolean(window.docPilotSettings);
+      throw new Error(isElectron
+        ? 'OpenAI API Key가 설정되지 않았습니다. 우측 상단 OpenAI 설정에서 API Key를 입력한 뒤 앱을 다시 시작해주세요.'
+        : 'OpenAI API Key가 설정되지 않았습니다. 백엔드 환경변수 OPENAI_API_KEY를 설정해주세요.');
+    }
     throw new Error(data?.message || 'AI 응답 요청에 실패했습니다.');
   }
 

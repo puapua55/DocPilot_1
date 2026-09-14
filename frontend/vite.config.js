@@ -1,8 +1,10 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
+  // Vite dev keeps the normal web root; packaged Electron loads file:// URLs.
+  base: command === 'build' ? './' : '/',
   // Load the API directly, just like its worker URL, to avoid stale prebundles
   // mixing PDF.js versions after node_modules is restored or updated.
   optimizeDeps: { exclude: ['pdfjs-dist'] },
@@ -16,4 +18,4 @@ export default defineConfig({
       }
     }
   }
-});
+}));

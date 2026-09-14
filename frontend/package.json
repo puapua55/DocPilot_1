@@ -7,6 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "electron:dev": "cross-env ELECTRON_START_URL=http://localhost:5173 electron electron/main.js",
+    "electron:start": "electron electron/main.js",
+    "electron:build": "node scripts/check-portable-prereqs.js && npm run build && electron-builder",
+    "electron:build:portable": "npm run electron:build",
     "test:e2e": "playwright test",
     "test:e2e:docx": "playwright test tests/docx-convert.spec.js",
     "test:e2e:chat-doc": "playwright test tests/ai-document-chat.spec.js",
@@ -31,7 +35,44 @@
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@vitejs/plugin-react": "^4.3.1",
+    "cross-env": "^10.1.0",
+    "electron": "^38.8.6",
+    "electron-builder": "^26.15.3",
     "rollup": "4.24.0",
     "vite": "^5.4.10"
+  },
+  "build": {
+    "appId": "com.docpilot.app",
+    "productName": "DocPilot",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../target",
+        "to": "backend",
+        "filter": [
+          "*.jar",
+          "!original-*.jar"
+        ]
+      },
+      {
+        "from": "runtime/jre",
+        "to": "jre",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
   }
 }

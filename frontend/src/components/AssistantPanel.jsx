@@ -1,6 +1,8 @@
 import AiActionCard from './AiActionCard';
 import ChatInput from './ChatInput';
+import OpenAiSettingsModal from './OpenAiSettingsModal';
 import './ChatPanel.css';
+import { useEffect, useState } from 'react';
 
 const CARDS = [
   { title: '정확한 문서 검색', description: '현재 문서에서 원하는 단어나 문장을 정확하게 찾습니다.' },
@@ -14,6 +16,15 @@ function AssistantPanel({
   onExecuteSearchAction, onExecuteHighlightAction,
   onExecuteReplaceApplyAction, onExecuteReplaceConvertAction
 }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [openAiStatus, setOpenAiStatus] = useState(null);
+  const settingsApi = typeof window !== 'undefined' ? window.docPilotSettings : null;
+
+  useEffect(() => {
+    if (!settingsApi?.getOpenAiStatus) return;
+    settingsApi.getOpenAiStatus().then(setOpenAiStatus).catch(() => setOpenAiStatus(null));
+  }, [settingsApi]);
+
   const getCardActionProps = (index) => {
     const handler = [onSearchCardClick, onHighlightCardClick, onReplaceCardClick][index];
     return {
@@ -31,9 +42,18 @@ function AssistantPanel({
     <aside className="panel assistant-panel">
       <section className="ai-chat-section">
         <div className="assistant-head">
-          <h2>DocPilot AI</h2>
+          <div className="assistant-head-row">
+            <h2>DocPilot AI</h2>
+            {settingsApi ? <button className="openai-settings-button" type="button" onClick={() => setSettingsOpen(true)}>OpenAI 설정</button> : null}
+          </div>
           <p>{documentName ? `${documentName} 문서가 열려 있습니다. 일반 질문부터 시작할 수 있습니다.` : '문서를 선택하거나 일반 질문을 입력하세요.'}</p>
         </div>
+        {settingsApi && openAiStatus && !openAiStatus.hasApiKey ? (
+          <div className="openai-missing-banner" role="status">
+            <span>OpenAI API Key가 설정되지 않았습니다.</span>
+            <button type="button" onClick={() => setSettingsOpen(true)}>설정하기</button>
+          </div>
+        ) : null}
         <div className="chat-feed" aria-label="assistant conversation" aria-live="polite">
           {messages.map((message) => {
             const runningType = runningActionId?.startsWith(`${message.id}:`) ? runningActionId.slice(message.id.length + 1) : '';
@@ -68,6 +88,12 @@ function AssistantPanel({
           {CARDS.map((card, index) => <div key={card.title} {...getCardActionProps(index)}><h3>{card.title}</h3><p>{card.description}</p></div>)}
         </div>
       </section>
+      <OpenAiSettingsModal
+        isOpen={settingsOpen}
+        status={openAiStatus}
+        onSaved={setOpenAiStatus}
+        onClose={() => setSettingsOpen(false)}
+      />
     </aside>
   );
 }

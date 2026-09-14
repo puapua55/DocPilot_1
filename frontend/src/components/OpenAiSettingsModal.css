@@ -1,0 +1,48 @@
+.settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(25, 35, 72, 0.34);
+  backdrop-filter: blur(4px);
+}
+
+.settings-modal {
+  width: min(100%, 500px);
+  border: 1px solid #d8e4ff;
+  border-radius: 24px;
+  padding: 24px;
+  background: #fff;
+  box-shadow: 0 28px 70px rgba(31, 50, 112, 0.26);
+}
+
+.settings-modal-header,
+.settings-actions,
+.settings-actions-right {
+  display: flex;
+  align-items: center;
+}
+
+.settings-modal-header,
+.settings-actions { justify-content: space-between; }
+.settings-actions-right { gap: 8px; }
+.settings-modal-header h2 { margin: 3px 0 0; font-size: 1.3rem; }
+.settings-eyebrow { margin: 0; color: #6e4dff; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.12em; }
+.settings-description { margin: 14px 0 20px; color: #6b7697; font-size: 0.88rem; line-height: 1.55; }
+.settings-close-button { border: 0; background: transparent; color: #6b7697; font-size: 1.7rem; line-height: 1; cursor: pointer; }
+.settings-field { display: grid; gap: 7px; margin-bottom: 16px; }
+.settings-field span { font-size: 0.82rem; font-weight: 700; }
+.settings-field input { width: 100%; border: 1px solid #cbd8f4; border-radius: 11px; padding: 11px 12px; outline: none; }
+.settings-field input:focus { border-color: #4e7cff; box-shadow: 0 0 0 3px rgba(78, 124, 255, 0.12); }
+.settings-field small { color: #7a86a5; font-size: 0.76rem; }
+.settings-success, .settings-error { margin: 0 0 14px; border-radius: 10px; padding: 9px 11px; font-size: 0.8rem; }
+.settings-success { background: #e9fff4; color: #147a4a; }
+.settings-error { background: #fff1f2; color: #be123c; }
+.settings-actions { margin-top: 22px; }
+.settings-primary-button, .settings-secondary-button { border-radius: 10px; padding: 9px 14px; cursor: pointer; font: inherit; font-size: 0.82rem; }
+.settings-primary-button { border: 1px solid #4e7cff; background: #4e7cff; color: #fff; }
+.settings-secondary-button { border: 1px solid #cbd8f4; background: #fff; color: #43517a; }
+.settings-primary-button:hover { background: #3e68dd; }
+.settings-secondary-button:hover { background: #f3f6ff; }
