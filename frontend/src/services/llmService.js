@@ -1,17 +1,21 @@
 export async function sendChatMessage(message, context = {}) {
-  const apiBase = window.location.protocol === 'file:' ? 'http://localhost:8080' : '';
-  const response = await fetch(`${apiBase}/api/chat`, {
+  const payload = {
+    message,
+    documentName: context.documentName || '',
+    documentType: context.documentType || '',
+    documentText: context.documentText || '',
+    history: Array.isArray(context.history) ? context.history : []
+  };
+  if (typeof window !== 'undefined' && window.docPilotAi?.chat) {
+    return window.docPilotAi.chat(payload);
+  }
+
+  const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      message,
-      documentName: context.documentName || '',
-      documentType: context.documentType || '',
-      documentText: context.documentText || '',
-      history: Array.isArray(context.history) ? context.history : []
-    })
+    body: JSON.stringify(payload)
   });
 
   let data = null;

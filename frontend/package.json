@@ -2,6 +2,7 @@
   "name": "docpilot-frontend",
   "private": true,
   "version": "0.1.0",
+  "main": "electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,8 +10,12 @@
     "preview": "vite preview",
     "electron:dev": "cross-env ELECTRON_START_URL=http://localhost:5173 electron electron/main.js",
     "electron:start": "electron electron/main.js",
-    "electron:build": "node scripts/check-portable-prereqs.js && npm run build && electron-builder",
-    "electron:build:portable": "npm run electron:build",
+    "electron:build": "npm run build && electron-builder",
+    "electron:build:portable": "npm run build && electron-builder --win portable --x64",
+    "electron:build:unpacked": "npm run build && electron-builder --win --x64 --dir",
+    "electron:zip:unpacked": "npm run electron:build:unpacked && node scripts/zip-win-unpacked.js",
+    "electron:build:zip": "npm run electron:zip:unpacked",
+    "electron:build:with-backend": "node scripts/check-portable-prereqs.js && npm run build && electron-builder --config electron-builder.with-backend.yml --win portable --x64",
     "test:e2e": "playwright test",
     "test:e2e:docx": "playwright test tests/docx-convert.spec.js",
     "test:e2e:chat-doc": "playwright test tests/ai-document-chat.spec.js",
@@ -51,23 +56,6 @@
       "dist/**/*",
       "electron/**/*",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "../target",
-        "to": "backend",
-        "filter": [
-          "*.jar",
-          "!original-*.jar"
-        ]
-      },
-      {
-        "from": "runtime/jre",
-        "to": "jre",
-        "filter": [
-          "**/*"
-        ]
-      }
     ],
     "win": {
       "target": [

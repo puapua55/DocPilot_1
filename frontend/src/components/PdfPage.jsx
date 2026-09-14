@@ -82,7 +82,14 @@ function PdfPage({ pdf, pageNumber, scale, highlightKeyword, highlightOptions = 
         return;
       }
 
-      await ensureReplacementFont();
+      // The replacement font is optional for displaying a PDF. A font load
+      // failure must not turn a successfully rendered PDF page into a page
+      // render error, especially in Electron's file:// environment.
+      try {
+        await ensureReplacementFont();
+      } catch (fontError) {
+        console.warn('[PdfPage] replacement font unavailable; using browser fallback:', fontError);
+      }
       const textContent = await page.getTextContent();
       if (!cancelled) {
         setTextContent(textContent);

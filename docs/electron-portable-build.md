@@ -1,57 +1,62 @@
 # DocPilot Windows portable build
 
-## 목적
+## A. Electron 단독 portable 빌드 (권장)
 
-DocPilot의 Windows portable 패키지는 시스템에 Java를 설치하지 않아도 Spring Boot 백엔드를 실행할 수 있도록 JRE를 함께 포함합니다.
+기본 portable 빌드는 Electron main process와 React renderer만 포함합니다.
 
-JRE 바이너리는 용량과 라이선스 관리 문제로 저장소에 커밋하지 않습니다.
-
-## JRE 준비
-
-Windows x64용 JRE를 준비한 뒤 압축을 해제해 다음 위치에 배치합니다.
-
-```text
-frontend/runtime/jre/
-└─ bin/java.exe
-```
-
-Temurin/Adoptium 등 OpenJDK 계열 런타임을 사용할 수 있지만, 선택한 JRE의 배포 라이선스와 고지 의무를 확인해야 합니다.
-
-## portable 빌드
-
-프로젝트 루트에서 backend jar를 먼저 만듭니다.
-
-```bash
-mvn clean package
-```
-
-그 다음 frontend에서 portable 사전 점검과 패키징을 실행합니다.
+- Spring Boot backend와 JRE를 포함하지 않습니다.
+- localhost:8080 포트를 사용하지 않으며 `/api/health`도 확인하지 않습니다.
+- AI 요청은 Electron main process가 OpenAI Responses API로 전송합니다.
+- API Key와 모델명은 OpenAI 설정 화면을 통해 Electron `userData/settings.json`에 저장됩니다.
 
 ```bash
 cd frontend
 npm run electron:build:portable
 ```
 
-사전 점검은 `frontend/runtime/jre/bin/java.exe`와 `target/*.jar`를 확인하며 API Key는 확인하거나 출력하지 않습니다.
+`frontend/release`에 portable 결과가 생성됩니다. Windows용 exe는 Windows 환경에서 빌드하는 것을 권장합니다.
 
-생성 결과는 electron-builder 기본 출력 디렉터리인 `frontend/dist` 또는 설정된 release 디렉터리에서 확인할 수 있습니다.
+Codespaces/Linux에서는 Windows용 단일 portable exe 압축 단계 대신 폴더형 배포본을 생성할 수 있습니다.
 
-## Java 실행 우선순위
-
-Electron은 다음 순서로 Java를 찾습니다.
-
-1. `DOC_PILOT_JAVA_PATH`
-2. 패키징된 `resources/jre/bin/java.exe`
-3. 개발 환경의 시스템 `java` 명령
-
-백엔드 jar는 `DOC_PILOT_BACKEND_JAR`, 패키징된 `resources/backend`, 프로젝트 `target` 순서로 찾습니다.
-
-## OpenAI 로컬 설정
-
-Electron 앱의 OpenAI 설정은 Electron `userData` 경로의 `settings.json`에 저장됩니다. Windows에서는 일반적으로 다음 위치입니다.
-
-```text
-C:\Users\사용자명\AppData\Roaming\DocPilot\settings.json
+```bash
+cd frontend
+npm run electron:build:unpacked
 ```
 
-이 방식은 4차 구현의 로컬 파일 저장 방식이며 OS Credential Manager를 사용하지 않습니다. 공용 PC나 접근 권한이 불확실한 PC에서는 주의해야 합니다. API Key는 저장소, frontend `.env`, `application.properties`에 넣지 않습니다.
+ZIP까지 생성하려면 다음을 실행합니다.
+
+```bash
+npm run electron:zip:unpacked
+```
+
+결과는 `frontend/release/DocPilot-win-unpacked.zip`입니다. Windows에서 압축을 해제한 뒤 `win-unpacked/DocPilot.exe`를 실행합니다. 이 ZIP도 Electron 단독 구조이므로 Spring Boot, JRE, backend.jar를 포함하지 않습니다.
+
+## B. Spring Boot 포함형 legacy 빌드
+
+기존 구조를 비교·백업하거나 개발용으로 사용할 때만 사용합니다.
+
+- `backend.jar`와 JRE가 필요합니다.
+- 8080 포트를 사용하고 Electron이 백엔드를 자동 실행·종료합니다.
+- 사전 점검이 `frontend/runtime/jre/bin/java.exe`와 `target/*.jar`를 확인합니다.
+
+```bash
+mvn clean package
+cd frontend
+npm run electron:build:with-backend
+```
+
+legacy 모드를 수동으로 실행하려면 `DOC_PILOT_BACKEND_MODE=legacy` 또는 `DOC_PILOT_BACKEND_AUTO_START=true`를 사용합니다. 기본값은 Electron 단독 모드입니다.
+
+## 설정 및 보안
+
+설정 파일 위치는 Windows에서 일반적으로 `%APPDATA%\DocPilot\settings.json`입니다. API Key는 renderer나 IPC 응답에 전달하지 않고 Electron main process에서만 사용합니다. 저장소, frontend `.env`, 로그에는 API Key를 넣지 마세요. 현재 저장 방식은 OS Credential Manager가 아닌 로컬 파일 방식입니다.
+
+## legacy 진단
+
+```powershell
+netstat -ano | findstr :8080
+Test-Path .\frontend\release\win-unpacked\resources\jre\bin\java.exe
+Test-Path .\frontend\release\win-unpacked\resources\backend
+```
+
+Electron 진단 로그는 `%APPDATA%\DocPilot\logs\backend-startup.log`에 저장됩니다. 문서 내용과 API Key는 기록하지 않습니다.

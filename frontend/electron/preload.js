@@ -9,3 +9,13 @@ contextBridge.exposeInMainWorld('docPilotSettings', {
   clearOpenAiSettings: () => ipcRenderer.invoke('openai-settings:clear'),
   getOpenAiStatus: () => ipcRenderer.invoke('openai-settings:status')
 });
+
+contextBridge.exposeInMainWorld('docPilotAi', {
+  chat: (request) => ipcRenderer.invoke('docpilot-ai:chat', {
+    message: typeof request?.message === 'string' ? request.message : '',
+    documentName: typeof request?.documentName === 'string' ? request.documentName : '',
+    documentType: typeof request?.documentType === 'string' ? request.documentType : '',
+    documentText: typeof request?.documentText === 'string' ? request.documentText : '',
+    history: Array.isArray(request?.history) ? request.history : []
+  })
+});
