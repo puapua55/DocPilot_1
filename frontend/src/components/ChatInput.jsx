@@ -1,11 +1,11 @@
 import { useState } from 'react';
 
-function ChatInput({ onSendMessage }) {
+function ChatInput({ onSendMessage, loading = false }) {
   const [value, setValue] = useState('');
 
   const handleSubmit = (event) => {
     event.preventDefault();
-    if (!value.trim()) {
+    if (!value.trim() || loading) {
       return;
     }
 
@@ -15,15 +15,22 @@ function ChatInput({ onSendMessage }) {
 
   return (
     <form className="chat-input-form" onSubmit={handleSubmit}>
-      <input
+      <textarea
         className="chat-input"
-        type="text"
         value={value}
-        placeholder="AI에게 문서 검색, 요약, 수정 요청하기"
+        rows={3}
+        placeholder="DocPilot AI에게 질문해보세요."
         onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            event.currentTarget.form?.requestSubmit();
+          }
+        }}
+        disabled={loading}
       />
-      <button className="chat-submit" type="submit">
-        전송
+      <button className="chat-submit" type="submit" disabled={loading || !value.trim()}>
+        {loading ? '전송 중' : '전송'}
       </button>
     </form>
   );

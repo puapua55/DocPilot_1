@@ -1008,7 +1008,88 @@ function getLineExtractionReason({
   return 'line 필터링 단계에서 모든 선이 제거되었습니다.';
 }
 
-export async function extractPdfToHtmlStructure(file) {
+function isHighlightBoundaryLine(line, highlight) {
+  const tolerance = 1.5;
+  const lineIsHorizontal = line.type === 'h';
+  const lineIsVertical = line.type === 'v';
+  const highlightRight = highlight.left + highlight.width;
+  const highlightBottom = highlight.top + highlight.height;
+
+  if (lineIsHorizontal) {
+    const sameEdge = Math.abs(line.y - highlight.top) <= tolerance
+      || Math.abs(line.y - highlightBottom) <= tolerance;
+    const overlap = line.x <= highlightRight + tolerance
+      && line.x + line.width >= highlight.left - tolerance;
+    return sameEdge && overlap;
+  }
+
+  if (lineIsVertical) {
+    const sameEdge = Math.abs(line.x - highlight.left) <= tolerance
+      || Math.abs(line.x - highlightRight) <= tolerance;
+    const overlap = line.y <= highlightBottom + tolerance
+      && line.y + line.height >= highlight.top - tolerance;
+    return sameEdge && overlap;
+  }
+
+  return false;
+}
+
+function removeHighlightBoundaryLines(lines, highlights) {
+  if (!highlights.length) return lines;
+  return lines.filter((line) => !highlights.some((highlight) => isHighlightBoundaryLine(line, highlight)));
+}
+
+function normalizeAnnotationColor(annotation) {
+  const color = annotation?.color;
+  if (!color || color.length < 3) return [1, 1, 0];
+  const values = Array.from(color).slice(0, 3).map(Number);
+  const scale = values.some((value) => value > 1) ? 255 : 1;
+  return values.map((value) => Number.isFinite(value)
+    ? Math.min(Math.max(value / scale, 0), 1)
+    : 1);
+}
+
+async function extractPdfHighlights(page, viewport) {
+  if (typeof page.getAnnotations !== 'function') return [];
+
+  const annotations = await page.getAnnotations({ intent: 'display' });
+  return annotations
+    .filter((annotation) => String(annotation?.subtype || '').toLowerCase() === 'highlight')
+    .flatMap((annotation) => {
+      const points = annotation.quadPoints && annotation.quadPoints.length >= 8
+        ? Array.from(annotation.quadPoints)
+        : null;
+      const quads = points
+        ? Array.from({ length: Math.floor(points.length / 8) }, (_, index) => points.slice(index * 8, index * 8 + 8))
+        : [annotation.rect ? Array.from(annotation.rect) : null];
+
+      return quads.map((quad) => {
+        if (!Array.isArray(quad) || quad.length < 4) return null;
+        // PDF.js uses the top-right and bottom-left QuadPoints for the
+        // visible highlight rectangle. Using all four points can include the
+        // annotation's loose bounding rectangle and make a cell-sized box.
+        const pdfPoints = points
+          ? [[quad[2], quad[3]], [quad[4], quad[5]]]
+          : [[quad[0], quad[1]], [quad[2], quad[3]]];
+        const viewportPoints = pdfPoints.map(([x, y]) => viewport.convertToViewportPoint(x, y));
+        const xs = viewportPoints.map(([x]) => x);
+        const ys = viewportPoints.map(([, y]) => y);
+        const color = normalizeAnnotationColor(annotation);
+        const opacity = Number.isFinite(Number(annotation.opacity)) ? Number(annotation.opacity) : 0.35;
+
+        return {
+          left: round(Math.min(...xs)),
+          top: round(Math.min(...ys)),
+          width: round(Math.max(...xs) - Math.min(...xs)),
+          height: round(Math.max(...ys) - Math.min(...ys)),
+          color,
+          opacity: Math.min(Math.max(opacity, 0), 1)
+        };
+      }).filter((highlight) => highlight && highlight.width > 0 && highlight.height > 0);
+    });
+}
+
+export async function extractPdfToHtmlStructure(file, options = {}) {
   console.log('========== [ConvertTrace] extractPdfToHtmlStructure 실행됨 ==========');
   console.log('[ConvertTrace] file:', file?.name);
 
@@ -1035,6 +1116,20 @@ export async function extractPdfToHtmlStructure(file) {
     const lineResult = await extractLinesFromPdfPage(page, viewport, mergedTexts);
     const lines = Array.isArray(lineResult?.lines) ? lineResult.lines : [];
     const lineDiagnostics = lineResult?.diagnostics ?? null;
+    const highlights = await extractPdfHighlights(page, viewport);
+    const viewerHighlights = (options.viewerHighlights || [])
+      .filter((highlight) => Number(highlight.pageNumber) === pageNumber)
+      .map((highlight) => ({
+        left: round(Number(highlight.left) * viewport.width / Math.max(Number(highlight.sourcePageWidth), 1)),
+        top: round(Number(highlight.top) * viewport.height / Math.max(Number(highlight.sourcePageHeight), 1)),
+        width: round(Number(highlight.width) * viewport.width / Math.max(Number(highlight.sourcePageWidth), 1)),
+        height: round(Number(highlight.height) * viewport.height / Math.max(Number(highlight.sourcePageHeight), 1)),
+        color: parseViewerHighlightColor(highlight.color),
+        opacity: parseViewerHighlightOpacity(highlight.color)
+      }))
+      .filter((highlight) => highlight.width > 0 && highlight.height > 0);
+    const allHighlights = [...highlights, ...viewerHighlights];
+    const cleanLines = removeHighlightBoundaryLines(lines, allHighlights);
     console.log('========== [ConvertTrace] line 추출 호출 후 ==========');
     console.log('[ConvertTrace] lines:', lines);
     console.log('[ConvertTrace] lines count:', lines?.length);
@@ -1068,7 +1163,8 @@ export async function extractPdfToHtmlStructure(file) {
       width: round(viewport.width),
       height: round(viewport.height),
       texts: Array.isArray(mergedTexts) ? mergedTexts : [],
-      lines: Array.isArray(lines) ? lines : [],
+      lines: Array.isArray(cleanLines) ? cleanLines : [],
+      highlights: allHighlights,
       lineDiagnostics
     });
   }
@@ -1079,6 +1175,16 @@ export async function extractPdfToHtmlStructure(file) {
     pages: Array.isArray(pages) ? pages : [],
     html: buildHtmlFromStructure({ pages })
   };
+}
+
+function parseViewerHighlightColor(value) {
+  const channels = String(value || '').match(/[\d.]+/g)?.map(Number) || [255, 235, 59, 0.45];
+  return channels.slice(0, 3).map((channel) => channel > 1 ? channel / 255 : channel);
+}
+
+function parseViewerHighlightOpacity(value) {
+  const channels = String(value || '').match(/[\d.]+/g)?.map(Number) || [];
+  return channels.length >= 4 ? channels[3] : 0.35;
 }
 
 export function replaceTextInHtmlStructure(htmlStructure, originalText, newText) {
@@ -1181,6 +1287,11 @@ export function buildHtmlFromStructure(htmlStructure) {
       const linesHtml = cleanLines.map((line) => (
         `<div class="pdf-line ${line.type}-line" style="position:absolute; left:${line.x}px; top:${line.y}px; width:${line.type === 'h' ? line.width : (line.lineWidth || 0.5)}px; height:${line.type === 'v' ? line.height : (line.lineWidth || 0.5)}px; background:${line.color || '#000000'};"></div>`
       )).join('');
+      const highlightsHtml = (page.highlights || []).map((highlight) => {
+        const [red, green, blue] = highlight.color;
+        const color = `rgba(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)}, ${highlight.opacity})`;
+        return `<div class="pdf-highlight" style="position:absolute; left:${highlight.left}px; top:${highlight.top}px; width:${highlight.width}px; height:${highlight.height}px; background:${color};"></div>`;
+      }).join('');
       const textsHtml = page.texts.map((textItem) => {
         const normalizedFont = textItem.normalizedFont || normalizePdfFontName(textItem.fontFamily);
         const cssFontFamily = normalizedFont.cssFontFamily;
@@ -1189,7 +1300,7 @@ export function buildHtmlFromStructure(htmlStructure) {
         return `<span class="pdf-text" data-font-family="${escapeHtmlAttribute(pdfFontName)}" style="position:absolute; left:${textItem.x}px; top:${textItem.y}px; font-size:${textItem.fontSize}px; font-family:'${escapeHtmlAttribute(cssFontFamily)}';">${escapeHtml(textItem.text)}</span>`;
       }).join('');
 
-      const htmlText = `<div class="pdf-page" data-page="${page.pageNumber}" style="position:relative; width:${page.width}px; height:${page.height}px;">${linesHtml}${textsHtml}</div>`;
+      const htmlText = `<div class="pdf-page" data-page="${page.pageNumber}" style="position:relative; width:${page.width}px; height:${page.height}px;">${highlightsHtml}${linesHtml}${textsHtml}</div>`;
 
       console.log('[HtmlTextConvert] htmlText includes Malgun:', htmlText.includes('Malgun'));
       console.log('[HtmlTextConvert] htmlText includes right edge line:', htmlText.includes('left:595'));

@@ -27,29 +27,21 @@ export function getPdfPreviewModel(documentFile) {
   };
 }
 
-export async function loadPdfDocument(source) {
-  let loadingTask = null;
-
-  if (source instanceof ArrayBuffer) {
-    loadingTask = pdfjsLib.getDocument({ data: source });
-    return {
-      loadingTask,
-      pdf: await loadingTask.promise
-    };
-  }
-
-  if (!source || !isPdfFile(source)) {
+export async function loadPdfDocument(source, { onLoadingTask } = {}) {
+  if (!(source instanceof ArrayBuffer) && (!source || !isPdfFile(source))) {
     return null;
   }
-
-  const arrayBuffer = await source.arrayBuffer();
-
-  loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-
-  return {
-    loadingTask,
-    pdf: await loadingTask.promise
-  };
+  const data = source instanceof ArrayBuffer ? source : await source.arrayBuffer();
+  const loadingTask = pdfjsLib.getDocument({ data });
+  try {
+    onLoadingTask?.(loadingTask);
+    return { loadingTask, pdf: await loadingTask.promise };
+  } catch (error) {
+    if (typeof loadingTask.destroy === 'function') {
+      await loadingTask.destroy().catch(() => {});
+    }
+    throw error;
+  }
 }
 
 function normalizePdfLines(textItems) {

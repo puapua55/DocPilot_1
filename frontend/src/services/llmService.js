@@ -1,9 +1,43 @@
 export async function sendChatMessage(message, context = {}) {
-  void message;
-  void context;
+  const payload = {
+    message,
+    documentName: context.documentName || '',
+    documentType: context.documentType || '',
+    documentText: context.documentText || '',
+    history: Array.isArray(context.history) ? context.history : []
+  };
+  if (typeof window !== 'undefined' && window.docPilotAi?.chat) {
+    return window.docPilotAi.chat(payload);
+  }
 
-  // TODO: 현재는 LLM 연동 전 단계입니다.
-  // TODO: Spring Boot 프록시를 붙일 경우 이 파일에서만 API를 호출합니다.
-  // TODO: Electron 전환 후에는 로컬 설정/IPC 기반 호출로 바꿀 수 있도록 유지합니다.
-  return '현재 AI 연동은 준비 중입니다.';
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    if (response.status === 503 && data?.message?.includes('OPENAI_API_KEY')) {
+      const isElectron = typeof window !== 'undefined' && Boolean(window.docPilotSettings);
+      throw new Error(isElectron
+        ? 'OpenAI API Key가 설정되지 않았습니다. 우측 상단 OpenAI 설정에서 API Key를 입력한 뒤 앱을 다시 시작해주세요.'
+        : 'OpenAI API Key가 설정되지 않았습니다. 백엔드 환경변수 OPENAI_API_KEY를 설정해주세요.');
+    }
+    throw new Error(data?.message || 'AI 응답 요청에 실패했습니다.');
+  }
+
+  return {
+    answer: data?.answer || '응답을 받지 못했습니다.',
+    intent: data?.intent || 'question_answer',
+    action: data?.action || null
+  };
 }

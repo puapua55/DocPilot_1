@@ -1,7 +1,8 @@
+import { forwardRef } from 'react';
 import DocumentViewer from './DocumentViewer';
 import UploadPanel from './UploadPanel';
 
-function DocumentWorkspace({
+const DocumentWorkspace = forwardRef(function DocumentWorkspace({
   selectedDocument,
   previewModel,
   highlightKeyword,
@@ -11,12 +12,14 @@ function DocumentWorkspace({
   errorMessage,
   onDocumentSelect,
   onDocumentClear,
-  onDocumentReselect
-}) {
+  onDocumentReselect,
+  onVisualPdfConvert
+}, ref) {
   return (
     <section className="panel document-panel">
       {selectedDocument ? (
         <DocumentViewer
+          ref={ref}
           file={selectedDocument.file}
           previewModel={previewModel}
           highlightKeyword={highlightKeyword}
@@ -26,6 +29,7 @@ function DocumentWorkspace({
           onClose={onDocumentClear}
           onChangeFile={onDocumentSelect}
           onReselect={onDocumentReselect}
+          onVisualPdfConvert={onVisualPdfConvert}
         />
       ) : (
         <UploadPanel
@@ -35,6 +39,6 @@ function DocumentWorkspace({
       )}
     </section>
   );
-}
+});
 
 export default DocumentWorkspace;
