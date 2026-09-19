@@ -8,6 +8,20 @@ function isWordSeparator(char) {
   return char == null || char === ' ' || char === '\n' || char === '\t';
 }
 
+function getMatchWordBounds(text, matchIndex, keywordLength) {
+  let startIndex = matchIndex;
+  let endIndex = matchIndex + keywordLength;
+
+  while (startIndex > 0 && !isWordSeparator(text[startIndex - 1])) {
+    startIndex -= 1;
+  }
+  while (endIndex < text.length && !isWordSeparator(text[endIndex])) {
+    endIndex += 1;
+  }
+
+  return { startIndex, endIndex };
+}
+
 function isExactMatch(text, startIndex, keywordLength) {
   const before = startIndex > 0 ? text[startIndex - 1] : null;
   const afterIndex = startIndex + keywordLength;
@@ -53,16 +67,32 @@ export function searchKeywordInDocument(documentText, keyword, options = {}) {
       const rawLineText = typeof lineValue === 'string'
         ? lineValue
         : String(lineValue?.text ?? '');
+      const seenWordRanges = new Set();
 
       findKeywordMatches(rawLineText, normalizedKeyword, matchMode).forEach((matchIndex, occurrenceIndex) => {
+        const { startIndex, endIndex } = getMatchWordBounds(
+          rawLineText,
+          matchIndex,
+          normalizedKeyword.length
+        );
+        const rangeKey = `${startIndex}:${endIndex}`;
+        if (seenWordRanges.has(rangeKey)) return;
+        seenWordRanges.add(rangeKey);
+        const matchedText = rawLineText.slice(startIndex, endIndex);
+
         results.push({
           id: `pdf-${pageNumber}-${lineIndex + 1}-${matchIndex}-${occurrenceIndex}`,
           type: 'pdf',
           pageNumber,
           lineNumber: lineIndex + 1,
           text: rawLineText,
+          lineText: rawLineText,
+          originalText: matchedText,
+          matchedText,
           keyword: normalizedKeyword,
           matchIndex,
+          startIndex,
+          endIndex,
           page: pageNumber,
           line: lineIndex + 1,
           fullText: rawLineText,

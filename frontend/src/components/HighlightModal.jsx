@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import DraggableResizableModal from './DraggableResizableModal';
 
 const COLOR_OPTIONS = [
   { value: 'yellow', label: '노랑' },
@@ -194,29 +195,14 @@ function HighlightModal({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div
-        className="search-modal highlight-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="highlight-modal-title"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="search-modal-header">
-          <button
-            type="button"
-            className="search-modal-close"
-            onClick={handleClose}
-            aria-label="하이라이트 모달 닫기"
-          >
-            x
-          </button>
-        </div>
-
-        <div className="search-modal-body">
-          <h2 id="highlight-modal-title" className="search-modal-title">
-            위치 하이라이트
-          </h2>
+    <DraggableResizableModal
+      title="위치 하이라이트"
+      titleId="highlight-modal-title"
+      className="highlight-panel"
+      initialWidth={920}
+      initialHeight={700}
+      onClose={handleClose}
+    >
 
           <div className="highlight-meta">
             <div><span>현재 문서</span><strong>{documentName || '-'}</strong></div>
@@ -372,9 +358,7 @@ function HighlightModal({
               전체 제거
             </button>
           </div>
-        </div>
-      </div>
-    </div>
+    </DraggableResizableModal>
   );
 }
 

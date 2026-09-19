@@ -59,6 +59,20 @@ function isWordSeparator(char) {
   return char == null || char === ' ' || char === '\n' || char === '\t';
 }
 
+function getMatchWordBounds(text, matchIndex, keywordLength) {
+  let startIndex = matchIndex;
+  let endIndex = matchIndex + keywordLength;
+
+  while (startIndex > 0 && !isWordSeparator(text[startIndex - 1])) {
+    startIndex -= 1;
+  }
+  while (endIndex < text.length && !isWordSeparator(text[endIndex])) {
+    endIndex += 1;
+  }
+
+  return { startIndex, endIndex };
+}
+
 function findKeywordMatchIndexes(text, keyword, matchMode = 'contains') {
   const sourceText = String(text || '');
   const targetText = String(keyword || '');
@@ -567,24 +581,39 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       const paragraphNumber = (pageParagraphCounts.get(pageNumber) || 0) + 1;
       pageParagraphCounts.set(pageNumber, paragraphNumber);
 
-      if (!hasKeyword(text, normalizedKeyword, matchMode)) {
+      const matchIndexes = findKeywordMatchIndexes(text, normalizedKeyword, matchMode);
+      if (matchIndexes.length === 0) {
         return;
       }
 
-      const resultIndex = results.length;
-      element.dataset.docxSearchIndex = String(resultIndex);
-      results.push({
-        id: `docx-${pageNumber}-${paragraphNumber}-${resultIndex}`,
-        type: 'docx',
-        index: resultIndex,
-        pageNumber,
-        paragraphNumber,
-        paragraphIndex: paragraphNumber,
-        blockIndex: blockIndex + 1,
-        text,
-        matchedText: text,
-        keyword: normalizedKeyword,
-        matchIndex: text.toLowerCase().indexOf(normalizedKeyword.toLowerCase())
+      element.dataset.docxSearchIndex = String(results.length);
+      element.dataset.docxBlockIndex = String(blockIndex + 1);
+      const seenWordRanges = new Set();
+      matchIndexes.forEach((matchIndex, occurrenceIndex) => {
+        const resultIndex = results.length;
+        const { startIndex, endIndex } = getMatchWordBounds(text, matchIndex, normalizedKeyword.length);
+        const rangeKey = `${startIndex}:${endIndex}`;
+        if (seenWordRanges.has(rangeKey)) return;
+        seenWordRanges.add(rangeKey);
+        const matchedText = text.slice(startIndex, endIndex);
+        results.push({
+          id: `docx-${pageNumber}-${paragraphNumber}-${matchIndex}-${occurrenceIndex}`,
+          type: 'docx',
+          index: resultIndex,
+          pageNumber,
+          paragraphNumber,
+          paragraphIndex: paragraphNumber,
+          blockIndex: blockIndex + 1,
+          text,
+          lineText: text,
+          originalText: matchedText,
+          matchedText,
+          keyword: normalizedKeyword,
+          matchIndex,
+          startIndex,
+          endIndex,
+          occurrenceIndex
+        });
       });
     });
 
@@ -601,6 +630,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       element.classList.remove('docx-search-current');
     });
 
+    const target = typeof resultOrIndex === 'number' ? {} : (resultOrIndex?.raw || resultOrIndex || {});
     const resultIndex = typeof resultOrIndex === 'number'
       ? resultOrIndex
       : Number(resultOrIndex?.index ?? resultOrIndex?.raw?.index);
@@ -610,7 +640,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       return false;
     }
 
-    const element = root.querySelector(`[data-docx-search-index="${resultIndex}"]`);
+    const element = root.querySelector(`[data-docx-search-index="${resultIndex}"]`)
+      || (Number.isFinite(Number(target.blockIndex))
+        ? root.querySelector(`[data-docx-block-index="${Number(target.blockIndex)}"]`)
+        : null);
     if (!element) {
       console.warn('[WordViewer] search result element not found:', resultIndex);
       return false;
@@ -831,6 +864,24 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       let after = '';
 
       matchIndexes.forEach((matchIndex, occurrenceIndex) => {
+        const isSelected = !selectedTargets || selectedTargets.some((selectedTarget) => {
+          const raw = selectedTarget?.raw || selectedTarget;
+          const selectedBlockIndex = Number(raw?.blockIndex);
+          const selectedMatchIndex = Number(raw?.matchIndex);
+          const selectedOccurrenceIndex = raw?.occurrenceIndex == null ? null : Number(raw.occurrenceIndex);
+          return selectedBlockIndex === Number(metadata.blockIndex)
+            && selectedMatchIndex === matchIndex
+            && (selectedOccurrenceIndex == null || selectedOccurrenceIndex === occurrenceIndex);
+        });
+
+        if (!isSelected) {
+          after += before.slice(cursor, matchIndex + target.length);
+          cursor = matchIndex + target.length;
+          return;
+        }
+
+        const { startIndex, endIndex } = getMatchWordBounds(before, matchIndex, target.length);
+        const matchedText = before.slice(startIndex, endIndex);
         after += before.slice(cursor, matchIndex);
         after += replacement;
         results.push({
@@ -839,11 +890,18 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
           pageNumber: metadata.pageNumber,
           paragraphNumber: metadata.paragraphNumber,
           blockIndex: metadata.blockIndex,
-          originalText: originalBlockText,
-          replacedText: originalBlockText.replace(target, replacement),
+          originalText: matchedText,
+          matchedText,
+          replacedText: replacement,
+          replacementText: matchedText.slice(0, matchIndex - startIndex)
+            + replacement
+            + matchedText.slice(matchIndex - startIndex + target.length),
+          lineText: originalBlockText,
           keyword: target,
           newText: replacement,
           matchIndex,
+          startIndex,
+          endIndex,
           occurrenceIndex
         });
         cursor = matchIndex + target.length;
@@ -949,7 +1007,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
 
   return (
     <div className="word-viewer-shell">
-      <div className="docx-view-mode-controls" aria-label="DOCX 보기 방식">
+      <div className="docx-view-mode-controls document-toolbar" aria-label="DOCX 보기 방식">
         {downloadActions}
         <div className="docx-document-history" role="group" aria-label="문서 변경 이력">
           <button
@@ -1053,7 +1111,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
             : '일부 Word 서식은 웹 미리보기에서 단순화될 수 있습니다.'}
         </div>
       ) : null}
-      <div className="word-viewer-scroll" ref={viewerBodyRef}>
+      <div className="document-body-scroll word-viewer-scroll" ref={viewerBodyRef}>
         <div className="docx-scale-viewport">
           <div
             className="docx-scale-holder"

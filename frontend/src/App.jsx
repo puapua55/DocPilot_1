@@ -206,16 +206,18 @@ function App() {
     });
   };
 
-  const handleVisualPdfConvert = async (replacement) => {
+  const handleVisualPdfConvert = async (payload = {}) => {
+    const replacement = payload?.replacement || payload;
+    const movableTexts = Array.isArray(payload?.movableTexts) ? payload.movableTexts : [];
     if (!selectedDocument?.file || previewModel?.type !== 'pdf') {
       throw new Error('현재 선택된 PDF 문서가 없습니다.');
     }
 
-    if (!replacement?.originalText || replacement?.newText == null) {
+    if ((!replacement?.originalText || replacement?.newText == null) && movableTexts.length === 0) {
       throw new Error('화면에 적용된 교체 결과가 없습니다.');
     }
     const { convertPdfWithOriginalOverlay } = await import('./services/pdfOverlayConvertService');
-    return convertPdfWithOriginalOverlay({ file: selectedDocument.file });
+    return convertPdfWithOriginalOverlay({ file: selectedDocument.file, movableTexts });
   };
 
   const handleReplaceResultClick = (result) => {

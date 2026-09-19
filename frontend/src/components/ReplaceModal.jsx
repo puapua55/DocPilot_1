@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import DraggableResizableModal from './DraggableResizableModal';
 
 function replaceWithMode(text, target, replacement, matchMode) {
   const source = String(text || '');
@@ -31,14 +32,27 @@ function replaceWithMode(text, target, replacement, matchMode) {
 
 function normalizeResult(raw, index, originalText, newText, matchMode) {
   const source = String(raw?.originalText ?? raw?.text ?? raw?.fullText ?? raw?.content ?? '').trim();
+  const keyword = String(raw?.keyword || originalText);
+  const matchIndex = Number(raw?.matchIndex);
+  const hasMatchIndex = Number.isInteger(matchIndex) && matchIndex >= 0;
+  const matchedCandidate = raw?.matchedText
+    ?? raw?.matchText
+    ?? (hasMatchIndex ? source.slice(matchIndex, matchIndex + keyword.length) : '');
+  const matchedText = String(matchedCandidate || source);
+  const replacementText = String(
+    raw?.replacementText
+      ?? (matchedText ? replaceWithMode(matchedText, keyword, newText, matchMode) : raw?.replacedText)
+      ?? ''
+  );
+
   return {
     id: raw?.id || `replace-result-${index}`,
     pageNumber: Number(raw?.pageNumber ?? raw?.page ?? 1) || 1,
     paragraphNumber: raw?.paragraphNumber == null ? undefined : Number(raw.paragraphNumber),
     lineNumber: raw?.lineNumber == null ? undefined : Number(raw.lineNumber),
-    originalText: source,
-    replacedText: String(raw?.replacedText ?? replaceWithMode(source, originalText, newText, matchMode)),
-    keyword: String(raw?.keyword || originalText),
+    originalText: matchedText,
+    replacedText: replacementText,
+    keyword,
     newText: String(raw?.newText ?? newText),
     matchIndex: raw?.matchIndex,
     occurrenceIndex: raw?.occurrenceIndex,
@@ -254,14 +268,14 @@ function ReplaceModal({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div className="search-modal replace-panel" role="dialog" aria-modal="true" aria-labelledby="replace-modal-title" onClick={(event) => event.stopPropagation()}>
-        <div className="search-modal-header">
-          <button type="button" className="search-modal-close" onClick={handleClose} aria-label="텍스트 교체 모달 닫기">x</button>
-        </div>
-
-        <div className="search-modal-body">
-          <h2 id="replace-modal-title" className="search-modal-title">즉시 텍스트 교체</h2>
+    <DraggableResizableModal
+      title="즉시 텍스트 교체"
+      titleId="replace-modal-title"
+      className="replace-panel"
+      initialWidth={980}
+      initialHeight={760}
+      onClose={handleClose}
+    >
 
           <div className="replace-meta">
             <div><span>현재 문서</span><strong>{documentName || '-'}</strong></div>
@@ -353,9 +367,7 @@ function ReplaceModal({
               </table>
             </div>
           ) : statusType === 'empty' ? <div className="replace-result-empty">교체할 단어를 찾을 수 없습니다.</div> : null}
-        </div>
-      </div>
-    </div>
+    </DraggableResizableModal>
   );
 }
 

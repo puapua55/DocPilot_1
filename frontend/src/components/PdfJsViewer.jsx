@@ -65,6 +65,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [visualConvertMessage, setVisualConvertMessage] = useState('');
   const [downloadStatus, setDownloadStatus] = useState('idle');
   const [downloadMessage, setDownloadMessage] = useState('');
+  const [downloadFailed, setDownloadFailed] = useState(false);
   const pdfDocumentRef = useRef(null);
   const pagesTextRef = useRef([]);
   const viewerRef = useRef(null);
@@ -73,6 +74,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false, canReset: false });
   const [viewMode, setViewMode] = useState('scroll');
   const [currentPage, setCurrentPage] = useState(1);
+  const [textMoveMode, setTextMoveMode] = useState(false);
+  const [movableTexts, setMovableTexts] = useState([]);
+  const [selectedMovableTextId, setSelectedMovableTextId] = useState(null);
   const [userHighlight, setUserHighlight] = useState({
     keyword: String(highlightKeyword || ''),
     color: 'yellow',
@@ -122,20 +126,51 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   const resetAllDocumentChanges = () => {
     const history = historyRef.current;
-    if (history.index <= 0) return false;
-    history.index = 0;
-    restorePdfSnapshot(history.snapshots[0]);
-    updateHistoryState();
-    return true;
+    let reset = false;
+    if (history.index > 0) {
+      history.index = 0;
+      restorePdfSnapshot(history.snapshots[0]);
+      updateHistoryState();
+      reset = true;
+    }
+    if (movableTexts.length > 0) {
+      setMovableTexts([]);
+      setSelectedMovableTextId(null);
+      reset = true;
+    }
+    return reset;
+  };
+
+  const addMovableText = (selection) => {
+    const id = `movable-text-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setMovableTexts((current) => [...current, { ...selection, id }]);
+    setSelectedMovableTextId(id);
+  };
+
+  const moveMovableText = (id, currentRect) => {
+    setMovableTexts((current) => current.map((item) => (
+      item.id === id ? { ...item, currentRect } : item
+    )));
+  };
+
+  const selectMovableText = (id) => setSelectedMovableTextId(id);
+
+  const deleteMovableText = (id) => {
+    setMovableTexts((current) => current.filter((item) => item.id !== id));
+    setSelectedMovableTextId((current) => current === id ? null : current);
   };
 
   const downloadAsPdf = async () => {
     if (downloadStatus !== 'idle') return;
     setDownloadStatus('pdf-running');
     setDownloadMessage('');
+    setDownloadFailed(false);
     try {
-      if (appliedReplacePreview?.originalText) {
-        await onVisualConvert?.(appliedReplacePreview);
+      if (appliedReplacePreview?.originalText || movableTexts.length > 0) {
+        const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts });
+        if (result?.movableTextCount) {
+          setDownloadMessage(`PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 원본 글꼴 유지 ${result.fontPreservedCount}건`);
+        }
       } else {
         const url = URL.createObjectURL(file);
         const anchor = document.createElement('a');
@@ -146,6 +181,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       }
       setDownloadStatus('idle');
     } catch (error) {
+      setDownloadFailed(true);
       setDownloadStatus('idle');
       setDownloadMessage(`PDF 다운로드에 실패했습니다. ${error?.message || ''}`.trim());
     }
@@ -323,12 +359,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   }, [file, replacePreview]);
 
   const handleVisualConvert = async () => {
-    if (!appliedReplacePreview?.originalText || appliedReplacePreview?.newText == null) return;
+    if ((!appliedReplacePreview?.originalText || appliedReplacePreview?.newText == null) && movableTexts.length === 0) return;
 
     setVisualConvertStatus('running');
     setVisualConvertMessage('');
     try {
-      const result = await onVisualConvert?.(appliedReplacePreview);
+      const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts });
       setVisualConvertStatus('success');
       setVisualConvertMessage(`${result?.replaceCount ?? 0}건 변환 완료`);
     } catch (error) {
@@ -371,7 +407,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setPageNumbers([]);
       setCurrentPage(1);
       setViewMode('scroll');
+      setTextMoveMode(false);
+      setMovableTexts([]);
+      setSelectedMovableTextId(null);
       setErrorMessage('');
+      setDownloadMessage('');
+      setDownloadFailed(false);
 
       if (!file || !isPdfFile(file)) {
         setPdfDocument(null);
@@ -501,7 +542,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   return (
     <div className="pdf-viewer-shell">
-      <div className="pdf-view-mode-controls" aria-label="PDF 보기 방식">
+      <div className="pdf-view-mode-controls document-toolbar" aria-label="PDF 보기 방식">
         {pageNumbers.length > 1 ? (
           <>
             <div className="pdf-view-mode-toggle" role="group" aria-label="보기 방식 선택">
@@ -520,7 +561,19 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         <div className="pdf-document-history" role="group" aria-label="문서 변경 이력">
           <button type="button" onClick={undoDocumentChange} disabled={!historyState.canUndo} aria-label="적용 전으로 되돌리기">&lt;</button>
           <button type="button" onClick={redoDocumentChange} disabled={!historyState.canRedo} aria-label="다시 적용하기">&gt;</button>
-          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!historyState.canReset}>전체 초기화</button>
+          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!historyState.canReset && movableTexts.length === 0}>전체 초기화</button>
+          <button
+            type="button"
+            className={`pdf-text-move-button ${textMoveMode ? 'active' : ''}`}
+            onClick={() => {
+              setTextMoveMode((current) => !current);
+              setSelectedMovableTextId(null);
+            }}
+            aria-pressed={textMoveMode}
+            title={textMoveMode ? 'PDF 텍스트 이동을 종료합니다.' : 'PDF 본문에서 한 줄의 텍스트를 선택해 이동합니다.'}
+          >
+            텍스트 이동
+          </button>
         </div>
         {toolbarActions}
         <div className="viewer-download-actions">
@@ -536,8 +589,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           </button>
         </div>
       </div>
-      {downloadMessage ? <div className="pdf-visual-convert-message is-error" role="alert">{downloadMessage}</div> : null}
-      <div ref={viewerRef} className="pdf-viewer pdf-viewer-scroll">
+      {downloadMessage ? <div className={`pdf-visual-convert-message${downloadFailed ? ' is-error' : ''}`} role={downloadFailed ? 'alert' : 'status'}>{downloadMessage}</div> : null}
+      <div ref={viewerRef} className="document-body-scroll pdf-viewer pdf-viewer-scroll">
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (
             <div key={`${pageNumber}-${scale}`} hidden={viewMode === 'page' && currentPage !== pageNumber}>
@@ -548,6 +601,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 highlightKeyword={userHighlight.keyword}
                 highlightOptions={userHighlight}
                 replacePreview={appliedReplacePreview}
+                textMoveMode={textMoveMode}
+                movableTexts={movableTexts.filter((item) => item.pageNumber === pageNumber)}
+                selectedMovableTextId={selectedMovableTextId}
+                onCreateMovableText={addMovableText}
+                onMoveMovableText={moveMovableText}
+                onSelectMovableText={selectMovableText}
+                onDeleteMovableText={deleteMovableText}
                 onPageReady={(element) => {
                   if (element) pageRefs.current[pageNumber] = element;
                   else delete pageRefs.current[pageNumber];

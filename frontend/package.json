@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test:pdf-edit": "node --test tests/pdf-direct-text-edit.test.mjs",
     "electron:dev": "cross-env ELECTRON_START_URL=http://localhost:5173 electron electron/main.js",
     "electron:start": "electron electron/main.js",
     "electron:build": "npm run build && electron-builder",

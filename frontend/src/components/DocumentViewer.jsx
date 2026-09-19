@@ -195,7 +195,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
 
   return (
     <section className="document-viewer">
-      <div className="document-viewer-header">
+      <div className="document-viewer-header document-file-header">
         <div className="document-viewer-file">
           <strong>{file?.name}</strong>
           <span>{formatFileSize(file?.size ?? 0)}</span>

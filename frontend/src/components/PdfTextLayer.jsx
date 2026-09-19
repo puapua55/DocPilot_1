@@ -57,6 +57,14 @@ function PdfTextLayer({ textContent, viewport, width, height, onRendered }) {
       await document.fonts.ready;
       if (cancelled) return;
       alignTextWidths(task, textContent, viewport, textLayer);
+      const items = textContent.items.filter((item) => typeof item.str === 'string');
+      task.textDivs.forEach((span, index) => {
+        const item = items[index];
+        if (item) span.dataset.pdfSource = JSON.stringify({
+          text: item.str, transform: item.transform, pdfFontName: item.fontName,
+          sourceFont: textContent.fontPreviews?.[index] || null
+        });
+      });
       textLayer.dataset.rendered = 'true';
       onRendered?.();
     }).catch((error) => {

@@ -85,6 +85,9 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
   gap: 22px;
+  height: calc(100vh - 52px);
+  min-height: 0;
+  align-items: stretch;
 }
 
 .panel {
@@ -100,7 +103,10 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  min-height: 760px;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .upload-panel {
@@ -108,7 +114,7 @@ button:disabled {
   flex-direction: column;
   gap: 14px;
   flex: 1;
-  min-height: 620px;
+  min-height: 0;
 }
 
 .upload-dropzone {
@@ -118,7 +124,7 @@ button:disabled {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(240, 246, 255, 0.95)),
     linear-gradient(135deg, rgba(78, 124, 255, 0.08), rgba(110, 77, 255, 0.08));
-  min-height: 520px;
+  min-height: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -349,12 +355,18 @@ button:disabled {
 
 .document-viewer {
   width: 100%;
-  min-height: 620px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
 .document-viewer-header {
+  position: relative;
+  z-index: 5;
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -365,6 +377,22 @@ button:disabled {
   border: 1px solid #dde6ff;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.78);
+}
+
+.document-toolbar {
+  position: relative;
+  z-index: 5;
+  flex: 0 0 auto;
+  background: var(--panel-solid);
+}
+
+.document-body-scroll {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
 }
 
 .document-viewer-file {
@@ -395,7 +423,8 @@ button:disabled {
 
 .pdf-loading,
 .unsupported-document {
-  min-height: 620px;
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   place-items: center;
   border: 1px solid #d7e2ff;
@@ -409,6 +438,10 @@ button:disabled {
 .pdf-viewer-shell {
   position: relative;
   width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -423,6 +456,7 @@ button:disabled {
   align-items: start;
   gap: 8px;
   min-height: 38px;
+  flex-shrink: 0;
 }
 
 .pdf-view-mode-toggle,
@@ -685,13 +719,14 @@ button:disabled {
 .pdf-viewer,
 .pdf-viewer-scroll {
   width: 100%;
-  min-height: 600px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
 }
 
 .pdf-viewer-scroll {
-  min-height: 620px;
-  max-height: 700px;
+  max-height: none;
   border: 1px solid #d7e2ff;
   border-radius: 16px;
   background:
@@ -882,6 +917,63 @@ button:disabled {
   font-family: 'Helvetica', 'Arial', sans-serif;
 }
 
+.movable-text-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.movable-text-cover {
+  position: absolute;
+  pointer-events: none;
+}
+
+.movable-text-object {
+  position: absolute;
+  z-index: 1;
+  overflow: visible;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  white-space: pre;
+  cursor: move;
+  pointer-events: auto;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.movable-text-object.is-selected {
+  border-color: rgba(78, 124, 255, 0.8);
+  outline: 1px solid rgba(78, 124, 255, 0.25);
+}
+
+.movable-text-glyphs {
+  display: inline-block;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.pdf-text-move-button {
+  min-height: 32px;
+  border: 1px solid #cbd9ff;
+  border-radius: 9px;
+  padding: 0 9px;
+  background: #ffffff;
+  color: #315fc7;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pdf-text-move-button.active {
+  border-color: #4e7cff;
+  background: #edf3ff;
+  color: #234fae;
+}
+
 .highlight-box {
   position: absolute;
   background: rgba(255, 230, 0, 0.55);
@@ -894,8 +986,9 @@ button:disabled {
 .assistant-panel {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   padding: 24px;
-  gap: 18px;
+  gap: 12px;
 }
 
 .assistant-grid {
@@ -905,7 +998,7 @@ button:disabled {
 }
 
 .feature-card {
-  padding: 16px;
+  padding: 10px 12px;
   border-radius: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #f5f8ff 100%);
   border: 1px solid #d8e4ff;
@@ -925,15 +1018,16 @@ button:disabled {
 }
 
 .feature-card h3 {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 0.98rem;
 }
 
 .chat-feed {
-  flex: 1;
-  min-height: 320px;
-  max-height: 520px;
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -972,6 +1066,8 @@ button:disabled {
 }
 
 .chat-input-form {
+  flex: 0 0 auto;
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
@@ -1207,6 +1303,20 @@ button:disabled {
 @media (max-width: 1080px) {
   .main-layout {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+  }
+
+  .app-page { overflow: visible; }
+
+  .document-panel {
+    height: auto;
+    min-height: 620px;
+  }
+
+  .assistant-panel {
+    height: auto;
+    max-height: none;
   }
 
   .assistant-grid {
@@ -1237,10 +1347,6 @@ button:disabled {
   .upload-dropzone {
     min-height: 420px;
     padding: 24px 18px;
-  }
-
-  .chat-input-form {
-    grid-template-columns: 1fr;
   }
 
   .chat-submit {

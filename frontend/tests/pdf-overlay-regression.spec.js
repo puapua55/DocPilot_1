@@ -34,12 +34,14 @@ test('교체 글자는 확대 비율을 따르고 저장 후 한글이 렌더링
     const downloaded = page.waitForEvent('download');
     await page.evaluate(async (data) => {
       const { convertPdfWithOriginalOverlay } = await import('/src/services/pdfOverlayConvertService.js');
-      await convertPdfWithOriginalOverlay({ file: new File([new Uint8Array(data)], 'sample.pdf', { type: 'application/pdf' }) });
-    }, [...Buffer.from(pdf.output('arraybuffer'))]);
+      const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+      await convertPdfWithOriginalOverlay({ file: new File([bytes], 'sample.pdf', { type: 'application/pdf' }) });
+    }, Buffer.from(pdf.output('arraybuffer')).toString('base64'));
     const bytes = readFileSync(await (await downloaded).path());
     const rendered = await page.evaluate(async (data) => {
       const { loadPdfDocument } = await import('/src/services/pdfService.js');
-      const { pdf, loadingTask } = await loadPdfDocument(new Uint8Array(data).buffer);
+      const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+      const { pdf, loadingTask } = await loadPdfDocument(bytes.buffer);
       try {
         const p = await pdf.getPage(1); const content = await p.getTextContent();
         const canvas = document.createElement('canvas'); canvas.width = 595; canvas.height = 842;
@@ -48,7 +50,7 @@ test('교체 글자는 확대 비율을 따르고 저장 후 한글이 렌더링
         let dark = 0; for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i+1] < 100 && pixels[i+2] < 100) dark++;
         return { dark, text: content.items.map((i) => i.str).join(' ') };
       } finally { await loadingTask.destroy(); }
-    }, [...bytes]);
+    }, bytes.toString('base64'));
     expect(rendered.text).toContain('변환자');
     expect(rendered.dark).toBeGreaterThan(40);
   }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import DraggableResizableModal from './DraggableResizableModal';
 
 function normalizeSearchResult(rawResult, index, keyword) {
   const raw = rawResult || {};
@@ -144,29 +145,14 @@ function SearchModal({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div
-        className="search-modal search-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="search-modal-title"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="search-modal-header">
-          <button
-            type="button"
-            className="search-modal-close"
-            onClick={handleClose}
-            aria-label="검색 모달 닫기"
-          >
-            x
-          </button>
-        </div>
-
-        <div className="search-modal-body">
-          <h2 id="search-modal-title" className="search-modal-title">
-            정확한 문서 검색
-          </h2>
+    <DraggableResizableModal
+      title="정확한 문서 검색"
+      titleId="search-modal-title"
+      className="search-panel"
+      initialWidth={920}
+      initialHeight={700}
+      onClose={handleClose}
+    >
 
           <div className="search-meta">
             <div><span>현재 문서</span><strong>{documentName || '-'}</strong></div>
@@ -284,9 +270,7 @@ function SearchModal({
           ) : statusType === 'empty' ? (
             <div className="search-result-empty">검색 결과가 없습니다.</div>
           ) : null}
-        </div>
-      </div>
-    </div>
+    </DraggableResizableModal>
   );
 }
 

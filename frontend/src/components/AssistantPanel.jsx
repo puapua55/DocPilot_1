@@ -5,9 +5,9 @@ import './ChatPanel.css';
 import { useEffect, useState } from 'react';
 
 const CARDS = [
-  { title: '정확한 문서 검색', description: '현재 문서에서 원하는 단어나 문장을 정확하게 찾습니다.' },
-  { title: '위치 하이라이트', description: '검색어가 있는 위치를 현재 문서에서 바로 강조 표시합니다.' },
-  { title: '즉시 텍스트 교체', description: '현재 문서의 텍스트를 찾아 즉시 교체하거나 변환합니다.' }
+  { title: '정확한 문서 검색' },
+  { title: '위치 하이라이트' },
+  { title: '즉시 텍스트 교체' }
 ];
 
 function AssistantPanel({
@@ -54,6 +54,12 @@ function AssistantPanel({
             <button type="button" onClick={() => setSettingsOpen(true)}>설정하기</button>
           </div>
         ) : null}
+        <section className="document-tool-section">
+          <div className="document-tool-header"><h3>문서 작업</h3><p>현재 열린 문서에 빠르게 기능을 적용합니다.</p></div>
+          <div className="assistant-grid">
+            {CARDS.map((card, index) => <div key={card.title} {...getCardActionProps(index)}><h3>{card.title}</h3></div>)}
+          </div>
+        </section>
         <div className="chat-feed" aria-label="assistant conversation" aria-live="polite">
           {messages.map((message) => {
             const runningType = runningActionId?.startsWith(`${message.id}:`) ? runningActionId.slice(message.id.length + 1) : '';
@@ -81,12 +87,6 @@ function AssistantPanel({
         </div>
         {error ? <div className="chat-error" role="alert">{error}</div> : null}
         <ChatInput onSendMessage={onSendMessage} loading={loading} />
-      </section>
-      <section className="document-tool-section">
-        <div className="document-tool-header"><h3>문서 작업</h3><p>현재 열린 문서에 빠르게 기능을 적용합니다.</p></div>
-        <div className="assistant-grid">
-          {CARDS.map((card, index) => <div key={card.title} {...getCardActionProps(index)}><h3>{card.title}</h3><p>{card.description}</p></div>)}
-        </div>
       </section>
       <OpenAiSettingsModal
         isOpen={settingsOpen}

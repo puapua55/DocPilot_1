@@ -1,5 +1,9 @@
 .word-viewer-shell {
   width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -16,6 +20,10 @@
   justify-content: stretch;
   gap: 8px;
   min-height: 38px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 5;
+  background: var(--panel-solid, #ffffff);
 }
 
 .docx-view-mode-controls > .document-viewer-actions {
@@ -261,7 +269,9 @@
 .word-viewer,
 .word-viewer-scroll {
   width: 100%;
-  min-height: 620px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 .word-viewer-state {
@@ -279,6 +289,7 @@
 }
 
 .word-viewer-warning {
+  flex: 0 0 auto;
   padding: 10px 14px;
   border: 1px solid #f0dfad;
   border-radius: 12px;
@@ -288,9 +299,8 @@
 }
 
 .word-viewer-scroll {
-  flex: 0 0 750px;
-  min-height: 750px;
-  max-height: 750px;
+  flex: 1 1 auto;
+  max-height: none;
   overflow: auto;
   border: 1px solid #d7e2ff;
   border-radius: 16px;
