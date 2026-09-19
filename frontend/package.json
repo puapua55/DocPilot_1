@@ -2,21 +2,66 @@
   "name": "docpilot-frontend",
   "private": true,
   "version": "0.1.0",
+  "main": "electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:pdf-edit": "node --test tests/pdf-direct-text-edit.test.mjs",
+    "electron:dev": "cross-env ELECTRON_START_URL=http://localhost:5173 electron electron/main.js",
+    "electron:start": "electron electron/main.js",
+    "electron:build": "npm run build && electron-builder",
+    "electron:build:portable": "npm run build && electron-builder --win portable --x64",
+    "electron:build:unpacked": "npm run build && electron-builder --win --x64 --dir",
+    "electron:zip:unpacked": "npm run electron:build:unpacked && node scripts/zip-win-unpacked.js",
+    "electron:build:zip": "npm run electron:zip:unpacked",
+    "electron:build:with-backend": "node scripts/check-portable-prereqs.js && npm run build && electron-builder --config electron-builder.with-backend.yml --win portable --x64",
+    "test:e2e": "playwright test",
+    "test:e2e:docx": "playwright test tests/docx-convert.spec.js",
+    "test:e2e:chat-doc": "playwright test tests/ai-document-chat.spec.js",
+    "test:e2e:ai-tools": "playwright test tests/ai-tool-actions.spec.js",
+    "test:e2e:search": "playwright test tests/document-search.spec.js",
+    "test:e2e:highlight": "playwright test tests/document-highlight.spec.js",
+    "test:e2e:replace": "playwright test tests/document-replace.spec.js"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "docx-preview": "^0.4.0",
+    "html2canvas": "^1.4.1",
     "jspdf": "^3.0.4",
+    "jszip": "^3.10.1",
     "mammoth": "^1.12.2",
-    "pdfjs-dist": "^6.2.108",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "6.2.108",
+    "pizzip": "^3.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@vitejs/plugin-react": "^4.3.1",
+    "cross-env": "^10.1.0",
+    "electron": "^38.8.6",
+    "electron-builder": "^26.15.3",
+    "rollup": "4.24.0",
     "vite": "^5.4.10"
+  },
+  "build": {
+    "appId": "com.docpilot.app",
+    "productName": "DocPilot",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
   }
 }

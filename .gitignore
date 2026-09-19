@@ -5,6 +5,14 @@ uploads/
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/runtime/jre/
+frontend/release/
+frontend/out/
+frontend/.electron-builder/
+frontend/*.zip
+frontend/*.exe
+.env.local
+*.local.json
 
 # Maven build
 target/

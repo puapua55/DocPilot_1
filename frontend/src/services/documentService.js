@@ -1,10 +1,9 @@
 import {
   normalizeDocumentFile,
-  uploadDocumentForDev,
   validateDocumentFile
 } from './fileService';
 import { extractWordContentForDev, getWordPreviewModel, isWordDocument } from './docxService';
-import { extractPdfTextByPages, getPdfPreviewModel, isPdfDocument } from './pdfService';
+import { getPdfPreviewModel, isPdfDocument } from './pdfService';
 import { saveDocumentForDev } from './storageService';
 
 export async function openDocument(file) {
@@ -20,13 +19,10 @@ export async function openDocument(file) {
 
   const documentFile = normalizeDocumentFile(file);
 
-  await uploadDocumentForDev(file);
-
   if (isPdfDocument(documentFile)) {
-    const documentText = await extractPdfTextByPages(file);
-
-    console.log('[documentText]', documentText);
-    console.log('[documentText pages]', documentText.length);
+    // Let the viewer load the PDF and extract text in the background so that
+    // preview activation and error reporting do not wait for text extraction.
+    const documentText = [];
 
     return {
       ok: true,

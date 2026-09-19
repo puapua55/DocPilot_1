@@ -1,100 +1,99 @@
+import AiActionCard from './AiActionCard';
 import ChatInput from './ChatInput';
+import OpenAiSettingsModal from './OpenAiSettingsModal';
+import './ChatPanel.css';
+import { useEffect, useState } from 'react';
 
 const CARDS = [
-  {
-    title: '정확한 문서 검색',
-    description: '문서 전체에서 원하는 단어나 문장을 빠르게 찾을 수 있도록 준비 중입니다.'
-  },
-  {
-    title: '위치 하이라이트',
-    description: '검색 결과 위치를 문서에서 바로 강조 표시하는 흐름을 다음 단계에서 연결합니다.'
-  },
-  {
-    title: '즉시 텍스트 교체',
-    description: 'PDF를 절대좌표 HTML 구조로 분석한 뒤 텍스트를 바꿔 새 PDF로 저장합니다.'
-  }
+  { title: '정확한 문서 검색' },
+  { title: '위치 하이라이트' },
+  { title: '즉시 텍스트 교체' }
 ];
 
 function AssistantPanel({
-  messages,
-  onSendMessage,
-  onSearchCardClick,
-  onHighlightCardClick,
-  onReplaceCardClick
+  messages, loading, error, selectedDocument, runningActionId, onSendMessage,
+  onSearchCardClick, onHighlightCardClick, onReplaceCardClick,
+  onExecuteSearchAction, onExecuteHighlightAction,
+  onExecuteReplaceApplyAction, onExecuteReplaceConvertAction
 }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [openAiStatus, setOpenAiStatus] = useState(null);
+  const settingsApi = typeof window !== 'undefined' ? window.docPilotSettings : null;
+
+  useEffect(() => {
+    if (!settingsApi?.getOpenAiStatus) return;
+    settingsApi.getOpenAiStatus().then(setOpenAiStatus).catch(() => setOpenAiStatus(null));
+  }, [settingsApi]);
+
   const getCardActionProps = (index) => {
-    if (index === 0) {
-      return {
-        className: 'feature-card feature-card-actionable',
-        onClick: onSearchCardClick,
-        role: 'button',
-        tabIndex: 0,
-        onKeyDown: (event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onSearchCardClick?.();
-          }
-        }
-      };
-    }
-
-    if (index === 1) {
-      return {
-        className: 'feature-card feature-card-actionable',
-        onClick: onHighlightCardClick,
-        role: 'button',
-        tabIndex: 0,
-        onKeyDown: (event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onHighlightCardClick?.();
-          }
-        }
-      };
-    }
-
+    const handler = [onSearchCardClick, onHighlightCardClick, onReplaceCardClick][index];
     return {
-      className: 'feature-card feature-card-actionable',
-      onClick: onReplaceCardClick,
-      role: 'button',
-      tabIndex: 0,
+      className: 'feature-card feature-card-actionable', onClick: handler, role: 'button', tabIndex: 0,
       onKeyDown: (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onReplaceCardClick?.();
-        }
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); handler?.(); }
       }
     };
   };
 
+  const selectedFile = selectedDocument?.file ?? null;
+  const documentName = selectedFile?.name ?? selectedDocument?.name ?? '';
+
   return (
     <aside className="panel assistant-panel">
-      <div className="assistant-head">
-        <h2>문서 관리 AI 어시스턴트</h2>
-        <p>문서를 이해하고, 필요한 정보를 정확히 찾아 즉시 편집까지 도와드립니다.</p>
-      </div>
-
-      <div className="assistant-grid">
-        {CARDS.map((card, index) => (
-          <div
-            key={card.title}
-            {...getCardActionProps(index)}
-          >
-            <h3>{card.title}</h3>
-            <p>{card.description}</p>
+      <section className="ai-chat-section">
+        <div className="assistant-head">
+          <div className="assistant-head-row">
+            <h2>DocPilot AI</h2>
+            {settingsApi ? <button className="openai-settings-button" type="button" onClick={() => setSettingsOpen(true)}>OpenAI 설정</button> : null}
           </div>
-        ))}
-      </div>
-
-      <div className="chat-feed" aria-label="assistant conversation">
-        {messages.map((message) => (
-          <div key={message.id} className={`chat-row ${message.role === 'user' ? 'user' : 'assistant'}`}>
-            <div className="chat-bubble">{message.text}</div>
+          <p>{documentName ? `${documentName} 문서가 열려 있습니다. 일반 질문부터 시작할 수 있습니다.` : '문서를 선택하거나 일반 질문을 입력하세요.'}</p>
+        </div>
+        {settingsApi && openAiStatus && !openAiStatus.hasApiKey ? (
+          <div className="openai-missing-banner" role="status">
+            <span>OpenAI API Key가 설정되지 않았습니다.</span>
+            <button type="button" onClick={() => setSettingsOpen(true)}>설정하기</button>
           </div>
-        ))}
-      </div>
-
-      <ChatInput onSendMessage={onSendMessage} />
+        ) : null}
+        <section className="document-tool-section">
+          <div className="document-tool-header"><h3>문서 작업</h3><p>현재 열린 문서에 빠르게 기능을 적용합니다.</p></div>
+          <div className="assistant-grid">
+            {CARDS.map((card, index) => <div key={card.title} {...getCardActionProps(index)}><h3>{card.title}</h3></div>)}
+          </div>
+        </section>
+        <div className="chat-feed" aria-label="assistant conversation" aria-live="polite">
+          {messages.map((message) => {
+            const runningType = runningActionId?.startsWith(`${message.id}:`) ? runningActionId.slice(message.id.length + 1) : '';
+            return (
+              <div key={message.id} className={`chat-row ${message.role === 'user' ? 'user' : 'assistant'}`}>
+                <div className="chat-bubble">
+                  {message.text}
+                  {message.role === 'assistant' && message.action ? (
+                    <AiActionCard
+                      action={message.action}
+                      selectedFile={selectedFile}
+                      disabled={!selectedFile}
+                      runningType={runningType}
+                      onSearch={(action) => onExecuteSearchAction?.(message.id, action)}
+                      onHighlight={(action) => onExecuteHighlightAction?.(message.id, action)}
+                      onReplaceApply={(action) => onExecuteReplaceApplyAction?.(message.id, action)}
+                      onReplaceConvert={(action) => onExecuteReplaceConvertAction?.(message.id, action)}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+          {loading ? <div className="chat-row assistant"><div className="chat-bubble chat-loading">답변을 작성 중입니다...</div></div> : null}
+        </div>
+        {error ? <div className="chat-error" role="alert">{error}</div> : null}
+        <ChatInput onSendMessage={onSendMessage} loading={loading} />
+      </section>
+      <OpenAiSettingsModal
+        isOpen={settingsOpen}
+        status={openAiStatus}
+        onSaved={setOpenAiStatus}
+        onClose={() => setSettingsOpen(false)}
+      />
     </aside>
   );
 }
