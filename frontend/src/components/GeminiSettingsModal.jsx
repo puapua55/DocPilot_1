@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import './OpenAiSettingsModal.css';
+import './GeminiSettingsModal.css';
 
-const DEFAULT_MODEL = 'gpt-5-mini';
+const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 
-function OpenAiSettingsModal({ isOpen, status, onSaved, onClose }) {
+function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [message, setMessage] = useState('');
@@ -25,13 +25,13 @@ function OpenAiSettingsModal({ isOpen, status, onSaved, onClose }) {
     setMessage('');
     setError('');
     try {
-      const nextStatus = await settingsApi.saveOpenAiSettings({
-        openAiApiKey: apiKey,
-        openAiModel: model
+      const nextStatus = await settingsApi.saveGeminiSettings({
+        geminiApiKey: apiKey,
+        geminiModel: model
       });
       setApiKey('');
       onSaved?.(nextStatus);
-      setMessage('저장되었습니다. 앱을 다시 시작하면 백엔드에 적용됩니다.');
+      setMessage('저장되었습니다. 다음 문서 작업 요청부터 적용됩니다.');
     } catch {
       setError('설정을 저장하지 못했습니다. 다시 시도해주세요.');
     }
@@ -41,7 +41,7 @@ function OpenAiSettingsModal({ isOpen, status, onSaved, onClose }) {
     setMessage('');
     setError('');
     try {
-      const nextStatus = await settingsApi.clearOpenAiSettings();
+      const nextStatus = await settingsApi.clearGeminiSettings();
       setApiKey('');
       setModel(DEFAULT_MODEL);
       onSaved?.(nextStatus);
@@ -55,11 +55,11 @@ function OpenAiSettingsModal({ isOpen, status, onSaved, onClose }) {
     <div className="settings-modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose?.();
     }}>
-      <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="openai-settings-title">
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="gemini-settings-title">
         <div className="settings-modal-header">
           <div>
             <p className="settings-eyebrow">DESKTOP SETTINGS</p>
-            <h2 id="openai-settings-title">OpenAI 설정</h2>
+            <h2 id="gemini-settings-title">Gemini 설정</h2>
           </div>
           <button className="settings-close-button" type="button" onClick={onClose} aria-label="설정 닫기">×</button>
         </div>
@@ -72,7 +72,7 @@ function OpenAiSettingsModal({ isOpen, status, onSaved, onClose }) {
             <input
               type="password"
               value={apiKey}
-              placeholder={status?.hasApiKey ? '기존 Key를 변경할 때만 입력' : 'sk-...'}
+              placeholder={status?.hasApiKey ? '기존 Key를 변경할 때만 입력' : 'AIza...'}
               autoComplete="off"
               onChange={(event) => setApiKey(event.target.value)}
             />
@@ -102,4 +102,4 @@ function OpenAiSettingsModal({ isOpen, status, onSaved, onClose }) {
   );
 }
 
-export default OpenAiSettingsModal;
+export default GeminiSettingsModal;

@@ -16,12 +16,12 @@ npm run dev
 
 ## Spring Boot 실행 방법
 
-OpenAI API Key는 프론트엔드에 넣지 말고 Spring Boot를 실행하는 터미널의 환경변수로만 설정합니다.
+Gemini API Key는 프론트엔드에 넣지 말고 Spring Boot를 실행하는 터미널의 환경변수로만 설정합니다.
 
 ```bash
-export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
+export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
 # 선택: 기본 모델을 바꾸고 싶을 때만 지정
-export OPENAI_MODEL="gpt-5.6-luna"
+export GEMINI_MODEL="gemini-3.1-flash-lite"
 mvn spring-boot:run
 ```
 
@@ -30,8 +30,8 @@ React 개발 서버의 `/api/*` 요청은 `frontend/vite.config.js` 프록시를
 Windows PowerShell에서는 다음처럼 설정할 수 있습니다.
 
 ```powershell
-$env:OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
-$env:OPENAI_MODEL="gpt-5.6-luna"
+$env:GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
+$env:GEMINI_MODEL="gemini-3.1-flash-lite"
 mvn spring-boot:run
 ```
 
@@ -43,6 +43,6 @@ API Key를 `frontend/.env`, React 소스, Vite 환경변수(`VITE_*`)에 저장�
 - 정확한 문서 검색
 - 위치 하이라이트
 - 즉시 텍스트 교체
-- 오른쪽 DocPilot AI 챗봇 패널
-- React `/api/chat` → Spring Boot → OpenAI Responses API 연결
+- 오른쪽 DocPilot AI 문서 작업 패널 (검색·하이라이트·텍스트 교체 요청만 허용)
+- React `/api/chat` → Spring Boot → Gemini `generateContent` API 연결
 - Electron 전환을 고려한 서비스 분리 구조

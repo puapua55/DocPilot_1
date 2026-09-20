@@ -10,17 +10,7 @@ export const INITIAL_CHAT_MESSAGES = [
   {
     id: 'welcome-ai',
     role: 'assistant',
-    text: '안녕하세요! 문서 검색, 요약, 수정 흐름을 준비하고 있습니다. 원하는 작업을 입력해 주세요.'
-  },
-  {
-    id: 'sample-user',
-    role: 'user',
-    text: '프로젝트 일정이라는 내용을 찾아줘'
-  },
-  {
-    id: 'sample-ai',
-    role: 'assistant',
-    text: '현재 AI 연동은 준비 중입니다. 다음 단계에서 실제 검색 결과와 연결할 예정입니다.'
+    text: '문서 작업 요청만 지원합니다. 정확한 문서 검색, 위치 하이라이트 또는 즉시 텍스트 교체를 요청해주세요.'
   }
 ];
 

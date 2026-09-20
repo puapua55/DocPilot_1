@@ -1,13 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('docPilotSettings', {
-  getOpenAiSettings: () => ipcRenderer.invoke('openai-settings:get'),
-  saveOpenAiSettings: (settings) => ipcRenderer.invoke('openai-settings:set', {
-    openAiApiKey: typeof settings?.openAiApiKey === 'string' ? settings.openAiApiKey : '',
-    openAiModel: typeof settings?.openAiModel === 'string' ? settings.openAiModel : ''
+  getGeminiSettings: () => ipcRenderer.invoke('gemini-settings:get'),
+  saveGeminiSettings: (settings) => ipcRenderer.invoke('gemini-settings:set', {
+    geminiApiKey: typeof settings?.geminiApiKey === 'string' ? settings.geminiApiKey : '',
+    geminiModel: typeof settings?.geminiModel === 'string' ? settings.geminiModel : ''
   }),
-  clearOpenAiSettings: () => ipcRenderer.invoke('openai-settings:clear'),
-  getOpenAiStatus: () => ipcRenderer.invoke('openai-settings:status')
+  clearGeminiSettings: () => ipcRenderer.invoke('gemini-settings:clear'),
+  getGeminiStatus: () => ipcRenderer.invoke('gemini-settings:status')
 });
 
 contextBridge.exposeInMainWorld('docPilotAi', {

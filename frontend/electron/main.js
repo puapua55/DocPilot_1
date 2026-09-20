@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlin
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chatWithOpenAi } from './openaiService.js';
+import { chatWithGemini } from './geminiService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,7 +13,7 @@ const backendHost = '127.0.0.1';
 const defaultBackendPort = 8080;
 const healthTimeoutMs = 30_000;
 const healthRetryMs = 750;
-const defaultOpenAiModel = 'gpt-5-mini';
+const defaultGeminiModel = 'gemini-3.1-flash-lite';
 
 let backendProcess = null;
 let backendWasStartedByElectron = false;
@@ -42,8 +42,8 @@ function getStartupLogPath() {
 
 function redactLogValue(value) {
   return String(value ?? '')
-    .replace(/(OPENAI_API_KEY|Authorization|Bearer)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
-    .replace(/sk-[A-Za-z0-9_-]+/g, '[REDACTED_API_KEY]');
+    .replace(/(GEMINI_API_KEY|OPENAI_API_KEY|Authorization|Bearer|x-goog-api-key)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/(?:AIza|sk-)[A-Za-z0-9_-]+/g, '[REDACTED_API_KEY]');
 }
 
 function appendStartupLog(event, details = {}) {
@@ -82,13 +82,13 @@ function readLocalSettings() {
   try {
     const parsed = JSON.parse(readFileSync(settingsPath, 'utf8'));
     return {
-      openAiApiKey: typeof parsed.openAiApiKey === 'string' ? parsed.openAiApiKey.trim() : '',
-      openAiModel: typeof parsed.openAiModel === 'string' && parsed.openAiModel.trim()
-        ? parsed.openAiModel.trim()
-        : defaultOpenAiModel
+      geminiApiKey: typeof parsed.geminiApiKey === 'string' ? parsed.geminiApiKey.trim() : '',
+      geminiModel: typeof parsed.geminiModel === 'string' && parsed.geminiModel.trim()
+        ? parsed.geminiModel.trim()
+        : defaultGeminiModel
     };
   } catch (error) {
-    console.error(`OpenAI settings could not be read: ${error.message}`);
+    console.error(`Gemini settings could not be read: ${error.message}`);
     return {};
   }
 }
@@ -99,10 +99,10 @@ function maskApiKey(apiKey = '') {
   return `${apiKey.slice(0, 5)}...${apiKey.slice(-4)}`;
 }
 
-function getOpenAiStatus() {
+function getGeminiStatus() {
   const settings = readLocalSettings();
-  const resolvedApiKey = process.env.OPENAI_API_KEY || settings.openAiApiKey;
-  const resolvedModel = process.env.OPENAI_MODEL || settings.openAiModel || defaultOpenAiModel;
+  const resolvedApiKey = process.env.GEMINI_API_KEY || settings.geminiApiKey;
+  const resolvedModel = process.env.GEMINI_MODEL || settings.geminiModel || defaultGeminiModel;
   return {
     hasApiKey: Boolean(resolvedApiKey),
     maskedApiKey: maskApiKey(resolvedApiKey),
@@ -110,35 +110,35 @@ function getOpenAiStatus() {
   };
 }
 
-function saveOpenAiSettings(input = {}) {
+function saveGeminiSettings(input = {}) {
   const current = readLocalSettings();
-  const nextApiKey = typeof input.openAiApiKey === 'string' && input.openAiApiKey.trim()
-    ? input.openAiApiKey.trim()
-    : current.openAiApiKey || '';
-  const nextModel = typeof input.openAiModel === 'string' && input.openAiModel.trim()
-    ? input.openAiModel.trim()
-    : defaultOpenAiModel;
+  const nextApiKey = typeof input.geminiApiKey === 'string' && input.geminiApiKey.trim()
+    ? input.geminiApiKey.trim()
+    : current.geminiApiKey || '';
+  const nextModel = typeof input.geminiModel === 'string' && input.geminiModel.trim()
+    ? input.geminiModel.trim()
+    : defaultGeminiModel;
   const settingsPath = getSettingsPath();
 
   mkdirSync(path.dirname(settingsPath), { recursive: true });
-  writeFileSync(settingsPath, JSON.stringify({ openAiApiKey: nextApiKey, openAiModel: nextModel }, null, 2), {
+  writeFileSync(settingsPath, JSON.stringify({ geminiApiKey: nextApiKey, geminiModel: nextModel }, null, 2), {
     encoding: 'utf8',
     mode: 0o600
   });
-  return getOpenAiStatus();
+  return getGeminiStatus();
 }
 
-function clearOpenAiSettings() {
+function clearGeminiSettings() {
   const settingsPath = getSettingsPath();
   if (existsSync(settingsPath)) unlinkSync(settingsPath);
-  return getOpenAiStatus();
+  return getGeminiStatus();
 }
 
 function registerSettingsIpc() {
-  ipcMain.handle('openai-settings:get', () => getOpenAiStatus());
-  ipcMain.handle('openai-settings:status', () => getOpenAiStatus());
-  ipcMain.handle('openai-settings:set', (_event, settings) => saveOpenAiSettings(settings));
-  ipcMain.handle('openai-settings:clear', () => clearOpenAiSettings());
+  ipcMain.handle('gemini-settings:get', () => getGeminiStatus());
+  ipcMain.handle('gemini-settings:status', () => getGeminiStatus());
+  ipcMain.handle('gemini-settings:set', (_event, settings) => saveGeminiSettings(settings));
+  ipcMain.handle('gemini-settings:clear', () => clearGeminiSettings());
 }
 
 function getBackendPort() {
@@ -171,7 +171,7 @@ function shouldAutoStartBackend() {
 }
 
 function registerAiIpc() {
-  ipcMain.handle('docpilot-ai:chat', (_event, request = {}) => chatWithOpenAi({
+  ipcMain.handle('docpilot-ai:chat', (_event, request = {}) => chatWithGemini({
     message: typeof request.message === 'string' ? request.message : '',
     documentName: typeof request.documentName === 'string' ? request.documentName : '',
     documentType: typeof request.documentType === 'string' ? request.documentType : '',
@@ -298,11 +298,11 @@ function startBackend(port) {
   const javaExecutable = resolveJavaExecutable();
   const localSettings = readLocalSettings();
   const backendEnv = { ...process.env };
-  if (!backendEnv.OPENAI_API_KEY && localSettings.openAiApiKey) {
-    backendEnv.OPENAI_API_KEY = localSettings.openAiApiKey;
+  if (!backendEnv.GEMINI_API_KEY && localSettings.geminiApiKey) {
+    backendEnv.GEMINI_API_KEY = localSettings.geminiApiKey;
   }
-  if (!backendEnv.OPENAI_MODEL && localSettings.openAiModel) {
-    backendEnv.OPENAI_MODEL = localSettings.openAiModel;
+  if (!backendEnv.GEMINI_MODEL && localSettings.geminiModel) {
+    backendEnv.GEMINI_MODEL = localSettings.geminiModel;
   }
   backendProcessError = null;
   backendProcessExit = null;

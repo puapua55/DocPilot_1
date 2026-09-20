@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { sendChatMessage } from '../services/llmService';
 import { INITIAL_CHAT_MESSAGES } from '../utils/constants';
 
+const RESTRICTED_CHAT_MESSAGE = '채팅은 정확한 문서 검색, 위치 하이라이트, 즉시 텍스트 교체 요청에만 사용할 수 있습니다.';
+const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'replace']);
+
 export function useChat(selectedDocument, previewModel, documentViewerRef) {
   const [messages, setMessages] = useState(INITIAL_CHAT_MESSAGES);
   const [loading, setLoading] = useState(false);
@@ -19,6 +22,16 @@ export function useChat(selectedDocument, previewModel, documentViewerRef) {
     if (!trimmed || loading) return;
 
     const userMessage = { id: `user-${Date.now()}`, role: 'user', text: trimmed };
+    if (!selectedDocument?.file) {
+      setMessages((current) => [...current, userMessage, {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        text: '문서를 먼저 선택한 뒤 정확한 문서 검색, 위치 하이라이트 또는 즉시 텍스트 교체를 요청해주세요.',
+        intent: 'unsupported',
+        action: null
+      }]);
+      return;
+    }
     const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
     setLoading(true);
@@ -43,11 +56,9 @@ export function useChat(selectedDocument, previewModel, documentViewerRef) {
         history: nextMessages.slice(-10).map(({ role, text }) => ({ role, content: text }))
       });
 
-      const documentAction = ['search', 'highlight', 'replace'].includes(reply.action?.type);
-      const action = selectedDocument || !documentAction ? reply.action : null;
-      const text = !selectedDocument && documentAction
-        ? '현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.'
-        : reply.answer;
+      const documentAction = ALLOWED_ACTION_TYPES.has(reply.action?.type);
+      const action = documentAction ? reply.action : null;
+      const text = documentAction ? reply.answer : RESTRICTED_CHAT_MESSAGE;
 
       setMessages((current) => [
         ...current,

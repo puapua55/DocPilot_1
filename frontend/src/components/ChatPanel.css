@@ -15,10 +15,10 @@
 
 .ai-chat-section { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; height: 100%; overflow: hidden; gap: 10px; }
 .assistant-head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.openai-settings-button { flex: 0 0 auto; border: 1px solid #b8c8f4; border-radius: 10px; background: #fff; color: #43517a; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 0.76rem; }
-.openai-settings-button:hover { background: #eef3ff; }
-.openai-missing-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #f5d58a; border-radius: 12px; background: #fff9e8; color: #8a5a00; padding: 10px 12px; font-size: 0.8rem; }
-.openai-missing-banner button { border: 0; background: transparent; color: #765000; cursor: pointer; font: inherit; font-weight: 700; white-space: nowrap; }
+.gemini-settings-button { flex: 0 0 auto; border: 1px solid #b8c8f4; border-radius: 10px; background: #fff; color: #43517a; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 0.76rem; }
+.gemini-settings-button:hover { background: #eef3ff; }
+.gemini-missing-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #f5d58a; border-radius: 12px; background: #fff9e8; color: #8a5a00; padding: 10px 12px; font-size: 0.8rem; }
+.gemini-missing-banner button { border: 0; background: transparent; color: #765000; cursor: pointer; font: inherit; font-weight: 700; white-space: nowrap; }
 .document-tool-section { flex: 0 0 auto; padding: 12px; border: 1px solid #e1e8f8; border-radius: 16px; background: #f8faff; }
 .document-tool-header { margin-bottom: 8px; }
 .document-tool-header h3, .document-tool-header p { margin: 0; }

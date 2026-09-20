@@ -1,6 +1,6 @@
 import AiActionCard from './AiActionCard';
 import ChatInput from './ChatInput';
-import OpenAiSettingsModal from './OpenAiSettingsModal';
+import GeminiSettingsModal from './GeminiSettingsModal';
 import './ChatPanel.css';
 import { useEffect, useState } from 'react';
 
@@ -17,12 +17,12 @@ function AssistantPanel({
   onExecuteReplaceApplyAction, onExecuteReplaceConvertAction
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [openAiStatus, setOpenAiStatus] = useState(null);
+  const [geminiStatus, setGeminiStatus] = useState(null);
   const settingsApi = typeof window !== 'undefined' ? window.docPilotSettings : null;
 
   useEffect(() => {
-    if (!settingsApi?.getOpenAiStatus) return;
-    settingsApi.getOpenAiStatus().then(setOpenAiStatus).catch(() => setOpenAiStatus(null));
+    if (!settingsApi?.getGeminiStatus) return;
+    settingsApi.getGeminiStatus().then(setGeminiStatus).catch(() => setGeminiStatus(null));
   }, [settingsApi]);
 
   const getCardActionProps = (index) => {
@@ -44,13 +44,13 @@ function AssistantPanel({
         <div className="assistant-head">
           <div className="assistant-head-row">
             <h2>DocPilot AI</h2>
-            {settingsApi ? <button className="openai-settings-button" type="button" onClick={() => setSettingsOpen(true)}>OpenAI 설정</button> : null}
+            {settingsApi ? <button className="gemini-settings-button" type="button" onClick={() => setSettingsOpen(true)}>Gemini 설정</button> : null}
           </div>
-          <p>{documentName ? `${documentName} 문서가 열려 있습니다. 일반 질문부터 시작할 수 있습니다.` : '문서를 선택하거나 일반 질문을 입력하세요.'}</p>
+          <p>{documentName ? `${documentName} 문서가 열려 있습니다. 문서 작업 요청만 입력할 수 있습니다.` : '문서를 선택한 뒤 문서 작업 요청을 입력하세요.'}</p>
         </div>
-        {settingsApi && openAiStatus && !openAiStatus.hasApiKey ? (
-          <div className="openai-missing-banner" role="status">
-            <span>OpenAI API Key가 설정되지 않았습니다.</span>
+        {settingsApi && geminiStatus && !geminiStatus.hasApiKey ? (
+          <div className="gemini-missing-banner" role="status">
+            <span>Gemini API Key가 설정되지 않았습니다.</span>
             <button type="button" onClick={() => setSettingsOpen(true)}>설정하기</button>
           </div>
         ) : null}
@@ -86,12 +86,12 @@ function AssistantPanel({
           {loading ? <div className="chat-row assistant"><div className="chat-bubble chat-loading">답변을 작성 중입니다...</div></div> : null}
         </div>
         {error ? <div className="chat-error" role="alert">{error}</div> : null}
-        <ChatInput onSendMessage={onSendMessage} loading={loading} />
+        <ChatInput onSendMessage={onSendMessage} loading={loading} disabled={!selectedFile} />
       </section>
-      <OpenAiSettingsModal
+      <GeminiSettingsModal
         isOpen={settingsOpen}
-        status={openAiStatus}
-        onSaved={setOpenAiStatus}
+        status={geminiStatus}
+        onSaved={setGeminiStatus}
         onClose={() => setSettingsOpen(false)}
       />
     </aside>

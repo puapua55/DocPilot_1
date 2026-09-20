@@ -6,8 +6,8 @@
 
 - Spring Boot backend와 JRE를 포함하지 않습니다.
 - localhost:8080 포트를 사용하지 않으며 `/api/health`도 확인하지 않습니다.
-- AI 요청은 Electron main process가 OpenAI Responses API로 전송합니다.
-- API Key와 모델명은 OpenAI 설정 화면을 통해 Electron `userData/settings.json`에 저장됩니다.
+- AI 요청은 Electron main process가 Gemini `generateContent` API로 전송합니다.
+- API Key와 모델명은 Gemini 설정 화면을 통해 Electron `userData/settings.json`에 저장됩니다.
 
 ```bash
 cd frontend

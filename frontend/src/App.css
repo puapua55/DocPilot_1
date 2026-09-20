@@ -1127,6 +1127,10 @@ button:disabled {
   border-radius: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #f5f8ff 100%);
   border: 1px solid #d8e4ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 
 .feature-card-actionable {
