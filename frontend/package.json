@@ -16,7 +16,6 @@
     "electron:build:unpacked": "npm run build && electron-builder --win --x64 --dir",
     "electron:zip:unpacked": "npm run electron:build:unpacked && node scripts/zip-win-unpacked.js",
     "electron:build:zip": "npm run electron:zip:unpacked",
-    "electron:build:with-backend": "node scripts/check-portable-prereqs.js && npm run build && electron-builder --config electron-builder.with-backend.yml --win portable --x64",
     "test:e2e": "playwright test",
     "test:e2e:docx": "playwright test tests/docx-convert.spec.js",
     "test:e2e:chat-doc": "playwright test tests/ai-document-chat.spec.js",

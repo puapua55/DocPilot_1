@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './GeminiSettingsModal.css';
 
 const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
@@ -8,6 +8,7 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const apiKeyInputRef = useRef(null);
   const settingsApi = typeof window !== 'undefined' ? window.docPilotSettings : null;
 
   useEffect(() => {
@@ -18,12 +19,28 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
     setError('');
   }, [isOpen, status]);
 
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') onClose?.();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    apiKeyInputRef.current?.focus();
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const handleSave = async (event) => {
     event.preventDefault();
     setMessage('');
     setError('');
+    if (!settingsApi?.saveGeminiSettings) {
+      setError('API Key 등록은 DocPilot 데스크톱 앱에서 사용할 수 있습니다.');
+      return;
+    }
     try {
       const nextStatus = await settingsApi.saveGeminiSettings({
         geminiApiKey: apiKey,
@@ -40,6 +57,10 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
   const handleClear = async () => {
     setMessage('');
     setError('');
+    if (!settingsApi?.clearGeminiSettings) {
+      setError('API Key 초기화는 DocPilot 데스크톱 앱에서 사용할 수 있습니다.');
+      return;
+    }
     try {
       const nextStatus = await settingsApi.clearGeminiSettings();
       setApiKey('');
@@ -71,6 +92,7 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
             <span>API Key</span>
             <input
               type="password"
+              ref={apiKeyInputRef}
               value={apiKey}
               placeholder={status?.hasApiKey ? '기존 Key를 변경할 때만 입력' : 'AIza...'}
               autoComplete="off"
@@ -90,7 +112,7 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
           {message ? <p className="settings-success" role="status">{message}</p> : null}
           {error ? <p className="settings-error" role="alert">{error}</p> : null}
           <div className="settings-actions">
-            <button className="settings-secondary-button" type="button" onClick={handleClear}>초기화</button>
+            <button className="settings-secondary-button" type="button" onClick={handleClear} disabled={!status?.hasApiKey}>초기화</button>
             <div className="settings-actions-right">
               <button className="settings-secondary-button" type="button" onClick={onClose}>닫기</button>
               <button className="settings-primary-button" type="submit">저장</button>

@@ -46,3 +46,13 @@
 .settings-secondary-button { border: 1px solid #cbd8f4; background: #fff; color: #43517a; }
 .settings-primary-button:hover { background: #3e68dd; }
 .settings-secondary-button:hover { background: #f3f6ff; }
+.settings-primary-button:focus-visible,
+.settings-secondary-button:focus-visible,
+.settings-close-button:focus-visible {
+  outline: 3px solid rgba(78, 124, 255, 0.32);
+  outline-offset: 2px;
+}
+.settings-secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

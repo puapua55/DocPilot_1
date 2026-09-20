@@ -44,7 +44,7 @@ function AssistantPanel({
         <div className="assistant-head">
           <div className="assistant-head-row">
             <h2>DocPilot AI</h2>
-            {settingsApi ? <button className="gemini-settings-button" type="button" onClick={() => setSettingsOpen(true)}>Gemini 설정</button> : null}
+            <button className="gemini-settings-button" type="button" onClick={() => setSettingsOpen(true)}>Gemini 설정</button>
           </div>
           <p>{documentName ? `${documentName} 문서가 열려 있습니다. 문서 작업 요청만 입력할 수 있습니다.` : '문서를 선택한 뒤 문서 작업 요청을 입력하세요.'}</p>
         </div>
