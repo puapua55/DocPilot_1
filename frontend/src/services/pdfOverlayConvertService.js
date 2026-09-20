@@ -1,6 +1,6 @@
 import fontkit from '@pdf-lib/fontkit';
 import { PDFDocument, degrees, rgb } from 'pdf-lib';
-import { moveTextWithOriginalFont } from './pdfDirectTextEdit.js';
+import { moveTextWithOriginalFont, removeSimpleMovedText, replacePdfTextInContentStream } from './pdfDirectTextEdit.js';
 
 const FONT_URL = '/fonts/NotoSansKR-Regular.base64.txt';
 const TEXT_BASELINE_RATIO = 0.84;
@@ -25,9 +25,71 @@ function parseCssColor(value, fallback = [0, 0, 0]) {
   return channels.map((channel) => Math.min(255, Math.max(0, channel)));
 }
 
+function parseHighlightPaint(value) {
+  const channels = String(value || '').match(/[\d.]+/g)?.map(Number) || [255, 235, 59, 0.35];
+  const rgbChannels = channels.slice(0, 3).map((channel) => channel > 1 ? channel / 255 : channel);
+  return {
+    color: rgb(rgbChannels[0], rgbChannels[1], rgbChannels[2]),
+    opacity: channels.length >= 4 ? Math.min(1, Math.max(0, channels[3])) : 0.35
+  };
+}
+
+function measurePdfText(font, text, size) {
+  try {
+    const width = font?.widthOfTextAtSize?.(text, size);
+    return Number.isFinite(width) ? width : null;
+  } catch {
+    return null;
+  }
+}
+
+function glyphPathToSvg(path) {
+  const number = (value) => Number(value.toFixed(3));
+  return path.commands.map(({ command, args }) => {
+    if (command === 'moveTo') return `M ${number(args[0])} ${number(-args[1])}`;
+    if (command === 'lineTo') return `L ${number(args[0])} ${number(-args[1])}`;
+    if (command === 'quadraticCurveTo') return `Q ${number(args[0])} ${number(-args[1])} ${number(args[2])} ${number(-args[3])}`;
+    if (command === 'bezierCurveTo') return `C ${number(args[0])} ${number(-args[1])} ${number(args[2])} ${number(-args[3])} ${number(args[4])} ${number(-args[5])}`;
+    return command === 'closePath' ? 'Z' : '';
+  }).join(' ');
+}
+
+function drawFallbackTextOutlines(page, font, text, mapped, color, bold = false) {
+  if (!font || !text) return;
+  const scale = mapped.fontSize / font.unitsPerEm;
+  if (!Number.isFinite(scale) || scale <= 0) return;
+  const layout = font.layout(text);
+  let cursorX = mapped.textX;
+  let cursorY = mapped.textY;
+  layout.glyphs.forEach((glyph, index) => {
+    const position = layout.positions[index];
+    const path = glyphPathToSvg(glyph.path);
+    if (path) {
+      const draw = (offset = 0) => page.drawSvgPath(path, {
+        x: cursorX + position.xOffset * scale + offset,
+        y: cursorY + position.yOffset * scale,
+        scale,
+        color,
+        rotate: getTextRotation(mapped.rotation)
+      });
+      draw();
+      // The fallback font is intentionally regular. A small second glyph pass
+      // gives the exported text a deterministic bold appearance without
+      // changing the source PDF font resource.
+      if (bold) draw(Math.max(0.25, mapped.fontSize * 0.025));
+    }
+    cursorX += position.xAdvance * scale;
+    cursorY += position.yAdvance * scale;
+  });
+}
+
 function collectMovableTextReplacements(movableTexts = []) {
   return movableTexts
-    .map((item) => ({ item, text: String(item?.text || '').trim() }))
+    // An instant replacement has already been written to the reloaded PDF.
+    // Keep its selected editor region out of later saves until the user moves
+    // it or changes its text/style.
+    .filter((item) => !item?.persistedToPdf || item?.hasChanges)
+    .map((item) => ({ item, text: String(item?.displayText ?? item?.text ?? '').trim() }))
     .filter(({ item, text }) => (
       Number.isInteger(Number(item?.pageNumber)) && Number(item.pageNumber) > 0
       && Number.isFinite(Number(item?.sourcePageWidth)) && Number(item.sourcePageWidth) > 0
@@ -45,6 +107,16 @@ function collectMovableTextReplacements(movableTexts = []) {
     .map(({ item, text }) => ({
       id: item.id,
       sourceSelection: item.sourceSelection,
+      sourceText: String(item.sourceSelection?.selectedText || item.sourceText || item.originalText || item.originalUnicodeText || text).trim(),
+      originalText: String(item.sourceSelection?.selectedText || item.originalText || item.sourceText || item.originalUnicodeText || text).trim(),
+      // All UI movable objects originate in PDF.js Unicode selection text.
+      // Keep direct source-font replay out of the deletion plan even for
+      // objects created before the explicit flag was introduced.
+      forceUnicodeFallback: true,
+      sourceFont: item.sourceFont || null,
+      originalGlyphText: item.originalGlyphText || item.sourceFont?.glyphText || null,
+      originalEncodedText: item.originalEncodedText || null,
+      fontAnalysis: item.fontAnalysis || null,
       pageNumber: Number(item.pageNumber),
       sourcePageWidth: Number(item.sourcePageWidth),
       sourcePageHeight: Number(item.sourcePageHeight),
@@ -54,9 +126,19 @@ function collectMovableTextReplacements(movableTexts = []) {
       coverHeight: Number(item.originalRect.height),
       textX: Number(item.currentRect.x),
       textY: Number(item.currentRect.y),
-      baseline: Number(item.currentRect.y) + Number(item.fontSize) * TEXT_BASELINE_RATIO,
+      baseline: Number(item.currentRect.y) + (
+        Number.isFinite(Number(item.baselineOffset))
+          ? Number(item.baselineOffset)
+          : Number(item.fontSize) * TEXT_BASELINE_RATIO
+      ),
+      baselineOffset: Number.isFinite(Number(item.baselineOffset))
+        ? Number(item.baselineOffset) : Number(item.fontSize) * TEXT_BASELINE_RATIO,
       fontSize: Number(item.fontSize),
+      displayText: text,
       text,
+      fontWeight: item.fontWeight || 'normal',
+      fontStyle: item.fontStyle || 'normal',
+      textDecoration: item.textDecoration || 'none',
       backgroundColor: parseCssColor(item.backgroundColor, [255, 255, 255]),
       textColor: parseCssColor(item.color, [17, 17, 17]),
       type: 'movable-text',
@@ -114,18 +196,18 @@ function sampleCanvasColors(pageElement, replacement) {
   }
 
   const backgroundColor = findDominantColor(pixels);
-  const textColor = backgroundColor ? findDominantColor(pixels, backgroundColor) : null;
-  const brightness = (color) => color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
-  // White page pixels bordering a yellow highlight are background, not ink.
-  const ink = textColor && brightness(textColor) < 220 ? textColor : replacement.textColor;
+  // Anti-aliased glyph-edge pixels are not a reliable text-color source:
+  // their gray value changes with the selected character's position. The
+  // content-stream analyzer supplies the original fill when available; keep
+  // the preview's declared text color otherwise.
   return {
     ...replacement,
     backgroundColor: backgroundColor || replacement.backgroundColor,
-    textColor: ink
+    textColor: replacement.textColor
   };
 }
 
-function collectAppliedReplacements() {
+function collectAppliedReplacements(replaceState = {}) {
   const replacements = [];
   const pages = Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]'));
 
@@ -153,9 +235,38 @@ function collectAppliedReplacements() {
         baseline: Number(text.dataset.baseline),
         fontSize: Number.parseFloat(text.style.fontSize || textStyle.fontSize),
         text: text.textContent || '',
+        fontWeight: textStyle.fontWeight || '400',
+        fontStyle: textStyle.fontStyle || 'normal',
+        textDecoration: textStyle.textDecoration || 'none',
         backgroundColor: parseCssColor(coverStyle.backgroundColor, [255, 255, 255]),
         textColor: parseCssColor(textStyle.color, [17, 17, 17])
       };
+      const source = item.dataset.replacementSource ? JSON.parse(item.dataset.replacementSource) : {};
+      Object.assign(replacement, {
+        id: source.id,
+        type: 'pdf',
+        keyword: source.keyword || replaceState.originalText,
+        lineNumber: Number(source.lineNumber),
+        matchIndex: Number(source.matchIndex),
+        originalText: source.originalText || replaceState.originalText,
+        replacementText: source.replacementText || replacement.text,
+        newText: replaceState.newText,
+        sourceText: source.sourceText || source.keyword || replaceState.originalText,
+        sourceFullText: source.sourceFullText || source.fullText || source.lineText || '',
+        normalizedSourceText: String(source.sourceText || source.keyword || replaceState.originalText).replace(/\s+/g, '').trim(),
+        normalizedTargetText: String(source.replacementText || replacement.text).replace(/\s+/g, '').trim(),
+        textItemIndexes: source.textItemIndexes || [],
+        originalRect: { x: replacement.coverX, y: replacement.coverY, width: replacement.coverWidth, height: replacement.coverHeight },
+        matchRect: { x: replacement.coverX, y: replacement.coverY, width: replacement.coverWidth, height: replacement.coverHeight },
+        fullTextRect: { x: replacement.coverX, y: replacement.coverY, width: replacement.coverWidth, height: replacement.coverHeight },
+        replaceMode: 'overlay-fallback',
+        canDirectReplace: true,
+        canRewriteFullObject: true,
+        // Immediate replacement follows the movable-text Unicode insertion
+        // path so the fitted position/size is honored even when the source
+        // font resource cannot safely encode the replacement.
+        forceUnicodeFallback: true
+      });
 
       const numericValues = [
         replacement.pageNumber, replacement.sourcePageWidth, replacement.sourcePageHeight,
@@ -169,6 +280,30 @@ function collectAppliedReplacements() {
   });
 
   return replacements;
+}
+
+function collectReplacementPlanFallback(replaceState = {}) {
+  const targets = Array.isArray(replaceState?.selectedTargets)
+    ? replaceState.selectedTargets : [];
+  return targets.map((target, index) => {
+    const raw = target?.raw || target || {};
+    const sourceText = String(raw.originalText || raw.matchedText || replaceState.originalText || '').trim();
+    const sourceFullText = String(raw.sourceFullText || raw.fullText || raw.text || sourceText).trim();
+    return {
+      id: raw.id || `replacement-plan-${raw.pageNumber || raw.page || 1}-${index}`,
+      type: 'pdf',
+      pageNumber: Number(raw.pageNumber ?? raw.page ?? 1),
+      sourceText,
+      originalText: sourceText,
+      sourceFullText,
+      replacementText: String(replaceState.newText ?? ''),
+      newText: String(replaceState.newText ?? ''),
+      text: String(replaceState.newText ?? ''),
+      forceUnicodeFallback: true,
+      backgroundColor: [255, 255, 255],
+      textColor: [17, 17, 17]
+    };
+  }).filter((item) => item.pageNumber > 0 && item.sourceText && item.newText);
 }
 
 function base64ToBytes(base64) {
@@ -243,6 +378,32 @@ function mapReplacementToPage(replacement, page) {
   };
 }
 
+function mapHighlightToPage(highlight, page) {
+  const { width: pageWidth, height: pageHeight } = page.getSize();
+  const rotation = normalizeRotation(page.getRotation()?.angle);
+  const display = getDisplaySize(pageWidth, pageHeight, rotation);
+  const scaleX = display.width / Math.max(Number(highlight.sourcePageWidth) || 1, 1);
+  const scaleY = display.height / Math.max(Number(highlight.sourcePageHeight) || 1, 1);
+  const left = Number(highlight.left) * scaleX;
+  const top = Number(highlight.top) * scaleY;
+  const right = (Number(highlight.left) + Number(highlight.width)) * scaleX;
+  const bottom = (Number(highlight.top) + Number(highlight.height)) * scaleY;
+  const corners = [
+    displayPointToPdf(left, top, pageWidth, pageHeight, rotation),
+    displayPointToPdf(right, top, pageWidth, pageHeight, rotation),
+    displayPointToPdf(left, bottom, pageWidth, pageHeight, rotation),
+    displayPointToPdf(right, bottom, pageWidth, pageHeight, rotation)
+  ];
+  const x = Math.min(...corners.map((point) => point.x));
+  const y = Math.min(...corners.map((point) => point.y));
+  return {
+    x: round(x),
+    y: round(y),
+    width: round(Math.max(...corners.map((point) => point.x)) - x),
+    height: round(Math.max(...corners.map((point) => point.y)) - y)
+  };
+}
+
 function getTextRotation(rotation) {
   if (rotation === 90) return degrees(90);
   if (rotation === 180) return degrees(180);
@@ -269,62 +430,119 @@ export function makeOverlayConvertedFileName(fileName = 'document.pdf') {
   return `${fileName.replace(/\.pdf$/i, '')}_overlay_converted.pdf`;
 }
 
-export async function convertPdfWithOriginalOverlay({ file, movableTexts = [] }) {
+export async function convertPdfWithOriginalOverlay({ file, replacement = {}, movableTexts = [], highlights = [], download = true }) {
   const { isPdfFile } = await import('../utils/fileUtils.js');
   if (!file || !isPdfFile(file)) throw new Error('먼저 PDF 파일을 선택해주세요.');
 
   await new Promise((resolve) => window.requestAnimationFrame(resolve));
-  const replacements = [
-    ...collectAppliedReplacements(),
+  let replacements = [
+    ...collectAppliedReplacements(replacement),
     ...collectMovableTextReplacements(movableTexts)
   ];
-  if (!replacements.length) throw new Error('먼저 텍스트 교체 또는 이동을 화면에 적용해주세요.');
+  if (!replacements.length) replacements = collectReplacementPlanFallback(replacement);
+  if (!replacements.length && !highlights.length) throw new Error('먼저 텍스트 교체, 이동 또는 하이라이트를 화면에 적용해주세요.');
 
   const sourceBytes = await file.arrayBuffer();
-  const { outputBytes, ...report } = await buildPdfWithTextEdits({ sourceBytes, replacements });
+  const { outputBytes, ...report } = await buildPdfWithTextEdits({ sourceBytes, replacements, highlights });
   const outputFileName = makeOverlayConvertedFileName(file.name);
-  downloadPdf(outputBytes, outputFileName);
-  return { ...report, outputFileName, fileName: outputFileName };
+  if (download) downloadPdf(outputBytes, outputFileName);
+  return { ...report, outputFileName, fileName: outputFileName, outputBytes: download ? undefined : outputBytes };
 }
 
 // Keep byte generation separate from browser download so saved content can be
 // reopened and verified independently of the editor DOM.
-export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacements: input }) {
+export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacements: input = [], highlights: inputHighlights = [] }) {
   const replacements = input.map((item) => ({ ...item, canDirectEdit: false }));
+  const highlights = inputHighlights.filter((item) => (
+    Number.isFinite(Number(item?.pageNumber)) && Number(item.pageNumber) > 0
+    && Number.isFinite(Number(item?.sourcePageWidth)) && Number(item.sourcePageWidth) > 0
+    && Number.isFinite(Number(item?.sourcePageHeight)) && Number(item.sourcePageHeight) > 0
+    && Number.isFinite(Number(item?.left)) && Number.isFinite(Number(item?.top))
+    && Number.isFinite(Number(item?.width)) && Number(item.width) > 0
+    && Number.isFinite(Number(item?.height)) && Number(item.height) > 0
+  ));
   const pdfDocument = await PDFDocument.load(sourceBytes);
   const pages = pdfDocument.getPages();
   if (replacements.some((item) => !Number.isInteger(item.pageNumber) || !pages[item.pageNumber - 1])) {
     throw new Error('편집 대상 PDF 페이지를 찾을 수 없습니다.');
   }
-  const removalResults = moveTextWithOriginalFont(pdfDocument, replacements);
-  removalResults.forEach((outcome, replacement) => {
-    replacement.canDirectEdit = outcome.direct;
-    replacement.fallbackReason = outcome.reason;
-    replacement.fontPreserved = outcome.fontPreserved === true;
-    replacement.sourceFont = outcome.sourceFont;
-    replacement.drawingCommands = outcome.drawingCommands;
-  });
   let replacementFont;
-  if (replacements.some((item) => !item.fontPreserved)) {
+  let replacementOutlineFont;
+  // Replacement text is always embedded before the direct planner runs. The
+  // planner may still decline the operation and leave the item for overlay.
+  if (replacements.some((item) => item.type === 'pdf' || !item.fontPreserved)) {
+  const fallbackFontBytes = fontBytes || await loadReplacementFont();
   pdfDocument.registerFontkit({
     create: (bytes) => {
       const font = fontkit.create(bytes);
-      // The bundled "Regular" file is variable and defaults to Thin (100).
-      // Use regular weight when generating the static subset for exported text.
       return font.variationAxes?.wght ? font.getVariation({ wght: 400 }) : font;
     }
   });
-  // Embed the glyphs actually used by shaping. With the bundled variable font,
-  // the full-font Unicode map can map a Korean-context space to another glyph.
-    replacementFont = await pdfDocument.embedFont(fontBytes || await loadReplacementFont(), { subset: true });
+    replacementFont = await pdfDocument.embedFont(fallbackFontBytes, { subset: true });
+    const fallbackFont = fontkit.create(fallbackFontBytes);
+    replacementOutlineFont = fallbackFont.variationAxes?.wght
+      ? fallbackFont.getVariation({ wght: 400 }) : fallbackFont;
   }
-
+  const directReplacementResults = replacePdfTextInContentStream(
+    pdfDocument, replacements.filter((item) => item.type === 'pdf'), replacementFont, replacementOutlineFont
+  );
+  directReplacementResults.forEach((outcome, replacement) => {
+    replacement.canDirectEdit = outcome.direct === true;
+    replacement.directReplacement = outcome.directReplacement === true;
+    replacement.replaceMode = outcome.replaceMode || (outcome.direct ? 'direct-replace' : 'overlay-fallback');
+    replacement.canDirectReplace = outcome.direct === true && outcome.replaceMode === 'direct-replace';
+    replacement.canRewriteFullObject = outcome.direct === true && outcome.replaceMode === 'full-object-rewrite';
+    replacement.fallbackReason = outcome.reason;
+    replacement.commandRange = outcome.commandRange || null;
+    replacement.deletedCommandCount = outcome.deletedCommandCount || 0;
+    replacement.fontPreserved = outcome.fontPreserved === true;
+    replacement.canReuseOriginalFont = outcome.canReuseOriginalFont === true;
+    replacement.drawingCommands = outcome.drawingCommands;
+    if (Array.isArray(outcome.textColor) && outcome.textColor.length >= 3) replacement.textColor = outcome.textColor;
+    replacement.sourceFullText = outcome.sourceFullText || replacement.sourceFullText;
+    replacement.newFullText = outcome.newFullText || null;
+    replacement.text = outcome.newFullText || replacement.text;
+  });
+  // UI-selected moves always use Unicode fallback for the new text, but can
+  // still safely remove the matched original content command. This avoids a
+  // white cover rectangle at the source position whenever evidence is exact.
+  const unicodeMoves = replacements.filter((item) => item.type === 'movable-text' && item.forceUnicodeFallback === true);
+  const unicodeRemovalResults = removeSimpleMovedText(pdfDocument, unicodeMoves);
+  const reusableMoves = replacements.filter((item) => !unicodeMoves.includes(item));
+  const reuseResults = moveTextWithOriginalFont(pdfDocument, reusableMoves);
+  const removalResults = new Map([...unicodeRemovalResults, ...reuseResults]);
+  removalResults.forEach((outcome, replacement) => {
+    replacement.canDirectEdit = outcome.direct;
+    replacement.directRemoval = outcome.directRemoval === true;
+    replacement.deleteMode = outcome.deleteMode || null;
+    replacement.deletedCommandCount = outcome.deletedCommandCount || 0;
+    replacement.commandRange = outcome.commandRange || null;
+    replacement.fallbackReason = outcome.reason;
+    replacement.fontPreserved = outcome.fontPreserved === true;
+    replacement.sourceFont = outcome.sourceFont;
+    replacement.canReuseOriginalFont = outcome.canReuseOriginalFont === true;
+    replacement.drawingCommands = outcome.drawingCommands;
+  });
+  // Draw viewer highlights after the original page content has been loaded,
+  // but before replacement covers/text, so highlights stay behind edited text.
+  highlights.forEach((highlight) => {
+    const page = pages[Number(highlight.pageNumber) - 1];
+    if (!page) return;
+    const mapped = mapHighlightToPage(highlight, page);
+    const paint = parseHighlightPaint(highlight.color);
+    page.drawRectangle({ ...mapped, color: paint.color, opacity: paint.opacity });
+  });
   replacements.forEach((replacement) => {
     const page = pages[replacement.pageNumber - 1];
     if (!page) return;
     const mapped = mapReplacementToPage(replacement, page);
 
-    if (!replacement.canDirectEdit) page.drawRectangle({
+    // Experimental no-cover mode for text movement: even when source
+    // command matching fails, do not paint a background rectangle. The new
+    // text is still inserted below; the report exposes unresolved items so
+    // callers can detect that the original may remain in the PDF.
+    if (!replacement.canDirectEdit && replacement.type !== 'movable-text'
+      && Number(replacement.coverWidth) > 0 && Number(replacement.coverHeight) > 0) page.drawRectangle({
       x: mapped.rectX,
       y: mapped.rectY,
       width: mapped.rectWidth,
@@ -338,21 +556,47 @@ export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacemen
   replacements.forEach((replacement) => {
     const page = pages[replacement.pageNumber - 1];
     if (!page) return;
-    if (replacement.fontPreserved) return;
+    if (replacement.fontPreserved || replacement.directReplacement || replacement.replaceMode === 'full-object-rewrite') return;
     const mapped = mapReplacementToPage(replacement, page);
+    if (![mapped.textX, mapped.textY, mapped.fontSize].every(Number.isFinite)) return;
+    const measuredWidth = measurePdfText(replacementFont, replacement.text, mapped.fontSize);
+    const textColor = toPdfColor(replacement.textColor);
+    const isItalic = replacement.fontStyle === 'italic';
     page.drawText(replacement.text, {
       x: mapped.textX,
       y: mapped.textY,
       size: mapped.fontSize,
       font: replacementFont,
-      color: toPdfColor(replacement.textColor),
-      rotate: getTextRotation(mapped.rotation)
+      color: textColor,
+      rotate: getTextRotation(mapped.rotation),
+      xSkew: isItalic ? degrees(-12) : degrees(0)
     });
+    // Keep the selectable Unicode text above, then add deterministic glyph
+    // outlines. Some external viewers retain ToUnicode but render a variable
+    // font subset with blank glyphs; these paths remain visible regardless of
+    // that font mapping.
+    drawFallbackTextOutlines(page, replacementOutlineFont, replacement.text, mapped, textColor,
+      replacement.fontWeight === 'bold');
+    if (replacement.textDecoration === 'underline' || replacement.textDecoration === 'line-through') {
+      const lineWidth = Math.max(1, mapped.fontSize * 0.06);
+      const lineY = replacement.textDecoration === 'underline'
+        ? mapped.textY - mapped.fontSize * 0.1
+        : mapped.textY + mapped.fontSize * 0.35;
+      page.drawLine({
+        start: { x: mapped.textX, y: lineY },
+        end: { x: mapped.textX + (measuredWidth || mapped.rectWidth), y: lineY },
+        thickness: lineWidth,
+        color: textColor,
+        rotate: getTextRotation(mapped.rotation)
+      });
+    }
+    replacement.measuredWidth = measuredWidth;
+    replacement.usedMaxWidth = false;
   });
 
   // Replay the original font and encoded glyphs after all fallback covers.
   // Normalization isolates the original page graphics state with q/Q.
-  replacements.filter((item) => item.fontPreserved).forEach((item) => {
+  replacements.filter((item) => item.fontPreserved && item.drawingCommands).forEach((item) => {
     const page = pages[item.pageNumber - 1];
     page.node.normalize();
     const stream = pdfDocument.context.flateStream(Uint8Array.from(item.drawingCommands, (char) => char.charCodeAt(0)));
@@ -360,6 +604,14 @@ export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacemen
   });
 
   const outputBytes = await pdfDocument.save({ useObjectStreams: true });
+  const movableResults = replacements.filter((item) => item.type === 'movable-text');
+  const pdfReplacementResults = replacements.filter((item) => item.type === 'pdf');
+  const fallbackReasons = [...new Map(movableResults
+    .filter((item) => !item.fontPreserved && item.fallbackReason)
+    .map((item) => [item.fallbackReason, 0]))].map(([reason]) => ({
+      reason,
+      count: movableResults.filter((item) => !item.fontPreserved && item.fallbackReason === reason).length
+    }));
 
   return {
     success: true,
@@ -367,14 +619,83 @@ export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacemen
     replaceCount: replacements.length,
     pages: pages.length,
     method: 'original-pdf-hybrid-text-edit',
-    movableTextCount: replacements.filter((item) => item.type === 'movable-text').length,
+    movableTextCount: movableResults.length,
+    highlightCount: highlights.length,
+    pagePlanCount: new Set(movableResults.map((item) => item.pageNumber)).size,
     directEditCount: replacements.filter((item) => item.canDirectEdit === true).length,
+    pdfDirectReplaceCount: pdfReplacementResults.filter((item) => item.replaceMode === 'direct-replace').length,
+    pdfFullObjectRewriteCount: pdfReplacementResults.filter((item) => item.replaceMode === 'full-object-rewrite').length,
+    pdfOriginalFontReuseCount: pdfReplacementResults.filter((item) => item.canReuseOriginalFont === true).length,
+    pdfOverlayFallbackCount: pdfReplacementResults.filter((item) => item.canDirectEdit !== true).length,
+    replacementResults: pdfReplacementResults.map((item) => ({
+      id: item.id, pageNumber: item.pageNumber, replaceMode: item.replaceMode,
+      canDirectReplace: item.canDirectReplace === true,
+      canRewriteFullObject: item.canRewriteFullObject === true,
+      canReuseOriginalFont: item.canReuseOriginalFont === true,
+      fontPreserved: item.fontPreserved === true,
+      fallbackReason: item.fallbackReason || null,
+      sourceFullText: item.sourceFullText || null,
+      newFullText: item.newFullText || null
+    })),
+    directDeleteCount: movableResults.filter((item) => item.directRemoval === true).length,
+    partialDeleteCount: movableResults.filter((item) => item.deleteMode === 'partial-string').length,
+    fullObjectDeleteCount: movableResults.filter((item) => item.deleteMode === 'full-object').length,
+    rangeDeleteCount: movableResults.filter((item) => item.deleteMode === 'range-group').length,
+    directMovedCount: movableResults.filter((item) => item.canDirectEdit === true).length,
     fontPreservedCount: replacements.filter((item) => item.fontPreserved).length,
-    fallbackCount: replacements.filter((item) => item.type === 'movable-text' && item.canDirectEdit !== true).length,
-    textMoveResults: replacements.filter((item) => item.type === 'movable-text').map((item) => ({
+    originalFontReuseCount: movableResults.filter((item) => item.fontPreserved).length,
+    // A Unicode fallback font at the new location is not an overlay fallback
+    // at the source. Only a failed content-stream deletion needs a cover.
+    fallbackCount: replacements.filter((item) => item.type !== 'movable-text' && item.canDirectEdit !== true).length,
+    fallbackOverlayCount: replacements.filter((item) => item.type !== 'movable-text' && item.canDirectEdit !== true).length,
+    noCoverUnresolvedCount: movableResults.filter((item) => item.canDirectEdit !== true).length,
+    failedCount: 0,
+    fallbackReasons,
+    textMoveResults: movableResults.map((item) => ({
       id: item.id, pageNumber: item.pageNumber,
-      method: item.canDirectEdit ? 'direct' : 'overlay', reason: item.fallbackReason,
-      fontPreserved: item.fontPreserved === true, sourceFont: item.sourceFont || null
+      method: item.fontPreserved ? 'direct' : item.canDirectEdit ? 'direct-remove-overlay' : 'no-cover-fallback', reason: item.fallbackReason,
+      fontPreserved: item.fontPreserved === true,
+      directRemoval: item.directRemoval === true,
+      directDeleteAttempted: item.type === 'movable-text',
+      directDeleteSucceeded: item.directRemoval === true,
+      deletedText: item.directRemoval ? item.text : null,
+      deleteMode: item.deleteMode || 'fallback',
+      deletedCommandCount: item.deletedCommandCount || 0,
+      matchedCommandCount: item.deletedCommandCount || 0,
+      commandRange: item.commandRange || null,
+      shouldApplyCover: false,
+      canReuseOriginalFont: item.canReuseOriginalFont === true,
+      sourceFont: item.sourceFont || null,
+      displayText: item.displayText || item.text,
+      originalGlyphText: item.originalGlyphText || item.sourceFont?.glyphText || null,
+      drawnText: item.text,
+      drawnTextLength: [...String(item.text || '')].length,
+      measuredWidth: item.measuredWidth ?? null,
+      movedRectWidth: Number(item.currentRect?.width || item.originalRect?.width || 0),
+      usedMaxWidth: item.usedMaxWidth === true,
+      fallbackUsed: item.canDirectEdit !== true,
+      unicodeTextFallback: item.fontPreserved !== true
+    })),
+    directDeleteResults: movableResults.filter((item) => item.directRemoval).map((item) => ({
+      objectId: item.id,
+      displayText: item.displayText || item.text,
+      pageNumber: item.pageNumber,
+      directDeleteAttempted: true,
+      directDeleteSucceeded: true,
+      deleteMode: item.deleteMode,
+      deletedCommandCount: item.deletedCommandCount || 0,
+      matchedCommandCount: item.deletedCommandCount || 0,
+      commandRange: item.commandRange || null,
+      shouldApplyCover: false
+    })),
+    fallbackResults: movableResults.filter((item) => !item.directRemoval).map((item) => ({
+      objectId: item.id,
+      displayText: item.displayText || item.text,
+      pageNumber: item.pageNumber,
+      fallbackReason: item.fallbackReason,
+      matchedCommandCount: item.deletedCommandCount || 0,
+      commandRange: item.commandRange || null,
+      shouldApplyCover: false
     }))
   };
 }

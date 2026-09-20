@@ -56,6 +56,112 @@ function formatPdfPagesText(pages) {
     .trim();
 }
 
+function normalizeMovableMatchText(value) {
+  return String(value || '').replace(/\s+/g, '').trim().toLowerCase();
+}
+
+function filterMovedSourceSearchResults(results, movableTexts) {
+  const hidden = movableTexts
+    .map((item) => ({
+      pageNumber: Number(item.pageNumber),
+      text: normalizeMovableMatchText(item.sourceSelection?.selectedText || item.sourceText || item.originalText)
+    }))
+    .filter((item) => item.pageNumber > 0 && item.text);
+  const consumed = new Set();
+  return results.filter((result) => {
+    const pageNumber = Number(result.pageNumber ?? result.page);
+    const fullText = normalizeMovableMatchText(result.fullText || result.lineText || result.text);
+    const keyword = normalizeMovableMatchText(result.keyword);
+    const index = hidden.findIndex((item, hiddenIndex) => (
+      !consumed.has(hiddenIndex) && item.pageNumber === pageNumber
+        && item.text.includes(keyword)
+        && fullText.includes(item.text)
+    ));
+    if (index < 0) return true;
+    consumed.add(index);
+    return false;
+  });
+}
+
+function collectInstantReplacementReviewItems(viewScale = 1) {
+  const scale = Number.isFinite(Number(viewScale)) && Number(viewScale) > 0 ? Number(viewScale) : 1;
+  return Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
+    const pageNumber = Number(pageElement.dataset.pageNumber);
+    const pageRect = pageElement.getBoundingClientRect();
+    const sourcePageWidth = (pageElement.clientWidth || pageRect.width) / scale;
+    const sourcePageHeight = (pageElement.clientHeight || pageRect.height) / scale;
+    return Array.from(pageElement.querySelectorAll('.replacement-layer > div')).map((element, index) => {
+      const cover = element.querySelector('.replacement-cover');
+      const textElement = element.querySelector('.replacement-text');
+      if (!cover || !textElement) return null;
+      let source = {};
+      try { source = JSON.parse(element.dataset.replacementSource || '{}'); } catch { source = {}; }
+      const coverStyle = window.getComputedStyle(cover);
+      const textStyle = window.getComputedStyle(textElement);
+      const textRect = textElement.getBoundingClientRect();
+      const originalRect = {
+        x: Number.parseFloat(cover.style.left || coverStyle.left) / scale,
+        y: Number.parseFloat(cover.style.top || coverStyle.top) / scale,
+        width: Number.parseFloat(cover.style.width || coverStyle.width) / scale,
+        height: Number.parseFloat(cover.style.height || coverStyle.height) / scale
+      };
+      const textX = Number.parseFloat(textElement.style.left || textStyle.left) / scale;
+      const textY = Number.parseFloat(textElement.style.top || textStyle.top) / scale;
+      const fontSize = Number.parseFloat(textElement.style.fontSize || textStyle.fontSize) / scale;
+      const replacementText = String(textElement.textContent || '').trim();
+      if (!replacementText || ![pageNumber, sourcePageWidth, sourcePageHeight, ...Object.values(originalRect), textX, textY, fontSize].every(Number.isFinite)) return null;
+      const currentRect = {
+        x: textX,
+        y: textY,
+        width: Math.max(1, textRect.width / scale),
+        height: Math.max(originalRect.height, textRect.height / scale, fontSize)
+      };
+      return {
+        id: `instant-replace-${source.id || pageNumber}-${index}-${Date.now()}`,
+        type: 'movable-text',
+        isReplacement: true,
+        persistedToPdf: true,
+        hasChanges: false,
+        pageNumber,
+        sourcePageWidth,
+        sourcePageHeight,
+        // The old word has already been removed. If this review item changes,
+        // remove the newly saved word before writing the edited value.
+        sourceText: replacementText,
+        originalText: replacementText,
+        originalUnicodeText: replacementText,
+        sourceFullText: '',
+        originalRect,
+        currentRect,
+        movedRect: currentRect,
+        displayRect: currentRect,
+        // The saved PDF already contains the new text. A review selection
+        // must not paint a cover or a second copy over it.
+        coverRects: [],
+        displayText: replacementText,
+        text: replacementText,
+        editedText: replacementText,
+        textX,
+        textY,
+        baseline: Number.parseFloat(textElement.dataset.baseline) / scale,
+        baselineOffset: fontSize * 0.88,
+        fontSize,
+        fontFamily: textStyle.fontFamily,
+        renderFontFamily: 'DocPilotReplacement',
+        fontWeight: textStyle.fontWeight || 'normal',
+        fontStyle: textStyle.fontStyle || 'normal',
+        textDecoration: textStyle.textDecoration || 'none',
+        color: textStyle.color || '#111111',
+        backgroundColor: coverStyle.backgroundColor || '#ffffff',
+        forceUnicodeFallback: true,
+        sourceSelection: null,
+        canDirectEdit: false,
+        fallbackReason: '즉시 교체 후 검토·편집 가능한 선택 영역입니다.'
+      };
+    }).filter(Boolean);
+  });
+}
+
 const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, toolbarActions, onVisualConvert }, ref) {
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumbers, setPageNumbers] = useState([]);
@@ -77,6 +183,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [textMoveMode, setTextMoveMode] = useState(false);
   const [movableTexts, setMovableTexts] = useState([]);
   const [selectedMovableTextId, setSelectedMovableTextId] = useState(null);
+  const [editingMovableText, setEditingMovableText] = useState(null);
   const [userHighlight, setUserHighlight] = useState({
     keyword: String(highlightKeyword || ''),
     color: 'yellow',
@@ -88,9 +195,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setHistoryState({ canUndo: index > 0, canRedo: index >= 0 && index < snapshots.length - 1, canReset: index > 0 });
   };
 
-  const commitPdfChange = (highlight, replace) => {
+  const commitPdfChange = (highlight, replace, nextMovableTexts = movableTexts, selectedMovableTextId = null) => {
     const history = historyRef.current;
-    const snapshot = { highlight, replace };
+    const snapshot = { highlight, replace, movableTexts: nextMovableTexts, selectedMovableTextId };
     const current = history.snapshots[history.index];
     if (current && JSON.stringify(current) === JSON.stringify(snapshot)) return;
     historyRef.current = history.index < 0
@@ -103,6 +210,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     if (!snapshot) return false;
     setUserHighlight(snapshot.highlight);
     setAppliedReplacePreview(snapshot.replace);
+    setMovableTexts(snapshot.movableTexts || []);
+    setSelectedMovableTextId(snapshot.selectedMovableTextId || null);
+    setEditingMovableText(null);
     return true;
   };
 
@@ -133,31 +243,97 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       updateHistoryState();
       reset = true;
     }
-    if (movableTexts.length > 0) {
-      setMovableTexts([]);
-      setSelectedMovableTextId(null);
-      reset = true;
-    }
     return reset;
   };
 
   const addMovableText = (selection) => {
     const id = `movable-text-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setMovableTexts((current) => [...current, { ...selection, id }]);
+    const next = [...movableTexts, { ...selection, id }];
+    setMovableTexts(next);
     setSelectedMovableTextId(id);
+    setEditingMovableText(null);
+    commitPdfChange(userHighlight, appliedReplacePreview, next, id);
   };
 
   const moveMovableText = (id, currentRect) => {
     setMovableTexts((current) => current.map((item) => (
-      item.id === id ? { ...item, currentRect } : item
+      item.id === id
+        ? { ...item, currentRect, movedRect: currentRect, hasChanges: item.persistedToPdf ? true : item.hasChanges }
+        : item
     )));
+  };
+
+  // Pointer movement updates the preview continuously. Add exactly one history
+  // entry when the drag completes so one < press reverts one text move.
+  const finishMoveMovableText = (id, currentRect) => {
+    const next = movableTexts.map((item) => (
+      item.id === id
+        ? { ...item, currentRect, movedRect: currentRect, hasChanges: item.persistedToPdf ? true : item.hasChanges }
+        : item
+    ));
+    setMovableTexts(next);
+    commitPdfChange(userHighlight, appliedReplacePreview, next, id);
   };
 
   const selectMovableText = (id) => setSelectedMovableTextId(id);
 
+  const beginEditMovableText = (id) => {
+    const item = movableTexts.find((entry) => entry.id === id);
+    if (!item) return;
+    setSelectedMovableTextId(id);
+    setEditingMovableText({
+      id,
+      value: String(item.displayText ?? item.text ?? ''),
+      fontWeight: item.fontWeight || 'normal',
+      fontStyle: item.fontStyle || 'normal',
+      textDecoration: item.textDecoration || 'none',
+      color: item.color || '#111111'
+    });
+  };
+
+  const updateEditingMovableText = (value) => {
+    setEditingMovableText((current) => current ? { ...current, value } : current);
+  };
+
+  const updateEditingMovableTextStyle = (style) => {
+    setEditingMovableText((current) => current ? { ...current, ...style } : current);
+  };
+
+  const cancelEditMovableText = () => setEditingMovableText(null);
+
+  const commitEditMovableText = () => {
+    if (!editingMovableText) return;
+    const value = String(editingMovableText.value || '').trim();
+    const target = movableTexts.find((item) => item.id === editingMovableText.id);
+    if (!target || !value) {
+      setEditingMovableText(null);
+      return;
+    }
+    const next = movableTexts.map((item) => item.id === editingMovableText.id
+      ? {
+        ...item,
+        displayText: value,
+        text: value,
+        editedText: value,
+        hasChanges: item.persistedToPdf ? true : item.hasChanges,
+        fontWeight: editingMovableText.fontWeight || item.fontWeight || 'normal',
+        fontStyle: editingMovableText.fontStyle || item.fontStyle || 'normal',
+        textDecoration: editingMovableText.textDecoration || item.textDecoration || 'none',
+        color: editingMovableText.color || item.color || '#111111'
+      }
+      : item);
+    setMovableTexts(next);
+    setSelectedMovableTextId(editingMovableText.id);
+    setEditingMovableText(null);
+    commitPdfChange(userHighlight, appliedReplacePreview, next, editingMovableText.id);
+  };
+
   const deleteMovableText = (id) => {
-    setMovableTexts((current) => current.filter((item) => item.id !== id));
-    setSelectedMovableTextId((current) => current === id ? null : current);
+    const next = movableTexts.filter((item) => item.id !== id);
+    setMovableTexts(next);
+    setSelectedMovableTextId(null);
+    if (editingMovableText?.id === id) setEditingMovableText(null);
+    commitPdfChange(userHighlight, appliedReplacePreview, next, null);
   };
 
   const downloadAsPdf = async () => {
@@ -166,10 +342,39 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setDownloadMessage('');
     setDownloadFailed(false);
     try {
-      if (appliedReplacePreview?.originalText || movableTexts.length > 0) {
-        const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts });
+      // Review selections from an instant replacement already exist in the
+      // reloaded PDF. They are UI affordances only until edited or moved.
+      const pendingMovableTexts = movableTexts.filter((item) => !item.persistedToPdf || item.hasChanges);
+      const highlights = Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
+        const pageWidth = pageElement.clientWidth || pageElement.getBoundingClientRect().width;
+        const pageHeight = pageElement.clientHeight || pageElement.getBoundingClientRect().height;
+        const pageNumber = Number(pageElement.dataset.pageNumber);
+        return Array.from(pageElement.querySelectorAll('.highlight-box')).map((box) => ({
+          pageNumber,
+          sourcePageWidth: pageWidth,
+          sourcePageHeight: pageHeight,
+          left: Number.parseFloat(box.style.left),
+          top: Number.parseFloat(box.style.top),
+          width: Number.parseFloat(box.style.width),
+          height: Number.parseFloat(box.style.height),
+          color: window.getComputedStyle(box).backgroundColor
+        }));
+      });
+      if (appliedReplacePreview?.originalText || pendingMovableTexts.length > 0 || highlights.length > 0) {
+        const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts: pendingMovableTexts, highlights });
         if (result?.movableTextCount) {
-          setDownloadMessage(`PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 원본 글꼴 유지 ${result.fontPreservedCount}건`);
+          console.debug('[PdfJsViewer] PDF text move save results', result.textMoveResults?.map((item) => ({
+            displayText: item.displayText,
+            pageNumber: item.pageNumber,
+            directDeleteAttempted: item.directDeleteAttempted,
+            directDeleteSucceeded: item.directDeleteSucceeded,
+            deleteMode: item.deleteMode,
+            fallbackUsed: item.fallbackUsed,
+            fallbackReason: item.reason,
+            matchedCommandCount: item.matchedCommandCount,
+            commandRange: item.commandRange
+          })));
+          setDownloadMessage(`PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 직접 제거 미확인 ${result.noCoverUnresolvedCount || 0}건 · 원본 글꼴 유지 ${result.fontPreservedCount}건`);
         }
       } else {
         const url = URL.createObjectURL(file);
@@ -248,7 +453,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         page: page.pageNumber,
         lines: page.lines.map((line) => line.text)
       }));
-      return searchKeywordInDocument(documentText, keyword, options);
+      return filterMovedSourceSearchResults(
+        searchKeywordInDocument(documentText, keyword, options), movableTexts
+      );
     },
     getPdfHighlights() {
       return Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
@@ -266,6 +473,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           color: window.getComputedStyle(box).backgroundColor
         }));
       });
+    },
+    getMovableTexts() {
+      return movableTexts;
+    },
+    getInstantReplacementReviewItems() {
+      return collectInstantReplacementReviewItems(scale);
     },
     scrollToSearchResult(result) {
       return scrollToPdfSearchResult(result);
@@ -316,10 +529,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           return Number(raw.pageNumber ?? raw.page) === match.pageNumber
             && Number(raw.lineNumber ?? raw.line) === match.lineNumber
             && Number(raw.matchIndex) === match.matchIndex;
-        }))
+      }))
         : matches;
       if (results.length) {
         const nextReplace = { originalText, newText, matchMode, selectedTargets: results };
+        // Hidden pages have no DOM Range geometry. Instant replacement needs
+        // every selected page rendered so its exact glyph rectangles can be
+        // saved, even when the user was viewing one page at a time.
+        setViewMode('scroll');
         setAppliedReplacePreview(nextReplace);
         commitPdfChange(userHighlight, nextReplace);
       }
@@ -353,10 +570,21 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   }));
 
   useEffect(() => {
-    setAppliedReplacePreview(replacePreview);
+    setAppliedReplacePreview(replacePreview?.mode === 'review' ? null : replacePreview);
     setVisualConvertStatus('idle');
     setVisualConvertMessage('');
   }, [file, replacePreview]);
+
+  useEffect(() => {
+    if (replacePreview?.mode !== 'review' || !pdfDocument || !Array.isArray(replacePreview.items)) return;
+    const reviewItems = replacePreview.items.map((item) => ({ ...item, coverRects: [] }));
+    if (!reviewItems.length) return;
+    setMovableTexts(reviewItems);
+    setSelectedMovableTextId(reviewItems[0].id);
+    setEditingMovableText(null);
+    setTextMoveMode(true);
+    commitPdfChange(userHighlight, null, reviewItems, reviewItems[0].id);
+  }, [pdfDocument, replacePreview]);
 
   const handleVisualConvert = async () => {
     if ((!appliedReplacePreview?.originalText || appliedReplacePreview?.newText == null) && movableTexts.length === 0) return;
@@ -398,7 +626,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       historyRef.current = {
         snapshots: [{
           highlight: { keyword: String(highlightKeyword || ''), color: 'yellow', matchMode: 'contains' },
-          replace: replacePreview
+          replace: replacePreview?.mode === 'review' ? null : replacePreview,
+          movableTexts: [],
+          selectedMovableTextId: null
         }],
         index: 0
       };
@@ -410,6 +640,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setTextMoveMode(false);
       setMovableTexts([]);
       setSelectedMovableTextId(null);
+      setEditingMovableText(null);
       setErrorMessage('');
       setDownloadMessage('');
       setDownloadFailed(false);
@@ -568,6 +799,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             onClick={() => {
               setTextMoveMode((current) => !current);
               setSelectedMovableTextId(null);
+              setEditingMovableText(null);
             }}
             aria-pressed={textMoveMode}
             title={textMoveMode ? 'PDF 텍스트 이동을 종료합니다.' : 'PDF 본문에서 한 줄의 텍스트를 선택해 이동합니다.'}
@@ -604,9 +836,16 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 textMoveMode={textMoveMode}
                 movableTexts={movableTexts.filter((item) => item.pageNumber === pageNumber)}
                 selectedMovableTextId={selectedMovableTextId}
+                editingMovableText={editingMovableText}
                 onCreateMovableText={addMovableText}
                 onMoveMovableText={moveMovableText}
+                onMoveMovableTextEnd={finishMoveMovableText}
                 onSelectMovableText={selectMovableText}
+                onBeginEditMovableText={beginEditMovableText}
+                onChangeEditMovableText={updateEditingMovableText}
+                onChangeEditMovableTextStyle={updateEditingMovableTextStyle}
+                onCommitEditMovableText={commitEditMovableText}
+                onCancelEditMovableText={cancelEditMovableText}
                 onDeleteMovableText={deleteMovableText}
                 onPageReady={(element) => {
                   if (element) pageRefs.current[pageNumber] = element;

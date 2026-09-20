@@ -3,6 +3,7 @@ import { formatFileSize, isPdfFile } from '../utils/fileUtils';
 import PdfViewer from './PdfViewer';
 import PreviewInfoBox from './PreviewInfoBox';
 import WordViewer from './WordViewer';
+import { convertDocxFileWithHighlights } from '../services/docxHighlightService';
 import ZoomControls from './ZoomControls';
 
 const DEFAULT_SCALE = 1;
@@ -41,6 +42,12 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     },
     getPdfHighlights() {
       return viewerRef.current?.getPdfHighlights?.() ?? [];
+    },
+    getMovableTexts() {
+      return viewerRef.current?.getMovableTexts?.() ?? [];
+    },
+    getInstantReplacementReviewItems() {
+      return viewerRef.current?.getInstantReplacementReviewItems?.() ?? [];
     },
     scrollToSearchResult(result) {
       return viewerRef.current?.scrollToSearchResult?.(result) ?? false;
@@ -103,6 +110,13 @@ const DocumentViewer = forwardRef(function DocumentViewer({
 
   const downloadCurrentDocx = () => {
     if (!file) return;
+    const highlights = viewerRef.current?.getDocxHighlights?.() || [];
+    if (highlights.length > 0) {
+      convertDocxFileWithHighlights(file, highlights).catch((error) => {
+        console.error('[DocumentViewer] DOCX highlight download failed:', error);
+      });
+      return;
+    }
     const url = URL.createObjectURL(file);
     const anchor = document.createElement('a');
     anchor.href = url;

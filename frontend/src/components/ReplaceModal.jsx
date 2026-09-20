@@ -307,8 +307,8 @@ function ReplaceModal({
           </div>
 
           <div className="replace-help">
-            화면에 적용은 현재 뷰어 미리보기만 변경합니다. 실제 파일 저장은 변환 파일 다운로드를 사용하세요.
-            초기화는 입력값과 결과 목록만 비우며, 이미 화면에 적용된 임시 치환은 되돌리지 않습니다.
+            PDF의 화면에 적용은 원본 텍스트 명령을 수정한 파일을 즉시 뷰어에 다시 불러옵니다. 직접 수정할 수 없는 경우에만 fallback 방식으로 처리합니다.
+            초기화는 입력값과 결과 목록만 비우며, 이미 화면에 적용된 변경은 되돌리지 않습니다.
           </div>
 
           {(statusMessage || emptyDocumentMessage) ? <div className={`replace-status ${statusType ? `replace-status-${statusType}` : ''}`} aria-live="polite">{statusMessage || emptyDocumentMessage}</div> : null}

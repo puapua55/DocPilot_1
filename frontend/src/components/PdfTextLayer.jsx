@@ -34,7 +34,7 @@ function alignTextWidths(task, textContent, viewport, container) {
   container.style.transform = layerTransform;
 }
 
-function PdfTextLayer({ textContent, viewport, width, height, onRendered }) {
+function PdfTextLayer({ pageNumber, textContent, viewport, width, height, onRendered }) {
   const layerRef = useRef(null);
 
   useEffect(() => {
@@ -60,10 +60,16 @@ function PdfTextLayer({ textContent, viewport, width, height, onRendered }) {
       const items = textContent.items.filter((item) => typeof item.str === 'string');
       task.textDivs.forEach((span, index) => {
         const item = items[index];
-        if (item) span.dataset.pdfSource = JSON.stringify({
-          text: item.str, transform: item.transform, pdfFontName: item.fontName,
+        if (item) {
+          span.dataset.pageNumber = String(pageNumber || '');
+          span.dataset.textItemIndex = String(index);
+          span.dataset.unicodeText = item.str;
+          span.dataset.pdfSource = JSON.stringify({
+          text: item.str, unicodeText: item.str, textItemIndex: index,
+          transform: item.transform, pdfFontName: item.fontName,
           sourceFont: textContent.fontPreviews?.[index] || null
-        });
+          });
+        }
       });
       textLayer.dataset.rendered = 'true';
       onRendered?.();
@@ -78,7 +84,7 @@ function PdfTextLayer({ textContent, viewport, width, height, onRendered }) {
       task.cancel();
       textLayer.replaceChildren();
     };
-  }, [height, onRendered, textContent, viewport, width]);
+  }, [height, onRendered, pageNumber, textContent, viewport, width]);
 
   return (
     <div

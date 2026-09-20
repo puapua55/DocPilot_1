@@ -17,7 +17,10 @@ function normalizeHighlightResult(rawResult, index, keyword, color) {
     pageNumber: Number(raw.pageNumber ?? raw.page ?? 1) || 1,
     paragraphNumber: raw.paragraphNumber == null ? undefined : Number(raw.paragraphNumber),
     lineNumber: raw.lineNumber == null ? undefined : Number(raw.lineNumber),
-    text: String(raw.text ?? raw.content ?? raw.fullText ?? raw.matchedText ?? '').trim(),
+    // Search results already contain one entry per match. Display the
+    // matched token/phrase in the table instead of repeating the whole line
+    // for every match on that line, just like the replacement list.
+    text: String(raw.matchedText ?? raw.originalText ?? raw.text ?? raw.content ?? raw.fullText ?? '').trim(),
     keyword: String(raw.keyword || keyword),
     color: raw.color || color,
     raw

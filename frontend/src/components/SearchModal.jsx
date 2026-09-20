@@ -6,7 +6,9 @@ function normalizeSearchResult(rawResult, index, keyword) {
   const pageNumber = Number(raw.pageNumber ?? raw.page ?? 1) || 1;
   const paragraphNumber = raw.paragraphNumber ?? raw.paragraphIndex;
   const lineNumber = raw.lineNumber ?? raw.line;
-  const text = String(raw.text ?? raw.fullText ?? raw.content ?? raw.matchedText ?? '').trim();
+  // One search result represents one actual match. Show that matched word or
+  // phrase instead of repeating the complete source line for every match.
+  const text = String(raw.matchedText ?? raw.originalText ?? raw.text ?? raw.fullText ?? raw.content ?? '').trim();
 
   return {
     id: raw.id || `search-result-${pageNumber}-${index}`,

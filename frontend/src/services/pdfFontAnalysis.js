@@ -64,7 +64,7 @@ export function readToUnicode(stream, codeBytes) {
     if (type !== 'codespacerange') sections++;
   }
   if (!sections || !map.size) throw new Error('해석 가능한 ToUnicode 항목이 없습니다.');
-  return (binary) => {
+  const decode = (binary) => {
     if (binary.length % codeBytes) throw new Error('문자 코드 길이가 일치하지 않습니다.');
     let value = '';
     for (let offset = 0; offset < binary.length; offset += codeBytes) {
@@ -75,6 +75,26 @@ export function readToUnicode(stream, codeBytes) {
     }
     return value;
   };
+  const reverse = new Map();
+  let ambiguous = new Set();
+  map.forEach((value, code) => {
+    if (reverse.has(value) && reverse.get(value) !== code) ambiguous.add(value);
+    else reverse.set(value, code);
+  });
+  decode.encode = (value) => {
+    let binary = '';
+    for (const character of String(value || '')) {
+      if (ambiguous.has(character) || !reverse.has(character)) {
+        throw new Error(`원본 글꼴에 '${character}' glyph mapping이 없습니다.`);
+      }
+      const code = reverse.get(character);
+      binary += String.fromCharCode(...Array.from({ length: codeBytes }, (_, index) => (
+        code >> (8 * (codeBytes - index - 1)) & 0xff
+      )));
+    }
+    return binary;
+  };
+  return decode;
 }
 
 export function analyzePdfFont(page, resourceName) {
@@ -95,14 +115,36 @@ export function analyzePdfFont(page, resourceName) {
   } else if (!['Type1', 'TrueType'].includes(subtype)) throw new Error('지원하지 않는 원본 글꼴 형식입니다.');
   const descriptor = descendant.lookupMaybe(name('FontDescriptor'), PDFDict);
   const embedded = !!descriptor && ['FontFile', 'FontFile2', 'FontFile3'].some((key) => descriptor.has(name(key)));
-  const info = { resourceName, baseFont, subtype, encoding, embedded, subset: /^[A-Z]{6}\+/.test(baseFont) };
   const cmap = font.lookup(name('ToUnicode'));
-  if (cmap) return { ...info, decode: readToUnicode(cmap, subtype === 'Type0' ? 2 : 1) };
+  const info = {
+    resourceName,
+    baseFont,
+    subtype,
+    encoding,
+    embedded,
+    subset: /^[A-Z]{6}\+/.test(baseFont),
+    toUnicodeMapped: Boolean(cmap),
+    canReuseOriginalFont: false
+  };
+  if (cmap) {
+    const decode = readToUnicode(cmap, subtype === 'Type0' ? 2 : 1);
+    return {
+      ...info,
+      toUnicodeMapped: true,
+      canReuseOriginalFont: true,
+      decode,
+      encode: decode.encode
+    };
+  }
   if (subtype === 'Type1' && STANDARD.has(baseFont) && !font.has(name('Widths')) && !descriptor
     && (!encodingObject || encoding === 'WinAnsiEncoding')) {
-    return { ...info, decode: (binary) => {
+    return { ...info, canReuseOriginalFont: true, decode: (binary) => {
       if (!/^[\x20-\x7e]*$/.test(binary)) throw new Error('원본 문자 매핑을 확인할 수 없습니다.');
       return binary;
+    }, encode: (value) => {
+      const text = String(value || '');
+      if (!/^[\x20-\x7e]*$/.test(text)) throw new Error('원본 글꼴에 새 문자의 glyph mapping이 없습니다.');
+      return text;
     } };
   }
   throw new Error('원본 글꼴에 해석 가능한 ToUnicode 매핑이 없습니다.');

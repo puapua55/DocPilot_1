@@ -189,6 +189,53 @@ function App() {
       onPdfApply: setReplacePreview
     });
 
+    // PDF "화면에 적용" is an immediate content-stream edit. Render the
+    // replacement layer first and save from that layer: it is the only source
+    // that has the exact glyph-range rectangles for an instant replacement.
+    // Do not turn it into a movable-text item here. A movable item represents
+    // a drag selection and has different deletion semantics for a substring.
+    if (fileType === 'pdf' && result.replaceCount > 0) {
+      let previewCount = 0;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        previewCount = document.querySelectorAll('.pdf-viewer .replacement-layer > div').length;
+        if (previewCount >= result.results.length) break;
+      }
+      if (previewCount < result.results.length) {
+        throw new Error('교체 대상의 위치 정보를 준비하지 못했습니다. 문서를 다시 연 뒤 재시도해주세요.');
+      }
+      const reviewItems = documentViewerRef.current?.getInstantReplacementReviewItems?.() || [];
+      if (reviewItems.length !== result.results.length) {
+        throw new Error('교체 대상의 편집 영역을 준비하지 못했습니다. 문서를 다시 연 뒤 재시도해주세요.');
+      }
+      const highlights = documentViewerRef.current?.getPdfHighlights?.() || [];
+      const movableTexts = documentViewerRef.current?.getMovableTexts?.() || [];
+      const converted = await handleVisualPdfConvert({
+        replacement: {
+          originalText,
+          newText,
+          matchMode: options?.matchMode === 'exact' ? 'exact' : 'contains',
+          selectedTargets: result.results
+        },
+        movableTexts,
+        highlights,
+        download: false
+      });
+      const updatedFile = new File([converted.outputBytes], file.name, {
+        type: 'application/pdf',
+        lastModified: Date.now()
+      });
+      // Keep the newly written text as a selected, editable review object
+      // after the saved PDF has reloaded. It is already in the content stream,
+      // so an untouched review object is excluded from a later save.
+      setReplacePreview({
+        mode: 'review',
+        id: `instant-replace-review-${Date.now()}`,
+        items: reviewItems
+      });
+      await handleDocumentSelect(updatedFile);
+    }
+
     if (fileType === 'docx') {
       setModifiedDocxHtml(documentViewerRef.current?.getModifiedHtml?.() ?? '');
     }
@@ -209,15 +256,16 @@ function App() {
   const handleVisualPdfConvert = async (payload = {}) => {
     const replacement = payload?.replacement || payload;
     const movableTexts = Array.isArray(payload?.movableTexts) ? payload.movableTexts : [];
+    const highlights = Array.isArray(payload?.highlights) ? payload.highlights : [];
     if (!selectedDocument?.file || previewModel?.type !== 'pdf') {
       throw new Error('현재 선택된 PDF 문서가 없습니다.');
     }
 
-    if ((!replacement?.originalText || replacement?.newText == null) && movableTexts.length === 0) {
-      throw new Error('화면에 적용된 교체 결과가 없습니다.');
+    if ((!replacement?.originalText || replacement?.newText == null) && movableTexts.length === 0 && highlights.length === 0) {
+      throw new Error('화면에 적용된 교체, 이동 또는 하이라이트 결과가 없습니다.');
     }
     const { convertPdfWithOriginalOverlay } = await import('./services/pdfOverlayConvertService');
-    return convertPdfWithOriginalOverlay({ file: selectedDocument.file, movableTexts });
+    return convertPdfWithOriginalOverlay({ file: selectedDocument.file, replacement, movableTexts, highlights, download: payload?.download !== false });
   };
 
   const handleReplaceResultClick = (result) => {

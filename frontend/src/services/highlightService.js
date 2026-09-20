@@ -395,20 +395,63 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
         const nextTextX = findNextTextX(lineGroup, endIndex, pageElement);
         const pageRight = parseFloat(pageElement.style.width);
         const cellRight = findCellRight(pageElement, lineBox, Math.min(pageRight, nextTextX ?? pageRight));
-        const { fontSize, maxWidth } = fitReplacementWidth({
+        const { maxWidth: availableWidth } = fitReplacementWidth({
           sourceSize: sourceFontSize, measuredWidth: originalMetrics.width,
           startX: lineBox.x, pageRight, nextTextX, cellRight,
           gap: sourceFontSize * 0.08
         });
+        // Treat the original matched range as the layout box. Shorter text is
+        // centered inside it; longer text is reduced until it fits that same
+        // box (and any following text/cell boundary).
+        const maxWidth = Math.min(lineBox.width, availableWidth);
         if (maxWidth <= 0) return;
+        const fontSize = originalMetrics.width > maxWidth
+          ? sourceFontSize * maxWidth / originalMetrics.width
+          : sourceFontSize;
         context.font = `${fontSize}px DocPilotReplacement`;
         const metrics = context.measureText(newText || '한');
+        const renderedWidth = Math.min(metrics.width, maxWidth);
+        const centeredTextX = lineBox.x + Math.max(0, (lineBox.width - renderedWidth) / 2);
         const ascent = metrics.fontBoundingBoxAscent ?? metrics.actualBoundingBoxAscent;
         const descent = metrics.fontBoundingBoxDescent ?? metrics.actualBoundingBoxDescent;
         const baseline = lineBox.y + (lineHeight - ascent - descent) / 2 + ascent;
 
+        const selectedTarget = selectedTargets?.find((target) => {
+          const raw = target?.raw || target || {};
+          return Number(raw.pageNumber ?? raw.page) === pageNumber
+            && Number(raw.lineNumber ?? raw.line) === lineIndex + 1
+            && Number(raw.matchIndex) === foundIndex;
+        })?.raw || selectedTargets?.find((target) => {
+          const raw = target?.raw || target || {};
+          return Number(raw.pageNumber ?? raw.page) === pageNumber
+            && Number(raw.lineNumber ?? raw.line) === lineIndex + 1
+            && Number(raw.matchIndex) === foundIndex;
+        }) || null;
+        const sourceItems = lineGroup.spans.filter(({ span, rect }) => matchedRects.some((matchRect) => (
+          rect.left <= matchRect.right && rect.right >= matchRect.left
+            && Math.abs(rect.top - matchRect.top) <= 4
+        )));
+        const sourceFullText = sourceItems.length === 1
+          ? (sourceItems[0].span.dataset.unicodeText || sourceItems[0].text)
+          : '';
+        const sourceTargetMetadata = {
+          ...(selectedTarget || {}),
+          pageNumber,
+          lineNumber: lineIndex + 1,
+          matchIndex: foundIndex,
+          keyword: selectedTarget?.keyword || originalText,
+          sourceText: selectedTarget?.sourceText || selectedTarget?.keyword || originalText,
+          // A complete source text object is useful for rewriting a true
+          // substring. Do not use the visual *line* as a substitute: many
+          // PDFs (including DOCX exports) emit one glyph per text object.
+          // Treating that whole line as one object deletes neighbouring words
+          // and makes every result on the line compete for the same command.
+          sourceFullText: selectedTarget?.sourceFullText || sourceFullText || '',
+          textItemIndexes: sourceItems.map(({ span }) => Number(span.dataset.textItemIndex)).filter(Number.isInteger)
+        };
         previewItems.push({
           id: `${lineIndex}-${foundIndex}-${newText}`,
+          sourceTarget: sourceTargetMetadata,
           cover: {
             x: lineBox.x - REPLACE_PREVIEW_TUNING.coverXExtra,
             y: lineBox.y - REPLACE_PREVIEW_TUNING.coverTopExtra,
@@ -422,7 +465,7 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
               REPLACE_PREVIEW_TUNING.coverBottomExtra
           },
           text: {
-            x: lineBox.x + REPLACE_PREVIEW_TUNING.xOffset,
+            x: centeredTextX + REPLACE_PREVIEW_TUNING.xOffset,
             y: lineBox.y + REPLACE_PREVIEW_TUNING.yOffset,
             value: newText,
             fontSize,
@@ -430,8 +473,8 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
             lineHeight,
             baseline,
             fontFamily: 'DocPilotReplacement',
-            fontWeight: '400',
-            fontStyle: 'normal',
+            fontWeight: computedStyle?.fontWeight || '400',
+            fontStyle: computedStyle?.fontStyle || 'normal',
             letterSpacing: 'normal'
           }
         });

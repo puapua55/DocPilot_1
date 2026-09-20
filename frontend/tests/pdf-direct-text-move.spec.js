@@ -77,7 +77,26 @@ test('partial text selection keeps overlay fallback and reports it', async ({ pa
   await selectText(page, true);
   await expect(page.locator('.movable-text-object')).toHaveCount(1);
   const items = await savedText(page);
-  await expect(page.getByRole('status').filter({ hasText: '원본 텍스트 제거 0건 · 배경색 덮기 1건' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '원본 텍스트 제거 0건 · 배경색 덮기 0건 · 직접 제거 미확인 1건' })).toBeVisible();
   expect(items.some((item) => item.str === 'Move me')).toBe(true);
   expect(items.some((item) => item.str === 'Move')).toBe(true);
+});
+
+test('double-clicking a selected movable text opens inline editing and saves only that item', async ({ page }) => {
+  await upload(page);
+  await page.getByRole('button', { name: '텍스트 이동', exact: true }).click();
+  await selectText(page);
+  const object = page.locator('.movable-text-object');
+  await expect(object).toHaveCount(1);
+  await object.dblclick();
+  const editor = page.locator('.movable-text-edit-input');
+  await expect(editor).toHaveValue('Move me');
+  await editor.fill('Edited text');
+  await editor.press('Enter');
+  await expect(page.locator('.movable-text-edit-input')).toHaveCount(0);
+  await expect(object).toContainText('Edited text');
+  const items = await savedText(page);
+  expect(items.filter((item) => item.str === 'Edited text')).toHaveLength(1);
+  expect(items.some((item) => item.str === 'Move me')).toBe(false);
+  expect(items.some((item) => item.str === 'Keep me')).toBe(true);
 });

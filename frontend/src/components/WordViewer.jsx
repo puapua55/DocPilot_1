@@ -748,6 +748,8 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
           paragraphNumber: metadata.paragraphNumber,
           blockIndex: metadata.blockIndex,
           text: fullText,
+          originalText: text.slice(matchIndex, matchIndex + normalizedKeyword.length),
+          matchedText: text.slice(matchIndex, matchIndex + normalizedKeyword.length),
           keyword: normalizedKeyword,
           color,
           matchIndex,
@@ -980,6 +982,12 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     },
     getModifiedHtml() {
       return serializeModifiedHtml(docxContentRef.current);
+    },
+    getDocxHighlights() {
+      return Array.from(docxContentRef.current?.querySelectorAll('.docx-highlight') || []).map((element) => ({
+        text: element.textContent || '',
+        color: element.dataset.highlightColor || 'yellow'
+      }));
     },
     async downloadAsPdf() {
       return convertDocxDomToPdf({ root: viewerBodyRef.current, fileName: file?.name, file });
