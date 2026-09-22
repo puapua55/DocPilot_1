@@ -426,9 +426,24 @@ function PdfPage({
         return;
       }
 
-      if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
+      const previousRenderTask = renderTaskRef.current;
+      if (previousRenderTask) {
         renderTaskRef.current = null;
+        previousRenderTask.cancel();
+        // PDF.js does not release the canvas until the cancelled render promise
+        // settles. Waiting here prevents StrictMode's effect re-run from
+        // starting a second render on the same canvas.
+        try {
+          await previousRenderTask.promise;
+        } catch (error) {
+          if (error?.name !== 'RenderingCancelledException') {
+            console.warn('[PdfPage] previous render cleanup failed:', error);
+          }
+        }
+      }
+
+      if (cancelled) {
+        return;
       }
 
       setRenderError('');
@@ -471,6 +486,10 @@ function PdfPage({
       renderTaskRef.current = renderTask;
 
       await renderTask.promise;
+
+      if (renderTaskRef.current === renderTask) {
+        renderTaskRef.current = null;
+      }
 
       if (cancelled) {
         return;
@@ -515,8 +534,8 @@ function PdfPage({
       cancelled = true;
 
       if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
-        renderTaskRef.current = null;
+        const activeRenderTask = renderTaskRef.current;
+        activeRenderTask.cancel();
       }
     };
   }, [pageNumber, pdf, scale]);

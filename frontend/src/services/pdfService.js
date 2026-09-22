@@ -4,6 +4,13 @@ import { isPdfFile } from '../utils/fileUtils';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
+// PDF.js only needs these files for some fonts and CJK encodings. They must be
+// bundled explicitly because the packaged Electron app runs from file:// and
+// does not serve pdfjs-dist/node_modules as a web server would.
+const pdfJsAssetBaseUrl = new URL('../pdfjs/', import.meta.url).toString();
+const cMapUrl = new URL('cmaps/', pdfJsAssetBaseUrl).toString();
+const standardFontDataUrl = new URL('standard_fonts/', pdfJsAssetBaseUrl).toString();
+
 export function createPdfObjectUrl(file) {
   return URL.createObjectURL(file);
 }
@@ -32,7 +39,12 @@ export async function loadPdfDocument(source, { onLoadingTask } = {}) {
     return null;
   }
   const data = source instanceof ArrayBuffer ? source : await source.arrayBuffer();
-  const loadingTask = pdfjsLib.getDocument({ data });
+  const loadingTask = pdfjsLib.getDocument({
+    data,
+    cMapUrl,
+    cMapPacked: true,
+    standardFontDataUrl
+  });
   try {
     onLoadingTask?.(loadingTask);
     return { loadingTask, pdf: await loadingTask.promise };
