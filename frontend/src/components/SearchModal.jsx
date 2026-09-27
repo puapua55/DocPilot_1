@@ -151,8 +151,8 @@ function SearchModal({
       title="정확한 문서 검색"
       titleId="search-modal-title"
       className="search-panel"
-      initialWidth={920}
-      initialHeight={700}
+      initialWidth={600}
+      initialHeight={670}
       onClose={handleClose}
     >
 
@@ -246,9 +246,7 @@ function SearchModal({
               <table className="search-result-table">
                 <thead>
                   <tr>
-                    <th>페이지</th>
-                    <th>위치</th>
-                    <th>내용</th>
+                    <th>찾은 텍스트</th>
                     <th>검색어</th>
                   </tr>
                 </thead>
@@ -261,9 +259,10 @@ function SearchModal({
                       onClick={() => handleResultClick(result)}
                       aria-current={activeResultId === result.id ? 'true' : undefined}
                     >
-                      <td>{result.pageNumber ? `${result.pageNumber}페이지` : '-'}</td>
-                      <td>{formatResultLocation(result, index)}</td>
-                      <td className="search-result-text" title={result.text}>{result.text || '-'}</td>
+                      <td className="search-result-text" title={result.text}>
+                        <strong>{result.text || '-'}</strong>
+                        <small>{result.pageNumber ? `${result.pageNumber}페이지` : '-'} · {formatResultLocation(result, index)}</small>
+                      </td>
                       <td>{result.keyword}</td>
                     </tr>
                   ))}

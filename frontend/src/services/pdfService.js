@@ -76,7 +76,9 @@ function normalizePdfLines(textItems) {
   const groupedLines = [];
 
   textItems.forEach((item) => {
-    const value = String(item?.str || '').trim();
+    // Do not trim individual PDF text items: punctuation and its following
+    // whitespace are commonly stored as separate items.
+    const value = String(item?.str || '');
 
     if (!value) {
       return;
@@ -97,7 +99,7 @@ function normalizePdfLines(textItems) {
   });
 
   return groupedLines
-    .map((lineGroup) => lineGroup.parts.join(' ').replace(/\s+/g, ' ').trim())
+    .map((lineGroup) => lineGroup.parts.join('').replace(/\s+/g, ' ').trim())
     .filter(Boolean);
 }
 

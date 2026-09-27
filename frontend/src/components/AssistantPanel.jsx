@@ -2,7 +2,7 @@ import AiActionCard from './AiActionCard';
 import ChatInput from './ChatInput';
 import GeminiSettingsModal from './GeminiSettingsModal';
 import './ChatPanel.css';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const CARDS = [
   { title: '정확한 문서 검색' },
@@ -66,14 +66,42 @@ function ChatSearchResults({ results, keyword, hasMoreResults, onResultClick }) 
   );
 }
 
+function ChatBatchReplaceResults({ results, replacementText }) {
+  if (!Array.isArray(results) || results.length === 0) return null;
+  return (
+    <div className="chat-search-results chat-batch-replace-results" aria-label="텍스트 변경 검색 결과">
+      <div className="chat-search-table-wrap">
+        <table className="chat-search-table">
+          <thead><tr><th>찾은 텍스트</th><th>변경할 텍스트</th></tr></thead>
+          <tbody>
+            {results.map((result, index) => (
+              <tr key={result?.id || `batch-chat-result-${index}`}>
+                <td>
+                  <strong>{getSearchResultText(result)}</strong>
+                  <small>{formatSearchLocation(result).page} · {formatSearchLocation(result).line}</small>
+                </td>
+                <td>{String(replacementText || '')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function AssistantPanel({
   messages, loading, error, selectedDocument, runningActionId, onSendMessage,
+  isEditMode = false,
   onSearchCardClick, onHighlightCardClick, onBatchReplaceCardClick,
   onSearchResultClick,
-  onExecuteSearchAction, onExecuteHighlightAction
+  onExecuteSearchAction, onExecuteHighlightAction, onExecuteBatchReplaceAction
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [geminiStatus, setGeminiStatus] = useState(null);
+  const autoSearchIdsRef = useRef(new Set());
+  const autoBatchIdsRef = useRef(new Set());
+  const chatFeedRef = useRef(null);
   const settingsApi = typeof window !== 'undefined' ? window.docPilotSettings : null;
 
   useEffect(() => {
@@ -81,12 +109,39 @@ function AssistantPanel({
     settingsApi.getGeminiStatus().then(setGeminiStatus).catch(() => setGeminiStatus(null));
   }, [settingsApi]);
 
+  useEffect(() => {
+    messages.forEach((message) => {
+      if (message.role !== 'assistant' || message.action?.type !== 'search' || autoSearchIdsRef.current.has(message.id)) return;
+      autoSearchIdsRef.current.add(message.id);
+      onExecuteSearchAction?.(message.id, message.action);
+    });
+  }, [messages, onExecuteSearchAction]);
+
+  useEffect(() => {
+    messages.forEach((message) => {
+      if (message.role !== 'assistant' || message.action?.type !== 'batch-replace' || autoBatchIdsRef.current.has(message.id)) return;
+      autoBatchIdsRef.current.add(message.id);
+      onExecuteBatchReplaceAction?.(message.id, message.action);
+    });
+  }, [messages, onExecuteBatchReplaceAction]);
+
+  useEffect(() => {
+    const feed = chatFeedRef.current;
+    if (!feed) return;
+    requestAnimationFrame(() => {
+      feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
+    });
+  }, [messages, loading]);
+
   const getCardActionProps = (index) => {
     const handler = [onSearchCardClick, onHighlightCardClick, onBatchReplaceCardClick][index];
+    const disabled = index === 2 && !isEditMode;
     return {
-      className: 'feature-card feature-card-actionable', onClick: handler, role: 'button', tabIndex: 0,
+      className: `feature-card feature-card-actionable${disabled ? ' is-disabled' : ''}`,
+      onClick: disabled ? undefined : handler, role: 'button', tabIndex: disabled ? -1 : 0,
+      'aria-disabled': disabled,
       onKeyDown: (event) => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); handler?.(); }
+        if (!disabled && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); handler?.(); }
       }
     };
   };
@@ -116,7 +171,7 @@ function AssistantPanel({
             {CARDS.map((card, index) => <div key={card.title} {...getCardActionProps(index)}><h3>{card.title}</h3></div>)}
           </div>
         </section>
-        <div className="chat-feed" aria-label="assistant conversation" aria-live="polite">
+        <div ref={chatFeedRef} className="chat-feed" aria-label="assistant conversation" aria-live="polite">
           {messages.map((message) => {
             const runningType = runningActionId?.startsWith(`${message.id}:`) ? runningActionId.slice(message.id.length + 1) : '';
             return (
@@ -131,14 +186,21 @@ function AssistantPanel({
                       onResultClick={onSearchResultClick}
                     />
                   ) : null}
-                  {message.role === 'assistant' && message.action ? (
+                  {message.role === 'assistant' ? (
+                    <ChatBatchReplaceResults
+                      results={message.batchReplaceResults}
+                      replacementText={message.batchReplacementText}
+                    />
+                  ) : null}
+                  {message.role === 'assistant' && message.action && !['search', 'batch-replace'].includes(message.action.type) ? (
                     <AiActionCard
                       action={message.action}
                       selectedFile={selectedFile}
-                      disabled={!selectedFile}
+                      disabled={!selectedFile || (message.action.type === 'batch-replace' && !isEditMode)}
                       runningType={runningType}
                       onSearch={(action) => onExecuteSearchAction?.(message.id, action)}
                       onHighlight={(action) => onExecuteHighlightAction?.(message.id, action)}
+                      onBatchReplace={(action) => onExecuteBatchReplaceAction?.(message.id, action)}
                     />
                   ) : null}
                 </div>

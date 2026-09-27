@@ -5,12 +5,20 @@
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(25, 35, 72, 0.34);
-  backdrop-filter: blur(4px);
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.settings-modal-backdrop {
+  pointer-events: none;
+}
+
+.settings-modal-backdrop .settings-modal {
+  pointer-events: auto;
 }
 
 .settings-modal {
-  width: min(100%, 500px);
+  width: min(100%, 520px);
   border: 1px solid #d8e4ff;
   border-radius: 24px;
   padding: 24px;

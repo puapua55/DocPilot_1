@@ -6,6 +6,24 @@ import { extractWordContentForDev, getWordPreviewModel, isWordDocument } from '.
 import { getPdfPreviewModel, isPdfDocument } from './pdfService';
 import { saveDocumentForDev } from './storageService';
 
+function createDocumentInfo(type, documentText = []) {
+  return {
+    type,
+    // PDF page dimensions are available only after PDF.js opens the file in
+    // the viewer. Keep metadata creation synchronous so a file selection can
+    // never fail before that viewer initialization starts.
+    pageCount: type === 'docx' ? Math.max(1, documentText.length) : null,
+    widthMm: null,
+    heightMm: null,
+    widthPt: null,
+    heightPt: null,
+    widthPx: null,
+    heightPx: null,
+    orientation: null,
+    note: type === 'pdf' ? 'PDF 뷰어에서 페이지 정보를 읽는 중입니다.' : ''
+  };
+}
+
 export async function openDocument(file) {
   const validation = validateDocumentFile(file);
   if (!validation.valid) {
@@ -23,6 +41,7 @@ export async function openDocument(file) {
     // Let the viewer load the PDF and extract text in the background so that
     // preview activation and error reporting do not wait for text extraction.
     const documentText = [];
+    const documentInfo = createDocumentInfo('pdf', documentText);
 
     return {
       ok: true,
@@ -45,6 +64,7 @@ export async function openDocument(file) {
   if (isWordDocument(documentFile)) {
     const docxPreview = await extractWordContentForDev(file);
     const documentText = docxPreview.documentText || [];
+    const documentInfo = createDocumentInfo('docx', documentText);
 
     console.log('[DOCX] text pages:', documentText.length);
     console.log('[DOCX] conversion messages:', docxPreview.messages);

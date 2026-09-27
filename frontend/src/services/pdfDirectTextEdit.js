@@ -497,12 +497,15 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
         } catch {
           originalEncodedText = null;
         }
-        if (!originalFontReusable && !replacementFont) {
+        const itemReplacementFont = item.replacementFont || replacementFont;
+        const itemReplacementOutlineFont = item.replacementOutlineFont || replacementOutlineFont;
+        if (!originalFontReusable && !itemReplacementFont) {
           outcomes.set(item, { direct: false, reason: '원본 글꼴에 새 문자의 glyph mapping이 없고 fallback 글꼴도 준비하지 못해 overlay로 저장했습니다.' });
           return;
         }
         edits.push({ item, candidate, candidates: matched, nextText,
-          mode: 'direct-replace', originalEncodedText, originalFontReusable });
+          mode: 'direct-replace', originalEncodedText, originalFontReusable,
+          replacementFont: itemReplacementFont, replacementOutlineFont: itemReplacementOutlineFont });
       });
       if (!edits.length) continue;
       let rewritten = analysis.source;
@@ -514,7 +517,7 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
       const stream = pdfDocument.context.flateStream(Uint8Array.from(rewritten, (char) => char.charCodeAt(0)));
       page.node.set(name('Contents'), pdfDocument.context.register(stream));
       retired.push(...analysis.retired);
-      edits.forEach(({ item, candidate, candidates: matchedCandidates, nextText, mode, originalEncodedText, originalFontReusable }) => {
+      edits.forEach(({ item, candidate, candidates: matchedCandidates, nextText, mode, originalEncodedText, originalFontReusable, replacementFont: itemReplacementFont, replacementOutlineFont: itemReplacementOutlineFont }) => {
         const commandRange = {
           start: Math.min(...matchedCandidates.map((entry) => entry.objectStart)),
           end: Math.max(...matchedCandidates.map((entry) => entry.objectEnd))
@@ -547,13 +550,15 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
         const textColor = sourceFillColor(candidate.fill, sampledColor);
         const italic = item.fontStyle === 'italic';
         page.drawText(nextText, {
-          x, y, size: fontSize, font: replacementFont, color: textColor,
-          xSkew: italic ? degrees(-12) : degrees(0)
+          x, y, size: fontSize, font: itemReplacementFont, color: textColor,
+          // Keep the text baseline horizontal. PDF xSkew tilts the baseline
+          // itself, while ySkew produces the intended italic glyph slant.
+          ySkew: italic ? degrees(12) : degrees(0)
         });
-        drawBoldGlyphOutlines(page, replacementOutlineFont, nextText, x, y, fontSize, textColor,
+        drawBoldGlyphOutlines(page, itemReplacementOutlineFont, nextText, x, y, fontSize, textColor,
           item.fontWeight === 'bold' || /bold|black|heavy/i.test(String(candidate.fontInfo?.baseFont || '')));
         if (item.textDecoration === 'underline' || item.textDecoration === 'line-through') {
-          const measuredWidth = replacementFont.widthOfTextAtSize(nextText, fontSize);
+          const measuredWidth = itemReplacementFont.widthOfTextAtSize(nextText, fontSize);
           const lineY = item.textDecoration === 'underline'
             ? y - fontSize * 0.1
             : y + fontSize * 0.35;

@@ -76,7 +76,7 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
     <div className="settings-modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose?.();
     }}>
-      <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="gemini-settings-title">
+      <section className="settings-modal" role="dialog" aria-modal="false" aria-labelledby="gemini-settings-title">
         <div className="settings-modal-header">
           <div>
             <p className="settings-eyebrow">DESKTOP SETTINGS</p>

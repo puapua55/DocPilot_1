@@ -2,7 +2,7 @@ const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 const MAX_HISTORY = 10;
 const MAX_DOCUMENT_TEXT = 20_000;
 const DOCUMENT_EDGE_LENGTH = MAX_DOCUMENT_TEXT / 2;
-const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'replace']);
+const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'replace', 'batch-replace']);
 const RESTRICTED_CHAT_MESSAGE = '채팅은 정확한 문서 검색, 위치 하이라이트, 즉시 텍스트 교체 요청에만 사용할 수 있습니다.';
 
 const DOCUMENT_ASSISTANT_INSTRUCTIONS = `너는 DocPilot의 문서 작업 보조 AI다. 지원하는 요청은 정확한 문서 검색(search), 위치 하이라이트(highlight), 즉시 텍스트 교체(replace)뿐이다.
@@ -13,6 +13,33 @@ search/highlight/replace 작업을 직접 실행했다고 절대 말하지 않�
 응답은 JSON 객체만 출력한다. 형식은 {"answer":"...","intent":"search|highlight|replace|unsupported","action":null}이다.
 search action은 {"type":"search","keyword":"..."}, highlight action은 {"type":"highlight","keyword":"..."}, replace action은 {"type":"replace","originalText":"...","newText":"..."} 형식이다.
 JSON 외 설명이나 Markdown 코드 블록을 출력하지 않는다.`;
+
+// The selectable batch-review modal is mandatory before a text change.
+const BATCH_REPLACE_INSTRUCTION = `
+텍스트 변경 요청 처리 규칙:
+- 사용자가 "ㅁㅁㅁ에서 ㅇㅇㅇ로 바꿔줘", "ㅁㅁㅁ을 ㅇㅇㅇ으로 변경해줘", "ㅁㅁㅁ를 ㅇㅇㅇ로 교체해줘"처럼 찾을 문구와 바꿀 문구를 함께 요청하면 intent와 action.type을 반드시 "batch-replace"로 반환한다.
+- action 형식은 {"type":"batch-replace","originalText":"ㅁㅁㅁ","newText":"ㅇㅇㅇ"}이다.
+- 실제 변경을 완료했다고 말하지 말고, 사용자가 결과 목록에서 항목을 선택한 뒤 적용할 수 있도록 "텍스트 일괄 변경"을 열었다고 안내한다.
+`;
+
+const HIGHLIGHT_TARGET_INSTRUCTION = `
+Highlight requests require result-level targeting. First inspect the supplied document text and map each requested word to the search result list.
+For a request naming a page and line, return action.targets with one entry per requested result: {"page":2,"line":22,"color":"green"}. For a page ordinal request use occurrence instead, such as {"page":2,"occurrence":1,"color":"yellow"}.
+Line is the displayed PDF/DOCX line number. Occurrence is 1-based among matches of the keyword on that page, in document/list order. Supported colors are yellow, green, blue, pink.
+If the user explicitly says "전체" (all), return action.all=true and apply the same requested color to all matches. If the user does not say all, never select every match implicitly; return only the requested targets and preserve each target's color.
+The highlight action format is {"type":"highlight","keyword":"...","all":false,"targets":[{"page":2,"line":22,"color":"green"}]}.
+`;
+
+const BATCH_SCOPE_INSTRUCTION = `
+Text replacement requests use the same result targeting rules as highlighting.
+If the user specifies a page and line, return action.targets with {"page":2,"line":22} entries. For a page ordinal request use {"page":2,"occurrence":1}.
+If the user explicitly says "전체" (all), return action.all=true. If neither page/ordinal nor all is stated, return action.all=false and an empty targets array so the app can show the complete selectable result list before applying.
+The batch-replace action format is {"type":"batch-replace","originalText":"...","newText":"...","all":false,"targets":[{"page":2,"occurrence":1}]}.
+`;
+
+const NO_APPROVAL_INSTRUCTION = `
+Do not tell the user to press an approval button and do not claim that an approval button is required. The app handles searching and applying after the action is received.
+`;
 
 function limitDocumentText(text) {
   if (!text || text.trim() === '') return { text: '', truncated: false };
@@ -45,8 +72,35 @@ function parseChatResult(rawText) {
     let action = null;
     if (['search', 'highlight'].includes(intent) && parsed.action?.type === intent && typeof parsed.action.keyword === 'string' && parsed.action.keyword.trim()) {
       action = { type: intent, keyword: parsed.action.keyword.trim() };
-    } else if (intent === 'replace' && parsed.action?.type === intent && typeof parsed.action.originalText === 'string' && parsed.action.originalText.trim() && typeof parsed.action.newText === 'string' && parsed.action.newText.length > 0) {
-      action = { type: intent, originalText: parsed.action.originalText.trim(), newText: parsed.action.newText };
+      if (intent === 'highlight') {
+        action.all = parsed.action.all === true;
+        action.color = ['yellow', 'green', 'blue', 'pink'].includes(parsed.action.color)
+          ? parsed.action.color
+          : 'yellow';
+        action.targets = Array.isArray(parsed.action.targets)
+          ? parsed.action.targets.map((target) => ({
+            page: Number(target?.page),
+            line: Number(target?.line ?? target?.lineNumber),
+            occurrence: Number(target?.occurrence ?? target?.index ?? target?.wordIndex),
+            color: ['yellow', 'green', 'blue', 'pink'].includes(target?.color) ? target.color : 'yellow'
+          })).filter((target) => Number.isInteger(target.page) && target.page > 0 && ((Number.isInteger(target.line) && target.line > 0) || (Number.isInteger(target.occurrence) && target.occurrence > 0)))
+          : [];
+      }
+    } else if (['replace', 'batch-replace'].includes(intent) && ['replace', 'batch-replace'].includes(parsed.action?.type) && typeof parsed.action.originalText === 'string' && parsed.action.originalText.trim() && typeof parsed.action.newText === 'string' && parsed.action.newText.length > 0) {
+      // Replacement requests always use the selectable batch-review modal.
+      action = {
+        type: 'batch-replace',
+        originalText: parsed.action.originalText.trim(),
+        newText: parsed.action.newText,
+        all: parsed.action.all === true,
+        targets: Array.isArray(parsed.action.targets)
+          ? parsed.action.targets.map((target) => ({
+            page: Number(target?.page),
+            line: Number(target?.line ?? target?.lineNumber),
+            occurrence: Number(target?.occurrence ?? target?.index ?? target?.wordIndex)
+          })).filter((target) => Number.isInteger(target.page) && target.page > 0 && ((Number.isInteger(target.line) && target.line > 0) || (Number.isInteger(target.occurrence) && target.occurrence > 0)))
+          : []
+      };
     }
     if (!action) return { answer: RESTRICTED_CHAT_MESSAGE, intent: 'unsupported', action: null };
     return { answer: String(parsed.answer || '').trim() || '문서 작업을 준비했습니다. 아래 버튼으로 실행해주세요.', intent, action };
@@ -86,7 +140,7 @@ export async function chatWithGemini(request = {}, settings = {}) {
       method: 'POST',
       headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: `${DOCUMENT_ASSISTANT_INSTRUCTIONS}\n\n${buildDocumentContext(request, limitedDocument)}` }] },
+        systemInstruction: { parts: [{ text: `${DOCUMENT_ASSISTANT_INSTRUCTIONS}\n${BATCH_REPLACE_INSTRUCTION}\n${HIGHLIGHT_TARGET_INSTRUCTION}\n${BATCH_SCOPE_INSTRUCTION}\n${NO_APPROVAL_INSTRUCTION}\n${buildDocumentContext(request, limitedDocument)}` }] },
         contents,
         generationConfig: { responseMimeType: 'application/json', temperature: 0, maxOutputTokens: 400 }
       })

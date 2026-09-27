@@ -31,7 +31,19 @@ function normalizeResults(response, keyword, newText) {
   });
 }
 
-function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, onSearch, onApply, onClose }) {
+function getInitialSelectedIds(results, initialValues) {
+  if (initialValues?.selectAll === true) return results.map((result) => result.id);
+  const targets = Array.isArray(initialValues?.selectedTargets) ? initialValues.selectedTargets : [];
+  if (!targets.length) return [];
+  return targets.map((target) => {
+    const page = Number(target?.pageNumber ?? target?.page);
+    const occurrence = Number(target?.occurrence);
+    const pageResults = results.filter((result) => Number(result.pageNumber) === page);
+    return pageResults[occurrence - 1]?.id || null;
+  }).filter(Boolean);
+}
+
+function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initialValues = null, onSearch, onApply, onClose }) {
   const [searchText, setSearchText] = useState('');
   const [replacementText, setReplacementText] = useState('');
   const [matchMode, setMatchMode] = useState('contains');
@@ -42,7 +54,17 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, onSearc
   const [statusType, setStatusType] = useState('');
 
   useEffect(() => {
-    if (!isOpen) {
+    if (isOpen) {
+      setSearchText(String(initialValues?.originalText || ''));
+      setReplacementText(String(initialValues?.newText || ''));
+      setMatchMode(initialValues?.matchMode === 'exact' ? 'exact' : 'contains');
+      const initialResults = normalizeResults(initialValues?.searchResults || [], initialValues?.originalText || '', initialValues?.newText || '');
+      setResults(initialResults);
+      setSelectedIds(getInitialSelectedIds(initialResults, initialValues));
+      setBusy(false);
+      setStatus('');
+      setStatusType('');
+    } else {
       setSearchText('');
       setReplacementText('');
       setMatchMode('contains');
@@ -52,7 +74,7 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, onSearc
       setStatus('');
       setStatusType('');
     }
-  }, [isOpen]);
+  }, [isOpen, initialValues]);
 
   if (!isOpen) return null;
 
@@ -68,6 +90,11 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, onSearc
       setStatusType('error');
       return;
     }
+    if (!replacementText.trim()) {
+      setStatus('변경할 텍스트를 입력해주세요.');
+      setStatusType('error');
+      return;
+    }
 
     setBusy(true);
     setStatus('문서에서 텍스트를 찾고 있습니다.');
@@ -76,7 +103,9 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, onSearc
       const response = await onSearch?.(keyword, { matchMode });
       const nextResults = normalizeResults(response, keyword, replacementText);
       setResults(nextResults);
-      setSelectedIds(nextResults.map((result) => result.id));
+      // Searching only prepares the candidate rows. The user explicitly
+      // chooses which rows to change, so none are checked by default.
+      setSelectedIds([]);
       setStatus(nextResults.length ? `${nextResults.length}건을 찾았습니다. 변경할 항목을 선택하세요.` : '찾은 텍스트가 없습니다.');
       setStatusType(nextResults.length ? 'success' : 'empty');
     } catch (error) {
@@ -146,9 +175,9 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, onSearc
       title="텍스트 일괄 변경"
       titleId="batch-text-replace-title"
       className="batch-replace-panel"
-      initialWidth={900}
-      initialHeight={680}
-      minWidth={520}
+      initialWidth={600}
+      initialHeight={670}
+      minWidth={600}
       minHeight={420}
       onClose={onClose}
     >
@@ -192,7 +221,7 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, onSearc
         <span>검색 방식</span>
         <label><input type="radio" name="batch-replace-match-mode" checked={matchMode === 'contains'} onChange={() => { setMatchMode('contains'); setResults([]); setSelectedIds([]); }} disabled={busy} /> 포함 검색</label>
         <label><input type="radio" name="batch-replace-match-mode" checked={matchMode === 'exact'} onChange={() => { setMatchMode('exact'); setResults([]); setSelectedIds([]); }} disabled={busy} /> 정확히 일치</label>
-        <button type="button" className="search-modal-button" onClick={runSearch} disabled={busy}>{busy ? '처리 중...' : '변환'}</button>
+        <button type="button" className="search-modal-button" onClick={runSearch} disabled={busy}>{busy ? '처리 중...' : '검색'}</button>
       </div>
 
       {status ? <div className={`batch-replace-status is-${statusType}`} role="status" aria-live="polite">{status}</div> : null}
@@ -201,9 +230,17 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, onSearc
         <>
           <div className="batch-replace-list-heading">
             <div>검색 결과 {results.length}건 · 선택 {selectedIds.length}건</div>
-            <button type="button" className="search-modal-button" onClick={applySelected} disabled={busy || !selectedIds.length}>
-              {busy ? '적용 중...' : '적용'}
-            </button>
+            <div className="batch-replace-list-actions">
+              <button
+                type="button"
+                className="search-modal-button secondary"
+                onClick={() => setSelectedIds(results.map((result) => result.id))}
+                disabled={busy || selectedIds.length === results.length}
+              >전체 선택</button>
+              <button type="button" className="search-modal-button" onClick={applySelected} disabled={busy || !selectedIds.length}>
+                {busy ? '적용 중...' : '적용'}
+              </button>
+            </div>
           </div>
           <div className="batch-replace-table-wrap">
             <table className="batch-replace-table">

@@ -24,25 +24,81 @@ function getSearchResults(result) {
   return [];
 }
 
+function resolveHighlightTargets(results, action) {
+  const orderedResults = Array.isArray(results) ? results : [];
+  if (action?.all === true) {
+    return orderedResults.map((result) => ({
+      ...(result?.raw || result),
+      color: ['yellow', 'green', 'blue', 'pink'].includes(action.color) ? action.color : 'yellow'
+    }));
+  }
+
+  const targets = Array.isArray(action?.targets) ? action.targets : [];
+  if (!targets.length) return [];
+
+  return targets.map((target) => {
+    const page = Number(target?.page);
+    const line = Number(target?.line ?? target?.lineNumber);
+    const occurrence = Number(target?.occurrence);
+    const pageResults = orderedResults.filter((result) => Number(result?.pageNumber ?? result?.page) === page);
+    const lineResults = Number.isInteger(line) && line > 0
+      ? pageResults.filter((result) => Number(result?.lineNumber ?? result?.line) === line)
+      : pageResults;
+    const selected = lineResults[Number.isInteger(occurrence) && occurrence > 0 ? occurrence - 1 : 0];
+    return selected
+      ? { ...(selected.raw || selected), color: target.color, highlightOccurrence: occurrence }
+      : null;
+  }).filter(Boolean);
+}
+
+function resolveReplacementTargets(results, action) {
+  const orderedResults = Array.isArray(results) ? results : [];
+  if (action?.all === true) return orderedResults.map((result) => result?.raw || result);
+  const targets = Array.isArray(action?.targets) ? action.targets : [];
+  return targets.map((target) => {
+    const page = Number(target?.page);
+    const line = Number(target?.line ?? target?.lineNumber);
+    const occurrence = Number(target?.occurrence);
+    const pageResults = orderedResults.filter((result) => Number(result?.pageNumber ?? result?.page) === page);
+    const lineResults = Number.isInteger(line) && line > 0
+      ? pageResults.filter((result) => Number(result?.lineNumber ?? result?.line) === line)
+      : pageResults;
+    const selected = lineResults[Number.isInteger(occurrence) && occurrence > 0 ? occurrence - 1 : 0];
+    return selected?.raw || selected || null;
+  }).filter(Boolean);
+}
+
+function resolveListIndex(requestText) {
+  const text = String(requestText || '');
+  const arabic = text.match(/(?:목록|리스트)\s*(?:에서|의)?\s*(\d+)\s*(?:번째|번)/i);
+  if (arabic) return Number(arabic[1]);
+  const koreanNumbers = { 첫: 1, 둘: 2, 두: 2, 이: 2, 셋: 3, 세: 3, 넷: 4, 네: 4, 다섯: 5, 여섯: 6, 일곱: 7, 여덟: 8, 아홉: 9, 열: 10 };
+  const korean = text.match(/(?:목록|리스트)\s*(?:에서|의)?\s*(첫|둘|두|이|셋|세|넷|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?:번째|번)/);
+  return korean ? koreanNumbers[korean[1]] : null;
+}
+
 function App() {
   const documentViewerRef = useRef(null);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [isHighlightModalOpen, setIsHighlightModalOpen] = useState(false);
   const [isBatchReplaceModalOpen, setIsBatchReplaceModalOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [batchReplaceInitialValues, setBatchReplaceInitialValues] = useState(null);
+  const [batchReplaceSearchContext, setBatchReplaceSearchContext] = useState(null);
   const [highlightKeyword, setHighlightKeyword] = useState('');
   const [highlightStatusMessage, setHighlightStatusMessage] = useState('');
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
   const [runningActionId, setRunningActionId] = useState(null);
   const { selectedDocument, previewModel, documentText, errorMessage, handleDocumentSelect, clearSelectedDocument } = useDocument();
-  const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument, previewModel, documentViewerRef);
+  const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument, previewModel, documentViewerRef, isEditMode);
 
   useEffect(() => { console.log('[App] highlightKeyword:', highlightKeyword); }, [highlightKeyword]);
   useEffect(() => { console.log('[App] selectedFile:', selectedDocument?.file ?? null); }, [selectedDocument]);
   useEffect(() => { console.log('[App] selectedSearchResult:', selectedSearchResult); }, [selectedSearchResult]);
 
   const resetDocumentViewState = () => {
-    setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsBatchReplaceModalOpen(false);
-    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); clearSelectedDocument();
+    setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsBatchReplaceModalOpen(false); setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null);
+    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setIsEditMode(false); clearSelectedDocument();
   };
 
   const handleDocumentSearch = async (keyword, options = {}) => {
@@ -115,7 +171,9 @@ function App() {
 
     const result = await documentViewerRef.current.highlightText(keyword, {
       color: options?.color || 'yellow',
-      matchMode: options?.matchMode === 'exact' ? 'exact' : 'contains'
+      matchMode: options?.matchMode === 'exact' ? 'exact' : 'contains',
+      selectedTargets: Array.isArray(options?.selectedTargets) ? options.selectedTargets : null,
+      append: options?.append === true
     });
     const count = normalizeCount(result);
     const results = getSearchResults(result);
@@ -133,14 +191,6 @@ function App() {
       matchCount: count,
       results
     };
-  };
-
-  const handleHighlightClearAll = async () => {
-    documentViewerRef.current?.clearHighlights?.();
-    documentViewerRef.current?.clearHighlightSelection?.();
-    setHighlightKeyword('');
-    setHighlightStatusMessage('하이라이트를 모두 제거했습니다.');
-    return true;
   };
 
   const handleHighlightReset = () => {
@@ -175,6 +225,7 @@ function App() {
   };
 
   const handleBatchReplaceApply = async (originalText, newText, options = {}) => {
+    if (!isEditMode) throw new Error('편집모드를 활성화 해주세요');
     if (!selectedDocument?.file) throw new Error('먼저 문서를 선택해주세요.');
     if (!documentViewerRef.current?.replaceText) throw new Error('현재 문서 뷰어에서 텍스트 변경을 지원하지 않습니다.');
 
@@ -299,28 +350,88 @@ function App() {
     if (!validateKeywordAction(action, '하이라이트')) return;
     await runAction(messageId, 'highlight', async () => {
       if (!documentViewerRef.current?.highlightText) throw new Error('현재 뷰어에서 하이라이트 기능을 사용할 수 없습니다.');
+      const searchResponse = await handleDocumentSearch(action.keyword, { matchMode: 'contains' });
+      const searchResults = getSearchResults(searchResponse);
+      const selectedTargets = resolveHighlightTargets(searchResults, action);
+      if (!searchResults.length) {
+        throw new Error('하이라이트 검색 결과가 없습니다.');
+      }
+      if (!action.all && !selectedTargets.length) {
+        throw new Error('하이라이트 대상의 페이지와 페이지 내 순번을 검색 결과에서 확인하지 못했습니다.');
+      }
       const result = await handleHighlightSearch(action.keyword, {
-        color: 'yellow',
-        matchMode: 'contains'
+        color: action.color || 'yellow',
+        matchMode: 'contains',
+        selectedTargets: action.all ? selectedTargets : selectedTargets,
+        append: true
       });
       if (!result.ok) throw new Error(result.message || '하이라이트를 적용하지 못했습니다.');
       const count = normalizeCount(result);
-      appendAssistantMessage(`하이라이트를 적용했습니다.\n대상 단어: ${action.keyword}\n적용 건수: ${count}건\n총 ${count}건을 하이라이트했습니다.`);
+      const locations = selectedTargets.map((target) => `${target.pageNumber ?? target.page}페이지 ${target.highlightOccurrence ? `${target.highlightOccurrence}번째` : '전체'} (${target.color})`).join(', ');
+      appendAssistantMessage(`검색 결과를 확인한 뒤 하이라이트를 적용했습니다.\n대상 단어: ${action.keyword}\n적용 건수: ${count}건${locations ? `\n적용 위치: ${locations}` : ''}`);
+    });
+  };
+
+  const executeBatchReplaceAction = async (messageId, action) => {
+    if (!requireDocumentForAction()) return;
+    if (!isEditMode) {
+      appendAssistantMessage('편집모드를 활성화 해주세요');
+      return;
+    }
+    const originalText = String(action?.originalText || '').trim();
+    const newText = String(action?.newText ?? '');
+    if (!originalText || !newText.trim()) {
+      appendAssistantMessage('일괄 변경할 찾을 텍스트 또는 변경할 텍스트가 없습니다. 요청을 다시 입력해주세요.');
+      return;
+    }
+    await runAction(messageId, 'batch-replace', async () => {
+      const searchResponse = await handleDocumentSearch(originalText, { matchMode: 'contains' });
+      const searchResults = getSearchResults(searchResponse);
+      if (!searchResults.length) throw new Error('텍스트 변경 검색 결과가 없습니다.');
+      const selectedTargets = resolveReplacementTargets(searchResults, action);
+
+      if (action?.all === true || selectedTargets.length > 0) {
+        const result = await handleBatchReplaceApply(originalText, newText, {
+          matchMode: 'contains',
+          selectedTargets
+        });
+        appendAssistantMessage(`텍스트 변경을 적용했습니다.\n변경 전: ${originalText}\n변경 후: ${newText}\n적용 건수: ${normalizeCount(result)}건`);
+        return;
+      }
+
+      const listIndex = resolveListIndex(action?.requestText);
+      const contextResults = batchReplaceSearchContext?.originalText === originalText
+        ? batchReplaceSearchContext.results
+        : searchResults;
+      if (listIndex && contextResults[listIndex - 1]) {
+        await handleBatchReplaceApply(originalText, newText, {
+          matchMode: 'contains',
+          selectedTargets: [contextResults[listIndex - 1]?.raw || contextResults[listIndex - 1]]
+        });
+        appendAssistantMessage(`목록 ${listIndex}번 항목에 텍스트 변경을 적용했습니다.\n변경 전: ${originalText}\n변경 후: ${newText}`);
+        return;
+      }
+
+      setBatchReplaceSearchContext({ originalText, newText, results: searchResults });
+      appendAssistantMessage(
+        `변경할 범위가 지정되지 않았습니다. 아래 목록에서 전체 적용할지, 특정 목록 번호를 적용할지 말씀해주세요.`,
+        { batchReplaceResults: searchResults, batchReplacementText: newText }
+      );
     });
   };
 
   const appContent = (
     <div className="app-page" onPointerDown={handleTemporarySearchDismiss}><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
-      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
-      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onBatchReplaceCardClick={() => setIsBatchReplaceModalOpen(true)} onSearchResultClick={handleSearchResultClick} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} />
+      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} isEditMode={isEditMode} onEditModeChange={setIsEditMode} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
+      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} isEditMode={isEditMode} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onBatchReplaceCardClick={() => { if (!isEditMode) { appendAssistantMessage('편집모드를 활성화 해주세요'); return; } setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); setIsBatchReplaceModalOpen(true); }} onSearchResultClick={handleSearchResultClick} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteBatchReplaceAction={executeBatchReplaceAction} />
     </main></div>
     {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
     <HighlightModal
       isOpen={isHighlightModalOpen}
       selectedDocument={selectedDocument}
       previewModel={previewModel}
+      onSearch={handleDocumentSearch}
       onApply={handleHighlightSearch}
-      onClearAll={handleHighlightClearAll}
       onReset={handleHighlightReset}
       onResultClick={handleHighlightResultClick}
       onClose={() => setIsHighlightModalOpen(false)}
@@ -329,9 +440,10 @@ function App() {
       isOpen={isBatchReplaceModalOpen}
       selectedDocument={selectedDocument}
       previewModel={previewModel}
+      initialValues={batchReplaceInitialValues}
       onSearch={handleDocumentSearch}
       onApply={handleBatchReplaceApply}
-      onClose={() => setIsBatchReplaceModalOpen(false)}
+      onClose={() => { setIsBatchReplaceModalOpen(false); setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); }}
     />
     </div>
   );

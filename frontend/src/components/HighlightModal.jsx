@@ -2,13 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import DraggableResizableModal from './DraggableResizableModal';
 
 const COLOR_OPTIONS = [
+  { value: 'none', label: '미설정' },
   { value: 'yellow', label: '노랑' },
   { value: 'green', label: '초록' },
   { value: 'blue', label: '파랑' },
   { value: 'pink', label: '분홍' }
 ];
-
-const COLOR_LABELS = Object.fromEntries(COLOR_OPTIONS.map((item) => [item.value, item.label]));
 
 function normalizeHighlightResult(rawResult, index, keyword, color) {
   const raw = rawResult || {};
@@ -60,14 +59,13 @@ function HighlightModal({
   isOpen,
   selectedDocument,
   previewModel,
+  onSearch,
   onApply,
-  onClearAll,
   onReset,
   onResultClick,
   onClose
 }) {
   const [keyword, setKeyword] = useState('');
-  const [color, setColor] = useState('yellow');
   const [matchMode, setMatchMode] = useState('contains');
   const [results, setResults] = useState([]);
   const [resultCount, setResultCount] = useState(0);
@@ -75,6 +73,7 @@ function HighlightModal({
   const [statusType, setStatusType] = useState('');
   const [isApplying, setIsApplying] = useState(false);
   const [activeHighlightId, setActiveHighlightId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
 
   const documentName = selectedDocument?.file?.name ?? selectedDocument?.name ?? '';
   const documentType = previewModel?.type === 'pdf'
@@ -93,13 +92,13 @@ function HighlightModal({
   useEffect(() => {
     if (!isOpen) {
       setKeyword('');
-      setColor('yellow');
       setMatchMode('contains');
       setResults([]);
       setResultCount(0);
       setStatusMessage('');
       setStatusType('');
       setActiveHighlightId(null);
+      setSelectedIds([]);
       setIsApplying(false);
     }
   }, [isOpen]);
@@ -108,7 +107,7 @@ function HighlightModal({
     return null;
   }
 
-  const handleApply = async () => {
+  const handleSearch = async () => {
     const normalizedKeyword = keyword.trim();
 
     if (!selectedDocument) {
@@ -125,32 +124,71 @@ function HighlightModal({
 
     setIsApplying(true);
     setStatusType('progress');
-    setStatusMessage('하이라이트를 적용하는 중입니다.');
+    setStatusMessage('문서에서 텍스트를 찾고 있습니다.');
     setActiveHighlightId(null);
 
     try {
-      const rawResponse = await onApply?.(normalizedKeyword, { color, matchMode });
+      const rawResponse = await onSearch?.(normalizedKeyword, { matchMode });
       if (rawResponse?.ok === false) {
         throw new Error(rawResponse.message || '하이라이트를 적용하지 못했습니다.');
       }
 
-      const normalized = normalizeHighlightResponse(rawResponse, normalizedKeyword, color);
+      const normalized = normalizeHighlightResponse(rawResponse, normalizedKeyword, 'none');
       setResults(normalized.results);
       setResultCount(normalized.count);
+      setSelectedIds([]);
 
       if (normalized.count > 0) {
         setStatusType('success');
-        setStatusMessage(`총 ${normalized.count}건을 하이라이트했습니다.`);
+        setStatusMessage(`총 ${normalized.count}건을 찾았습니다. 하이라이트할 항목을 선택하세요.`);
       } else {
         setStatusType('empty');
         setStatusMessage('하이라이트할 단어를 찾을 수 없습니다.');
       }
     } catch (error) {
-      console.error('[HighlightModal] highlight apply failed:', error);
+      console.error('[HighlightModal] highlight search failed:', error);
       setResults([]);
       setResultCount(0);
       setStatusType('error');
-      setStatusMessage('하이라이트 적용 중 오류가 발생했습니다. 다시 시도해주세요.');
+      setStatusMessage('검색 중 오류가 발생했습니다. 다시 시도해주세요.');
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
+  const handleApplySelected = async () => {
+    const normalizedKeyword = keyword.trim();
+    const selectedResults = results.filter((result) => selectedIds.includes(result.id));
+    if (!selectedResults.length) {
+      setStatusType('error');
+      setStatusMessage('하이라이트할 항목을 하나 이상 선택해주세요.');
+      return;
+    }
+    const colorAppliedResults = selectedResults.filter((result) => result.color !== 'none');
+    if (!colorAppliedResults.length) {
+      setStatusType('error');
+      setStatusMessage('하이라이트 색상을 하나 이상 지정해주세요.');
+      return;
+    }
+    setIsApplying(true);
+    setStatusType('progress');
+    setStatusMessage('선택한 항목에 하이라이트를 적용하고 있습니다.');
+    try {
+      const rawResponse = await onApply?.(normalizedKeyword, {
+        matchMode,
+        selectedTargets: colorAppliedResults.map((result) => ({ ...result.raw, color: result.color }))
+      });
+      if (rawResponse?.ok === false) throw new Error(rawResponse.message || '하이라이트를 적용하지 못했습니다.');
+      const normalized = normalizeHighlightResponse(rawResponse, normalizedKeyword, 'none');
+      setResults(normalized.results);
+      setResultCount(normalized.count);
+      setSelectedIds(normalized.results.map((result) => result.id));
+      setStatusType('success');
+      setStatusMessage(`${normalized.count}건에 하이라이트를 적용했습니다.`);
+    } catch (error) {
+      console.error('[HighlightModal] highlight apply failed:', error);
+      setStatusType('error');
+      setStatusMessage(error?.message || '하이라이트 적용 중 오류가 발생했습니다.');
     } finally {
       setIsApplying(false);
     }
@@ -158,38 +196,41 @@ function HighlightModal({
 
   const handleReset = () => {
     setKeyword('');
-    setColor('yellow');
     setMatchMode('contains');
     setResults([]);
     setResultCount(0);
     setStatusMessage('');
     setStatusType('');
     setActiveHighlightId(null);
+    setSelectedIds([]);
     onReset?.();
-  };
-
-  const handleClearAll = async () => {
-    try {
-      await onClearAll?.();
-      setResults([]);
-      setResultCount(0);
-      setActiveHighlightId(null);
-      setStatusType('success');
-      setStatusMessage('하이라이트를 모두 제거했습니다.');
-    } catch (error) {
-      console.error('[HighlightModal] clear highlights failed:', error);
-      setStatusType('error');
-      setStatusMessage('하이라이트 적용 중 오류가 발생했습니다. 다시 시도해주세요.');
-    }
   };
 
   const handleResultClick = (result) => {
     setActiveHighlightId(result.id);
+    setSelectedIds((current) => current.includes(result.id)
+      ? current.filter((id) => id !== result.id) : [...current, result.id]);
     try {
       onResultClick?.(result);
     } catch (error) {
       console.warn('[HighlightModal] highlight result navigation failed:', error);
     }
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds((current) => (
+      current.length === results.length ? [] : results.map((result) => result.id)
+    ));
+  };
+
+  const updateResultColor = (id, nextColor) => {
+    setResults((current) => current.map((result) => (
+      result.id === id ? { ...result, color: nextColor } : result
+    )));
+  };
+
+  const updateAllResultColors = (nextColor) => {
+    setResults((current) => current.map((result) => ({ ...result, color: nextColor })));
   };
 
   const handleClose = () => {
@@ -202,8 +243,8 @@ function HighlightModal({
       title="위치 하이라이트"
       titleId="highlight-modal-title"
       className="highlight-panel"
-      initialWidth={920}
-      initialHeight={700}
+      initialWidth={600}
+      initialHeight={670}
       onClose={handleClose}
     >
 
@@ -224,7 +265,7 @@ function HighlightModal({
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
                     event.preventDefault();
-                    handleApply();
+                    handleSearch();
                   }
                 }}
                 placeholder="하이라이트할 단어 또는 문장을 입력하세요"
@@ -258,44 +299,17 @@ function HighlightModal({
               </label>
             </div>
 
-            <div className="highlight-color-options" aria-label="하이라이트 색상">
-              <span>색상</span>
-              <div>
-                {COLOR_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`highlight-color-button ${color === option.value ? 'active' : ''}`}
-                    data-color={option.value}
-                    aria-pressed={color === option.value}
-                    onClick={() => setColor(option.value)}
-                    disabled={isApplying}
-                  >
-                    <span className="highlight-color-swatch" aria-hidden="true" />
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
             <div className="highlight-form-actions">
               <button
                 type="button"
-                className="highlight-button search-modal-button"
-                onClick={handleApply}
+                className="highlight-button highlight-search-button search-modal-button"
+                onClick={handleSearch}
                 disabled={isApplying}
               >
-                {isApplying ? '적용 중...' : '하이라이트 적용'}
-              </button>
-              <button
-                type="button"
-                className="highlight-reset-button"
-                onClick={handleReset}
-                disabled={isApplying}
-              >
-                초기화
+                {isApplying ? '처리 중...' : '검색'}
               </button>
             </div>
+
           </div>
 
           {(statusMessage || initialDocumentMessage) ? (
@@ -307,19 +321,44 @@ function HighlightModal({
             </div>
           ) : null}
 
-          <div className="highlight-result-summary">
-            적용 결과: 총 <strong>{resultCount}</strong>건
-          </div>
+          {results.length > 0 ? (
+            <div className="highlight-result-summary">
+              <span>검색 결과: 총 <strong>{resultCount}</strong>건 · 선택 <strong>{selectedIds.length}</strong>건</span>
+              <div className="highlight-result-actions">
+                <button type="button" className="highlight-reset-button" onClick={toggleSelectAll} disabled={isApplying}>{selectedIds.length === results.length ? '전체 해제' : '전체 선택'}</button>
+                {selectedIds.length === results.length ? (
+                  <label className="highlight-all-color-control">
+                    <span>전체 색상</span>
+                    <select
+                      value=""
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => {
+                        if (event.target.value) updateAllResultColors(event.target.value);
+                        event.target.value = '';
+                      }}
+                      disabled={isApplying}
+                      aria-label="전체 검색 결과 하이라이트 색상"
+                    >
+                      <option value="">선택</option>
+                      {COLOR_OPTIONS.filter((option) => option.value !== 'none').map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                <button type="button" className="highlight-button search-modal-button" onClick={handleApplySelected} disabled={isApplying || selectedIds.length === 0}>적용</button>
+              </div>
+            </div>
+          ) : null}
 
           {results.length > 0 ? (
             <div className="highlight-result-table-wrap">
               <table className="highlight-result-table">
                 <thead>
                   <tr>
-                    <th>페이지</th>
-                    <th>위치</th>
-                    <th>내용</th>
-                    <th>색상</th>
+                    <th>선택</th>
+                    <th>찾은 텍스트</th>
+                    <th>하이라이트 색상</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -338,10 +377,25 @@ function HighlightModal({
                       tabIndex={0}
                       aria-current={activeHighlightId === result.id ? 'true' : undefined}
                     >
-                      <td>{result.pageNumber ? `${result.pageNumber}페이지` : '-'}</td>
-                      <td>{formatHighlightLocation(result, index)}</td>
-                      <td className="highlight-result-text" title={result.text}>{result.text || '-'}</td>
-                      <td>{COLOR_LABELS[result.color] || COLOR_LABELS.yellow}</td>
+                      <td className="highlight-result-check-cell"><input type="checkbox" checked={selectedIds.includes(result.id)} readOnly tabIndex={-1} aria-label={`${index + 1}번 하이라이트 결과 선택`} /></td>
+                      <td className="highlight-result-text" title={result.text}>
+                        <strong>{result.text || '-'}</strong>
+                        <small>{result.pageNumber ? `${result.pageNumber}페이지` : '-'} · {formatHighlightLocation(result, index)}</small>
+                      </td>
+                      <td>
+                        <select
+                          className="highlight-result-color-select"
+                          value={result.color || 'none'}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => updateResultColor(result.id, event.target.value)}
+                          disabled={isApplying}
+                          aria-label={`${index + 1}번 검색 결과 하이라이트 색상`}
+                        >
+                          {COLOR_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -351,16 +405,6 @@ function HighlightModal({
             <div className="highlight-result-empty">하이라이트할 단어를 찾을 수 없습니다.</div>
           ) : null}
 
-          <div className="highlight-clear-actions">
-            <button
-              type="button"
-              className="highlight-clear-button"
-              onClick={handleClearAll}
-              disabled={isApplying}
-            >
-              전체 제거
-            </button>
-          </div>
     </DraggableResizableModal>
   );
 }

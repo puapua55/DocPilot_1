@@ -34,9 +34,9 @@ function DraggableResizableModal({
   onClose,
   children,
   className = '',
-  initialWidth = 920,
-  initialHeight = 700,
-  minWidth = 520,
+  initialWidth = 600,
+  initialHeight = 670,
+  minWidth = 600,
   minHeight = 360
 }) {
   const modalRef = useRef(null);
@@ -107,7 +107,7 @@ function DraggableResizableModal({
         ref={modalRef}
         className={`draggable-modal search-modal ${className}`}
         role="dialog"
-        aria-modal="true"
+        aria-modal="false"
         aria-labelledby={titleId}
         style={{
           width,

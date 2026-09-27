@@ -460,6 +460,7 @@ button:disabled {
 }
 
 .pdf-view-mode-toggle,
+.pdf-edit-mode-toggle,
 .pdf-page-navigation,
 .pdf-document-history {
   display: inline-flex;
@@ -467,9 +468,16 @@ button:disabled {
   gap: 4px;
 }
 
-.pdf-view-mode-toggle {
+.pdf-view-mode-toggle-group {
   grid-area: view;
   justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pdf-view-mode-toggle,
+.pdf-edit-mode-toggle {
   min-height: 32px;
   padding: 0 3px;
   border: 1px solid #d7e2ff;
@@ -478,6 +486,7 @@ button:disabled {
 }
 
 .pdf-view-mode-toggle button,
+.pdf-edit-mode-toggle button,
 .pdf-page-navigation button {
   min-height: 30px;
   border: 0;
@@ -490,7 +499,8 @@ button:disabled {
   cursor: pointer;
 }
 
-.pdf-view-mode-toggle button.active {
+.pdf-view-mode-toggle button.active,
+.pdf-edit-mode-toggle button.active {
   background: #edf3ff;
   color: #315fc7;
 }
@@ -609,6 +619,24 @@ button:disabled {
   cursor: wait;
   opacity: 0.62;
 }
+
+.viewer-highlight-clear-button {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #f05d68;
+  border-radius: 9px;
+  background: #fff1f2;
+  color: #cf3441;
+  box-shadow: 0 6px 18px rgba(207, 52, 65, 0.14);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.viewer-highlight-clear-button:hover:not(:disabled) { background: #ffe0e3; }
+.viewer-highlight-clear-button:disabled { cursor: wait; opacity: 0.62; }
 
 .docx-download-actions {
   position: static;
@@ -878,6 +906,31 @@ button:disabled {
   background: rgba(80, 120, 255, 0.35);
 }
 
+/* Native selection paints one background for every PDF.js span. In edit
+   modes a single merged selection layer is rendered instead, avoiding the
+   visually stacked blue fragments of split PDF text runs. */
+.pdf-page.is-text-selection-mode .textLayer span::selection,
+.pdf-page.is-text-selection-mode .textLayer-item::selection {
+  background: transparent;
+}
+
+/* Area text replacement uses a lasso rectangle rather than the browser's
+   native text selection. Let the page receive the pointer drag directly. */
+.pdf-page.is-area-text-selection-mode .textLayer {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pdf-area-text-selection-box {
+  position: absolute;
+  z-index: 8;
+  box-sizing: border-box;
+  border: 2px dashed #1d2d50;
+  background: rgba(89, 120, 255, 0.06);
+  pointer-events: none;
+}
+
 .textLayer-item::selection {
   background: rgba(80, 120, 255, 0.35);
 }
@@ -897,7 +950,9 @@ button:disabled {
   inset: 0;
   width: 100%;
   height: 100%;
-  z-index: 3;
+  /* Keep highlights above the white replacement cover. The highlighted
+     replacement text remains readable because the highlight is translucent. */
+  z-index: 7;
   pointer-events: none;
 }
 
@@ -978,7 +1033,11 @@ button:disabled {
   display: block;
   width: 100%;
   min-width: 36px;
-  height: 100%;
+  /* The object keeps the full selected hit area, while the input itself
+     follows one text line. This lets top/middle/bottom baseline settings
+     move the glyphs instead of vertically centring them again inside a
+     full-height native input control. */
+  height: 1.15em;
   margin: 0;
   padding: 0 2px;
   border: 1px solid rgba(49, 95, 199, 0.85);
@@ -1001,6 +1060,203 @@ button:disabled {
   min-width: 36px;
   line-height: 1;
 }
+
+/* Formatting controls live above the document, like a conventional editor
+   ribbon, instead of covering the text currently being edited. */
+.pdf-text-edit-toolbar {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  margin: 0 10px 8px;
+  padding: 4px 8px;
+  border: 1px solid #cbd9ff;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #f4f7ff 100%);
+  box-shadow: 0 2px 8px rgba(43, 76, 150, 0.08);
+  color: #263656;
+}
+
+.pdf-text-edit-toolbar-label {
+  padding: 0 7px 0 3px;
+  color: #315fc7;
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.pdf-text-edit-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 8px 2px 0;
+  background: #d7e1fa;
+}
+
+.text-edit-format-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.text-edit-font-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+  color: #52627e;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.text-edit-font-control select {
+  width: 138px;
+  height: 28px;
+  padding: 0 22px 0 7px;
+  border: 1px solid #c6d4f5;
+  border-radius: 5px;
+  background: #fff;
+  color: #263653;
+  font: inherit;
+  cursor: pointer;
+}
+
+.text-edit-font-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  margin-right: 3px;
+  padding-left: 5px;
+  border-left: 1px solid #d7e1fa;
+}
+
+.text-edit-font-size input {
+  width: 48px;
+  height: 26px;
+  padding: 0 3px;
+  border: 1px solid #b9caf1;
+  border-radius: 4px;
+  color: #263656;
+  font: inherit;
+  text-align: right;
+}
+
+.text-edit-font-size small {
+  color: #7987a0;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.text-edit-format-controls button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #303743;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 26px;
+}
+
+.text-edit-format-controls button:hover,
+.text-edit-format-controls button.is-active {
+  border-color: #a9c0ff;
+  background: #e7edff;
+  color: #2454bf;
+}
+
+.text-edit-color-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #111111;
+  cursor: pointer;
+  font-weight: 800;
+  line-height: 24px;
+}
+
+.text-edit-color-control:hover {
+  border-color: #a9c0ff;
+  background: #e7edff;
+}
+
+.text-edit-color-control::after {
+  position: absolute;
+  bottom: 4px;
+  width: 17px;
+  height: 3px;
+  background: var(--text-edit-color, #111111);
+  content: '';
+}
+
+.text-edit-color-control input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.text-edit-letter-spacing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  margin-left: 6px;
+  padding-left: 7px;
+  border-left: 1px solid #d7e1fa;
+  color: #536483;
+  font-size: 0.73rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.text-edit-letter-spacing input {
+  width: 49px;
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid #b9caf1;
+  border-radius: 4px;
+  color: #263656;
+  font: inherit;
+  text-align: right;
+}
+
+.text-edit-letter-spacing small {
+  color: #7987a0;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.text-edit-format-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: 4px;
+  padding-left: 4px;
+  border-left: 1px solid #d7e1fa;
+}
+
+.text-edit-format-controls .text-align-button {
+  font-size: 15px;
+  font-family: Arial, sans-serif;
+}
+
+.text-align-button span { display: block; }
+.text-align-left { text-align: left; }
+.text-align-center { text-align: center; }
+.text-align-right { text-align: right; }
+.text-align-justify { letter-spacing: -2px; }
 
 .movable-text-format-toolbar {
   position: absolute;
@@ -1186,6 +1442,12 @@ button:disabled {
   outline: none;
 }
 
+.feature-card-actionable.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  filter: grayscale(0.35);
+}
+
 .feature-card h3 {
   margin: 0;
   font-size: 0.98rem;
@@ -1279,12 +1541,19 @@ button:disabled {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.35);
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
   padding: 24px;
+  /* Keep document dialogs open without turning the rest of the viewer into
+     an inactive overlay. The dialog itself opts back in below. */
+  pointer-events: none;
+}
+
+.modal-backdrop .draggable-modal {
+  pointer-events: auto;
 }
 
 .search-modal {
@@ -1697,29 +1966,20 @@ button:disabled {
 }
 
 .search-panel .search-result-table {
-  min-width: 720px;
+  min-width: 0;
   margin-top: 0;
   border-radius: 0;
 }
 
 .search-panel .search-result-table th:nth-child(1),
 .search-panel .search-result-table td:nth-child(1) {
-  width: 100px;
+  width: auto;
+  text-align: left;
 }
 
 .search-panel .search-result-table th:nth-child(2),
 .search-panel .search-result-table td:nth-child(2) {
-  width: 150px;
-}
-
-.search-panel .search-result-table th:nth-child(3),
-.search-panel .search-result-table td:nth-child(3) {
-  width: auto;
-}
-
-.search-panel .search-result-table th:nth-child(4),
-.search-panel .search-result-table td:nth-child(4) {
-  width: 130px;
+  width: 190px;
 }
 
 .search-result-row.active {
@@ -1731,11 +1991,15 @@ button:disabled {
 }
 
 .search-result-text {
-  max-width: 440px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
+
+.search-result-text strong,
+.highlight-result-text strong { display: block; color: #263651; }
+.search-result-text small,
+.highlight-result-text small { display: block; margin-top: 3px; color: var(--muted); font-size: 0.76rem; }
+.search-result-check-cell input,
+.highlight-result-check-cell input { width: 17px; height: 17px; accent-color: #4f7cff; pointer-events: none; }
 
 .search-panel > .search-modal-body > .search-result-empty {
   margin-top: 10px;
@@ -1919,6 +2183,8 @@ button:disabled {
   min-width: 140px;
 }
 
+.highlight-form-actions .highlight-search-button { min-width: 92px; }
+
 .highlight-reset-button,
 .highlight-clear-button {
   height: 48px;
@@ -1971,9 +2237,18 @@ button:disabled {
 
 .highlight-result-summary {
   margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   color: #334b7a;
   font-size: 0.92rem;
 }
+
+.highlight-result-summary .highlight-button { min-width: 100px; }
+.highlight-result-actions { display: inline-flex; align-items: center; gap: 8px; }
+.highlight-all-color-control { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 0.78rem; font-weight: 700; }
+.highlight-all-color-control select { min-width: 70px; border: 1px solid #cbd9ff; border-radius: 8px; padding: 7px; color: #263651; background: #fff; font: inherit; }
 
 .highlight-result-table-wrap {
   width: 100%;
@@ -1985,7 +2260,7 @@ button:disabled {
 
 .highlight-result-table {
   width: 100%;
-  min-width: 720px;
+  min-width: 0;
   table-layout: fixed;
   border-collapse: collapse;
   background: #ffffff;
@@ -2007,22 +2282,29 @@ button:disabled {
 
 .highlight-result-table th:nth-child(1),
 .highlight-result-table td:nth-child(1) {
-  width: 100px;
+  width: 64px;
+  text-align: center;
 }
 
 .highlight-result-table th:nth-child(2),
 .highlight-result-table td:nth-child(2) {
-  width: 150px;
+  width: auto;
 }
 
 .highlight-result-table th:nth-child(3),
 .highlight-result-table td:nth-child(3) {
-  width: auto;
+  width: 190px;
 }
 
-.highlight-result-table th:nth-child(4),
-.highlight-result-table td:nth-child(4) {
-  width: 100px;
+.highlight-result-color-select {
+  width: 100%;
+  min-width: 112px;
+  border: 1px solid #cbd9ff;
+  border-radius: 8px;
+  padding: 7px 9px;
+  color: #263651;
+  background: #fff;
+  font: inherit;
 }
 
 .highlight-result-row {
@@ -2041,10 +2323,7 @@ button:disabled {
 }
 
 .highlight-result-text {
-  max-width: 440px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .highlight-result-empty {
@@ -2312,6 +2591,8 @@ button:disabled {
 .batch-replace-status.is-empty { color: var(--muted); }
 .batch-replace-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; color: #334b7a; font-weight: 700; }
 .batch-replace-list-heading .search-modal-button { min-width: 100px; }
+.batch-replace-list-actions { display: inline-flex; align-items: center; gap: 8px; }
+.batch-replace-list-actions .search-modal-button.secondary { background: #f4f7ff; border-color: #b9cbff; color: #3159be; box-shadow: none; }
 .batch-replace-table-wrap { max-height: 340px; overflow: auto; margin-top: 10px; border: 1px solid #dfe8ff; border-radius: 14px; }
 .batch-replace-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .batch-replace-table th,

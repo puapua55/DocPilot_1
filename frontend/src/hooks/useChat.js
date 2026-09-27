@@ -3,9 +3,9 @@ import { sendChatMessage } from '../services/llmService';
 import { INITIAL_CHAT_MESSAGES } from '../utils/constants';
 
 const RESTRICTED_CHAT_MESSAGE = '채팅은 정확한 문서 검색과 위치 하이라이트 요청에만 사용할 수 있습니다.';
-const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight']);
+const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'batch-replace']);
 
-export function useChat(selectedDocument, previewModel, documentViewerRef) {
+export function useChat(selectedDocument, previewModel, documentViewerRef, isEditMode = false) {
   const [messages, setMessages] = useState(INITIAL_CHAT_MESSAGES);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -56,9 +56,22 @@ export function useChat(selectedDocument, previewModel, documentViewerRef) {
         history: nextMessages.slice(-10).map(({ role, text }) => ({ role, content: text }))
       });
 
-      const documentAction = ALLOWED_ACTION_TYPES.has(reply.action?.type);
-      const action = documentAction ? reply.action : null;
-      const text = documentAction ? reply.answer : RESTRICTED_CHAT_MESSAGE;
+      // Older AI responses may still call this action "replace". A request
+      // such as "A를 B로 바꿔줘" must always enter the reviewable batch
+      // workflow, never perform an immediate one-off replacement.
+      const normalizedAction = reply.action?.type === 'replace'
+        ? { ...reply.action, type: 'batch-replace' }
+        : reply.action
+          ? { ...reply.action, requestText: trimmed }
+          : reply.action;
+      const documentAction = ALLOWED_ACTION_TYPES.has(normalizedAction?.type);
+      const needsEditMode = normalizedAction?.type === 'batch-replace';
+      const action = documentAction && (!needsEditMode || isEditMode) ? normalizedAction : null;
+      const text = documentAction && needsEditMode && !isEditMode
+        ? '편집모드를 활성화 해주세요'
+        : documentAction && normalizedAction?.type === 'batch-replace'
+          ? '텍스트 변경 요청을 확인했습니다. 검색 결과를 확인합니다.'
+          : documentAction ? reply.answer : RESTRICTED_CHAT_MESSAGE;
 
       setMessages((current) => [
         ...current,

@@ -3,12 +3,15 @@ import PdfPage from './PdfPage';
 import { loadPdfDocument } from '../services/pdfService';
 import { searchKeywordInDocument } from '../services/searchService';
 import { isPdfFile } from '../utils/fileUtils';
+import { resolveReplacementPreviewFont } from '../services/pdfReplacementFont';
 
 function normalizePdfLines(textItems) {
   const groupedLines = [];
 
   textItems.forEach((item) => {
-    const value = String(item?.str || '').trim();
+    // Keep PDF.js whitespace tokens. A comma can be a separate item right
+    // after a word, while its following space is another item.
+    const value = String(item?.str || '');
     if (!value) {
       return;
     }
@@ -27,7 +30,9 @@ function normalizePdfLines(textItems) {
   return groupedLines
     .map((line) => ({
       y: line.y,
-      text: line.parts.join(' ').replace(/\s+/g, ' ').trim()
+      // Match the text-layer's span concatenation so its Range indexes and
+      // search result indexes are identical.
+      text: line.parts.join('').replace(/\s+/g, ' ').trim()
     }))
     .filter((line) => line.text);
 }
@@ -81,6 +86,197 @@ function filterMovedSourceSearchResults(results, movableTexts) {
     consumed.add(index);
     return false;
   });
+}
+
+function getReplacementSearchText(item) {
+  return String(item?.displayText ?? item?.editedText ?? item?.text ?? '').trim();
+}
+
+function getReplacementSearchResults(keyword, options, movableTexts) {
+  const candidates = (Array.isArray(movableTexts) ? movableTexts : [])
+    // Persisted replacements are already part of the reloaded PDF text layer.
+    // Non-persisted items are the live replacement layer and need a synthetic
+    // search result so search/highlight can reach them as well.
+    .filter((item) => !(item?.persistedToPdf && !item?.hasChanges))
+    .map((item) => ({ item, text: getReplacementSearchText(item) }))
+    .filter(({ item, text }) => Number(item?.pageNumber) > 0 && text);
+
+  return candidates.flatMap(({ item, text }) => {
+    const lineNumber = Number(item?.lineNumber ?? item?.searchLineNumber ?? 1) || 1;
+    const results = searchKeywordInDocument(
+      [{ page: Number(item.pageNumber), lines: [text] }],
+      keyword,
+      options
+    );
+    return results.map((result) => ({
+      ...result,
+      id: `pdf-replacement-${item.id}-${result.matchIndex}`,
+      type: 'pdf-replacement',
+      isReplacement: true,
+      replacementId: item.id,
+      lineNumber,
+      line: lineNumber,
+      replacementRect: item.currentRect || item.displayRect || item.originalRect || null,
+      lineText: text,
+      fullText: text,
+      text,
+      originalText: result.matchedText,
+      matchedText: result.matchedText
+    }));
+  });
+}
+
+function getVerticalBaselineOffset(item, verticalAlign = 'middle') {
+  const height = Math.max(0, Number(item?.currentRect?.height) || 0);
+  const fontSize = Math.max(1, Number(item?.fontSize) || 1);
+  const freeSpace = Math.max(0, height - fontSize);
+  const topOffset = fontSize * 0.88;
+  if (verticalAlign === 'top') return topOffset;
+  if (verticalAlign === 'bottom') return freeSpace + topOffset;
+  return freeSpace / 2 + topOffset;
+}
+
+function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFontChange }) {
+  if (!editing) return null;
+  return (
+    <div
+      className="pdf-text-edit-toolbar"
+      role="toolbar"
+      aria-label="텍스트 서식"
+      onMouseDown={(event) => {
+        // 서식 버튼은 편집 입력창의 포커스를 유지하되, 색상·자간 입력칸과
+        // number 스피너는 브라우저 기본 입력 동작을 그대로 사용해야 한다.
+        if (!event.target.closest('input, select')) event.preventDefault();
+      }}
+      onBlur={() => {
+        window.setTimeout(() => {
+          if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar')) onCommit?.();
+        }, 0);
+      }}
+    >
+      <div className="text-edit-format-controls">
+        <label className="text-edit-font-control" title="글꼴">
+          <span>글꼴</span>
+          <select
+            value={editing.fontFamily || ''}
+            onChange={(event) => onFontChange?.(event.target.value)}
+            aria-label="글꼴"
+          >
+            <option value="">원본 글꼴</option>
+            {fonts.map((font) => <option key={font.candidate} value={font.candidate}>{font.label}</option>)}
+          </select>
+        </label>
+        <label className="text-edit-font-size" title="글자 크기">
+          <input
+            type="number"
+            min="4"
+            max="144"
+            step="0.1"
+            value={editing.fontSize ?? 10}
+            onChange={(event) => {
+              const rawValue = event.target.value;
+              if (rawValue === '') {
+                onChange?.({ fontSize: '' });
+                return;
+              }
+              const value = Number(rawValue);
+              if (Number.isFinite(value)) onChange?.({ fontSize: Math.max(4, Math.min(144, value)) });
+            }}
+            aria-label="글자 크기"
+          />
+          <small>pt</small>
+        </label>
+        <button
+          type="button"
+          className={editing.fontWeight === 'bold' ? 'is-active' : ''}
+          onClick={() => onChange?.({ fontWeight: editing.fontWeight === 'bold' ? 'normal' : 'bold' })}
+          aria-label="굵게"
+          title="굵게"
+        ><strong>가</strong></button>
+        <button
+          type="button"
+          className={editing.fontStyle === 'italic' ? 'is-active' : ''}
+          onClick={() => onChange?.({ fontStyle: editing.fontStyle === 'italic' ? 'normal' : 'italic' })}
+          aria-label="기울임"
+          title="기울임"
+        ><em>가</em></button>
+        <button
+          type="button"
+          className={editing.textDecoration === 'underline' ? 'is-active' : ''}
+          onClick={() => onChange?.({ textDecoration: editing.textDecoration === 'underline' ? 'none' : 'underline' })}
+          aria-label="밑줄"
+          title="밑줄"
+        ><u>가</u></button>
+        <button
+          type="button"
+          className={editing.textDecoration === 'line-through' ? 'is-active' : ''}
+          onClick={() => onChange?.({ textDecoration: editing.textDecoration === 'line-through' ? 'none' : 'line-through' })}
+          aria-label="취소선"
+          title="취소선"
+        ><s>가</s></button>
+        <label className="text-edit-color-control" title="글자색" style={{ '--text-edit-color': editing.color || '#111111' }}>
+          <span aria-hidden="true">A</span>
+          <input type="color" value={editing.color || '#111111'} onChange={(event) => onChange?.({ color: event.target.value })} aria-label="글자색" />
+        </label>
+        <label className="text-edit-letter-spacing" title="자간">
+          <span>자간</span>
+          <input
+            type="number"
+            min="-5"
+            max="20"
+            step="0.1"
+            value={editing.letterSpacing ?? 0}
+            onChange={(event) => {
+              const rawValue = event.target.value;
+              if (rawValue === '') {
+                onChange?.({ letterSpacing: '' });
+                return;
+              }
+              const value = Number(rawValue);
+              if (Number.isFinite(value)) {
+                onChange?.({ letterSpacing: Math.max(-5, Math.min(20, value)) });
+              }
+            }}
+            aria-label="자간"
+          />
+          <small>px</small>
+        </label>
+        <div className="text-edit-format-group" role="group" aria-label="세로 기준선">
+          {[
+            ['top', '↥', '위쪽 기준선'],
+            ['middle', '↕', '가운데 기준선'],
+            ['bottom', '↧', '아래쪽 기준선']
+          ].map(([value, icon, title]) => (
+            <button
+              key={value}
+              type="button"
+              className={editing.verticalAlign === value ? 'is-active' : ''}
+              onClick={() => onChange?.({ verticalAlign: value })}
+              aria-label={title}
+              title={title}
+            >{icon}</button>
+          ))}
+        </div>
+        <div className="text-edit-format-group" role="group" aria-label="가로 정렬">
+          {[
+            ['left', '≡', '왼쪽 정렬'],
+            ['center', '≡', '가운데 정렬'],
+            ['right', '≡', '오른쪽 정렬'],
+            ['justify', '☰', '양쪽 정렬']
+          ].map(([value, icon, title]) => (
+            <button
+              key={value}
+              type="button"
+              className={`text-align-button text-align-${value} ${editing.textAlign === value ? 'is-active' : ''}`}
+              onClick={() => onChange?.({ textAlign: value })}
+              aria-label={title}
+              title={title}
+            >{icon}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function collectInstantReplacementReviewItems(viewScale = 1) {
@@ -154,6 +350,7 @@ function collectInstantReplacementReviewItems(viewScale = 1) {
         fontWeight: textStyle.fontWeight || 'normal',
         fontStyle: textStyle.fontStyle || 'normal',
         textDecoration: textStyle.textDecoration || 'none',
+        letterSpacing: Number.parseFloat(textStyle.letterSpacing) || 0,
         color: textStyle.color || '#111111',
         backgroundColor: coverStyle.backgroundColor || '#ffffff',
         forceUnicodeFallback: true,
@@ -165,7 +362,7 @@ function collectInstantReplacementReviewItems(viewScale = 1) {
   });
 }
 
-const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, toolbarActions, onVisualConvert }, ref) {
+const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, toolbarActions, onVisualConvert, isEditMode = false, onEditModeChange }, ref) {
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumbers, setPageNumbers] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
@@ -185,11 +382,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [currentPage, setCurrentPage] = useState(1);
   const [textMoveMode, setTextMoveMode] = useState(false);
   const [textReplaceMode, setTextReplaceMode] = useState(false);
+  const [areaTextReplaceMode, setAreaTextReplaceMode] = useState(false);
   const [movableTexts, setMovableTexts] = useState([]);
   const [imageAttachments, setImageAttachments] = useState([]);
   const [batchReplaceRequest, setBatchReplaceRequest] = useState(null);
+  const batchHandledPagesRef = useRef(new Map());
   const [selectedMovableTextId, setSelectedMovableTextId] = useState(null);
   const [editingMovableText, setEditingMovableText] = useState(null);
+  const [availableFonts, setAvailableFonts] = useState([]);
   const [selectedImageId, setSelectedImageId] = useState(null);
   const imageInputRef = useRef(null);
   const [userHighlight, setUserHighlight] = useState({
@@ -197,6 +397,21 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     color: 'yellow',
     matchMode: 'contains'
   });
+  const [userHighlights, setUserHighlights] = useState([]);
+
+  useEffect(() => {
+    setTextMoveMode(false);
+    setTextReplaceMode(false);
+    setAreaTextReplaceMode(Boolean(isEditMode));
+    setSelectedMovableTextId(null);
+    setEditingMovableText(null);
+  }, [isEditMode]);
+
+  useEffect(() => {
+    window.docPilotFonts?.list?.()
+      .then((fonts) => setAvailableFonts(Array.isArray(fonts) ? fonts : []))
+      .catch(() => setAvailableFonts([]));
+  }, []);
 
   const updateHistoryState = () => {
     const { snapshots, index } = historyRef.current;
@@ -216,7 +431,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   const restorePdfSnapshot = (snapshot) => {
     if (!snapshot) return false;
+    // A batch request is a one-time range-to-editor promotion job, not a
+    // document change. Leaving it alive lets newly mounted pages (for example
+    // after zooming) promote the same ranges again even after Undo/Reset.
+    batchHandledPagesRef.current.clear();
+    setBatchReplaceRequest(null);
     setUserHighlight(snapshot.highlight);
+    setUserHighlights(Array.isArray(snapshot.highlightEntries) ? snapshot.highlightEntries : (snapshot.highlight?.keyword ? [snapshot.highlight] : []));
     setAppliedReplacePreview(snapshot.replace);
     setMovableTexts(snapshot.movableTexts || []);
     setImageAttachments(snapshot.imageAttachments || []);
@@ -247,9 +468,17 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const resetAllDocumentChanges = () => {
     const history = historyRef.current;
     let reset = false;
-    if (history.index > 0) {
+    if (history.index > 0 || movableTexts.length || imageAttachments.length || batchReplaceRequest) {
       history.index = 0;
-      restorePdfSnapshot(history.snapshots[0]);
+      restorePdfSnapshot(history.snapshots[0] || {
+        highlight: { keyword: '', color: 'yellow', matchMode: 'contains' },
+        highlightEntries: [],
+        replace: null,
+        movableTexts: [],
+        imageAttachments: [],
+        selectedMovableTextId: null,
+        selectedImageId: null
+      });
       updateHistoryState();
       reset = true;
     }
@@ -270,8 +499,68 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       fontWeight: selection.fontWeight || 'normal',
       fontStyle: selection.fontStyle || 'normal',
       textDecoration: selection.textDecoration || 'none',
+      letterSpacing: Number(selection.letterSpacing) || 0,
+      verticalAlign: selection.verticalAlign || 'middle',
+      baselineOffset: Number.isFinite(Number(selection.baselineOffset))
+        ? Number(selection.baselineOffset) : getVerticalBaselineOffset(selection, selection.verticalAlign),
+      textAlign: selection.textAlign || 'left',
+      fontSize: Number(selection.fontSize) || 10,
+      fontFamily: selection.selectedFontFamily || selection.previewFontFamily || '',
       color: selection.color || '#111111'
     } : null);
+    return id;
+  };
+
+  const addMovableTexts = (selections = []) => {
+    const normalized = (Array.isArray(selections) ? selections : []).filter(Boolean);
+    if (!normalized.length) return [];
+    const entries = normalized.map((selection) => ({
+      ...selection,
+      id: `movable-text-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    }));
+    const first = entries[0];
+    setMovableTexts((current) => {
+      const next = [...current, ...entries];
+      commitPdfChange(userHighlight, appliedReplacePreview, next, first.id);
+      return next;
+    });
+    setSelectedMovableTextId(first.id);
+    setEditingMovableText({
+      id: first.id,
+      value: String(first.displayText ?? first.text ?? ''),
+      fontWeight: first.fontWeight || 'normal',
+      fontStyle: first.fontStyle || 'normal',
+      textDecoration: first.textDecoration || 'none',
+      letterSpacing: Number(first.letterSpacing) || 0,
+      verticalAlign: first.verticalAlign || 'middle',
+      baselineOffset: Number.isFinite(Number(first.baselineOffset))
+        ? Number(first.baselineOffset) : getVerticalBaselineOffset(first, first.verticalAlign),
+      textAlign: first.textAlign || 'left',
+      fontSize: Number(first.fontSize) || 10,
+      fontFamily: first.selectedFontFamily || first.previewFontFamily || '',
+      color: first.color || '#111111'
+    });
+    return entries.map((entry) => entry.id);
+  };
+
+  // Preview-font resolution is visual metadata only. It must not add an undo
+  // entry or modify the replacement itself; export uses fontCandidates.
+  const updateMovableTextPreviewFont = (id, previewFont) => {
+    if (!id || !previewFont?.fontFamily) return;
+    setMovableTexts((current) => current.map((item) => (
+      item.id === id
+        ? {
+          ...item,
+          renderFontFamily: previewFont.fontFamily,
+          previewFontSource: previewFont.source || 'bundled',
+          previewFontFamily: previewFont.originalFamily || '',
+          selectedFontFamily: previewFont.selectionValue || item.selectedFontFamily || ''
+        }
+        : item
+    )));
+    setEditingMovableText((current) => current?.id === id && previewFont.selectionValue
+      ? { ...current, fontFamily: previewFont.selectionValue }
+      : current);
   };
 
   const moveMovableText = (id, currentRect) => {
@@ -306,6 +595,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       fontWeight: item.fontWeight || 'normal',
       fontStyle: item.fontStyle || 'normal',
       textDecoration: item.textDecoration || 'none',
+      letterSpacing: Number(item.letterSpacing) || 0,
+      verticalAlign: item.verticalAlign || 'middle',
+      baselineOffset: Number.isFinite(Number(item.baselineOffset))
+        ? Number(item.baselineOffset) : getVerticalBaselineOffset(item, item.verticalAlign),
+      textAlign: item.textAlign || 'left',
+      fontSize: Number(item.fontSize) || 10,
+      fontFamily: item.selectedFontFamily || item.previewFontFamily || '',
       color: item.color || '#111111'
     });
   };
@@ -315,7 +611,76 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   };
 
   const updateEditingMovableTextStyle = (style) => {
-    setEditingMovableText((current) => current ? { ...current, ...style } : current);
+    setEditingMovableText((current) => {
+      if (!current) return current;
+      const target = movableTexts.find((item) => item.id === current.id);
+      const next = { ...current, ...style };
+      if (style.verticalAlign && target) {
+        next.baselineOffset = getVerticalBaselineOffset(target, style.verticalAlign);
+      }
+      if (style.fontSize !== undefined && target) {
+        const fontSize = Number(style.fontSize);
+        if (Number.isFinite(fontSize) && fontSize > 0) {
+          next.fontSize = fontSize;
+          next.baselineOffset = getVerticalBaselineOffset({ ...target, fontSize }, next.verticalAlign || target.verticalAlign);
+        }
+      }
+      return next;
+    });
+  };
+
+  const changeEditingMovableTextFont = async (fontFamily) => {
+    if (!editingMovableText) return;
+    const editingId = editingMovableText.id;
+    const target = movableTexts.find((item) => item.id === editingId);
+    if (!target) return;
+    const fontCandidates = fontFamily
+      ? [fontFamily]
+      : (target.originalFontCandidates || target.fontCandidates || []);
+    const preferBoldFont = fontFamily ? false : (target.originalPreferBoldFont === true || target.preferBoldFont === true);
+    // Persist the selected font candidate before resolving the browser
+    // preview. The input can blur/commit while FontFace loading is pending;
+    // without this immediate update that commit used the old source font for
+    // PDF export even though the viewer later displayed the new preview.
+    setMovableTexts((current) => current.map((item) => item.id === editingId ? {
+      ...item,
+      selectedFontFamily: fontFamily,
+      fontCandidates,
+      preferBoldFont
+    } : item));
+    setEditingMovableText((current) => current?.id === editingId ? { ...current, fontFamily } : current);
+    try {
+      const previewFont = await resolveReplacementPreviewFont(fontCandidates, { preferBold: preferBoldFont });
+      setMovableTexts((current) => current.map((item) => item.id === editingId ? {
+        ...item,
+        selectedFontFamily: previewFont.selectionValue || fontFamily,
+        fontCandidates,
+        preferBoldFont,
+        renderFontFamily: previewFont.fontFamily,
+        previewFontSource: previewFont.source || 'bundled',
+        previewFontFamily: previewFont.originalFamily || fontFamily || item.previewFontFamily || ''
+      } : item));
+      setEditingMovableText((current) => current?.id === editingId
+        ? { ...current, fontFamily: previewFont.selectionValue || fontFamily }
+        : current);
+    } catch (error) {
+      console.warn('[PdfJsViewer] selected font preview unavailable:', error);
+    }
+  };
+
+  const acknowledgeBatchReplacePage = (requestId, pageNumber) => {
+    const activeRequest = batchReplaceRequest;
+    if (!activeRequest || activeRequest.id !== requestId) return;
+    const targetPages = [...new Set((activeRequest.targets || [])
+      .map((target) => Number(target.pageNumber ?? target.page))
+      .filter((page) => Number.isInteger(page) && page > 0))];
+    const handledPages = batchHandledPagesRef.current.get(requestId) || new Set();
+    handledPages.add(Number(pageNumber));
+    batchHandledPagesRef.current.set(requestId, handledPages);
+    if (targetPages.length && targetPages.every((page) => handledPages.has(page))) {
+      batchHandledPagesRef.current.delete(requestId);
+      setBatchReplaceRequest((current) => current?.id === requestId ? null : current);
+    }
   };
 
   const cancelEditMovableText = () => setEditingMovableText(null);
@@ -328,23 +693,35 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setEditingMovableText(null);
       return;
     }
-    const next = movableTexts.map((item) => item.id === editingMovableText.id
-      ? {
-        ...item,
-        displayText: value,
-        text: value,
-        editedText: value,
-        hasChanges: item.persistedToPdf ? true : item.hasChanges,
-        fontWeight: editingMovableText.fontWeight || item.fontWeight || 'normal',
-        fontStyle: editingMovableText.fontStyle || item.fontStyle || 'normal',
-        textDecoration: editingMovableText.textDecoration || item.textDecoration || 'none',
-        color: editingMovableText.color || item.color || '#111111'
-      }
-      : item);
-    setMovableTexts(next);
+    setMovableTexts((current) => {
+      // Use the latest queued text state so a just-selected font candidate is
+      // never overwritten by this input's blur/commit handler.
+      const next = current.map((item) => item.id === editingMovableText.id
+        ? {
+          ...item,
+          displayText: value,
+          text: value,
+          editedText: value,
+          hasChanges: item.persistedToPdf ? true : item.hasChanges,
+          fontWeight: editingMovableText.fontWeight || item.fontWeight || 'normal',
+          fontStyle: editingMovableText.fontStyle || item.fontStyle || 'normal',
+          textDecoration: editingMovableText.textDecoration || item.textDecoration || 'none',
+          letterSpacing: Number(editingMovableText.letterSpacing) || 0,
+          verticalAlign: editingMovableText.verticalAlign || item.verticalAlign || 'middle',
+          baselineOffset: Number.isFinite(Number(editingMovableText.baselineOffset))
+            ? Number(editingMovableText.baselineOffset)
+            : getVerticalBaselineOffset(item, editingMovableText.verticalAlign || item.verticalAlign),
+          textAlign: editingMovableText.textAlign || item.textAlign || 'left',
+          fontSize: Number(editingMovableText.fontSize) || item.fontSize || 10,
+          selectedFontFamily: editingMovableText.fontFamily || item.selectedFontFamily || '',
+          color: editingMovableText.color || item.color || '#111111'
+        }
+        : item);
+      commitPdfChange(userHighlight, appliedReplacePreview, next, editingMovableText.id);
+      return next;
+    });
     setSelectedMovableTextId(editingMovableText.id);
     setEditingMovableText(null);
-    commitPdfChange(userHighlight, appliedReplacePreview, next, editingMovableText.id);
   };
 
   const deleteMovableText = (id) => {
@@ -470,7 +847,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             matchedCommandCount: item.matchedCommandCount,
             commandRange: item.commandRange
           })));
-          setDownloadMessage(`PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 직접 제거 미확인 ${result.noCoverUnresolvedCount || 0}건 · 원본 글꼴 유지 ${result.fontPreservedCount}건`);
+          const localFontLabel = result.replacementFontSource === 'local'
+            ? ` · PC 원본 계열 글꼴 적용 ${result.localFontAppliedCount || 0}건${result.replacementFontFamily ? ` (${result.replacementFontFamily})` : ''}`
+            : '';
+          setDownloadMessage(`PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 직접 제거 미확인 ${result.noCoverUnresolvedCount || 0}건 · PDF 내부 원본 글꼴 재사용 ${result.fontPreservedCount}건${localFontLabel}`);
         }
       } else {
         const url = URL.createObjectURL(file);
@@ -487,6 +867,20 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setDownloadMessage(`PDF 다운로드에 실패했습니다. ${error?.message || ''}`.trim());
     }
   };
+
+  const clearAppliedHighlights = () => {
+    const clearedHighlight = { keyword: '', color: 'yellow', matchMode: 'contains', selectedTargets: [] };
+    setUserHighlight(clearedHighlight);
+    setUserHighlights([]);
+    commitPdfChange(clearedHighlight, appliedReplacePreview);
+    setDownloadMessage('하이라이트를 제거했습니다.');
+    setDownloadFailed(false);
+    return true;
+  };
+
+  const hasAppliedHighlights = Array.isArray(userHighlight.selectedTargets)
+    ? userHighlight.selectedTargets.length > 0
+    : Boolean(userHighlight.keyword);
 
   console.log('[PdfJsViewer] file:', file);
 
@@ -549,8 +943,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         page: page.pageNumber,
         lines: page.lines.map((line) => line.text)
       }));
+      const sourceResults = searchKeywordInDocument(documentText, keyword, options);
+      const replacementResults = getReplacementSearchResults(keyword, options, movableTexts);
       return filterMovedSourceSearchResults(
-        searchKeywordInDocument(documentText, keyword, options), movableTexts
+        [...sourceResults, ...replacementResults], movableTexts
       );
     },
     getPdfHighlights() {
@@ -610,7 +1006,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         page: page.pageNumber,
         lines: page.lines.map((line) => line.text)
       }));
-      const results = searchKeywordInDocument(
+      const allResults = searchKeywordInDocument(
         documentText,
         normalizedKeyword,
         { matchMode }
@@ -619,9 +1015,40 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         id: result.id || `pdf-highlight-${result.pageNumber}-${result.lineNumber}-${index}`,
         color
       }));
+      const replacementResults = getReplacementSearchResults(
+        normalizedKeyword,
+        { matchMode },
+        movableTexts
+      );
+      const allSearchResults = [...allResults, ...replacementResults];
+      const selectedTargets = Array.isArray(options?.selectedTargets) ? options.selectedTargets : null;
+      const results = selectedTargets
+        ? allSearchResults.flatMap((result) => {
+          const selectedTarget = selectedTargets.find((target) => {
+            const raw = target?.raw || target || {};
+            return Number(raw.pageNumber ?? raw.page) === result.pageNumber
+              && Number(raw.lineNumber ?? raw.line) === result.lineNumber
+              && Number(raw.matchIndex) === result.matchIndex;
+          });
+          if (!selectedTarget) return [];
+          const targetColor = selectedTarget?.color;
+          return [{
+            ...result,
+            color: ['yellow', 'green', 'blue', 'pink'].includes(targetColor) ? targetColor : color
+          }];
+        })
+        : allSearchResults;
 
-      setUserHighlight({ keyword: normalizedKeyword, color, matchMode });
-      commitPdfChange({ keyword: normalizedKeyword, color, matchMode }, appliedReplacePreview);
+      const nextHighlight = {
+        keyword: normalizedKeyword,
+        color,
+        matchMode,
+        selectedTargets: results,
+        replacementTargets: results.filter((result) => result.isReplacement)
+      };
+      setUserHighlight(nextHighlight);
+      setUserHighlights((current) => [...current, nextHighlight]);
+      commitPdfChange({ keyword: normalizedKeyword, color, matchMode, selectedTargets: results }, appliedReplacePreview);
       return { count: results.length, results };
     },
     async replaceText(originalText, newText, options = {}) {
@@ -650,8 +1077,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         // manual drag-selection geometry instead of the line preview path.
         setViewMode('scroll');
         setAppliedReplacePreview(null);
+        const requestId = `batch-range-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        batchHandledPagesRef.current.delete(requestId);
         setBatchReplaceRequest({
-          id: `batch-range-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          id: requestId,
           originalText,
           newText,
           targets: results
@@ -687,7 +1116,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           persistedToPdf: false,
           hasChanges: false,
           coverRects: [item.originalRect],
-          allowMove: true,
+          allowMove: false,
           sourceSelection: null
         }));
         setAppliedReplacePreview(null);
@@ -705,13 +1134,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       return scrollToPdfSearchResult(result);
     },
     clearHighlights() {
-      setUserHighlight({
-        keyword: '',
-        color: 'yellow',
-        matchMode: 'contains'
-      });
-      commitPdfChange({ keyword: '', color: 'yellow', matchMode: 'contains' }, appliedReplacePreview);
-      return true;
+      return clearAppliedHighlights();
     },
     undoDocumentChange() {
       return undoDocumentChange();
@@ -938,34 +1361,41 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   return (
     <div className="pdf-viewer-shell">
       <div className="pdf-view-mode-controls document-toolbar" aria-label="PDF 보기 방식">
-        {pageNumbers.length > 1 ? (
-          <>
+        <div className="pdf-view-mode-toggle-group">
+          {pageNumbers.length > 1 ? (
             <div className="pdf-view-mode-toggle" role="group" aria-label="보기 방식 선택">
               <button type="button" className={viewMode === 'scroll' ? 'active' : ''} onClick={() => setViewMode('scroll')} aria-pressed={viewMode === 'scroll'}>스크롤</button>
               <button type="button" className={viewMode === 'page' ? 'active' : ''} onClick={() => setViewMode('page')} aria-pressed={viewMode === 'page'}>페이지 이동</button>
             </div>
-            {viewMode === 'page' ? (
-              <div className="pdf-page-navigation" role="group" aria-label="페이지 이동">
-                <button type="button" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1}>이전</button>
-                <span aria-live="polite">{currentPage} / {pageNumbers.length}</span>
-                <button type="button" onClick={() => setCurrentPage((page) => Math.min(pageNumbers.length, page + 1))} disabled={currentPage === pageNumbers.length}>다음</button>
-              </div>
-            ) : null}
-          </>
+          ) : null}
+          <div className="pdf-edit-mode-toggle" role="group" aria-label="문서 모드 선택">
+            <button type="button" className={!isEditMode ? 'active' : ''} onClick={() => onEditModeChange?.(false)} aria-pressed={!isEditMode}>뷰어</button>
+            <button type="button" className={isEditMode ? 'active' : ''} onClick={() => onEditModeChange?.(true)} aria-pressed={isEditMode}>편집</button>
+          </div>
+        </div>
+        {pageNumbers.length > 1 && viewMode === 'page' ? (
+          <div className="pdf-page-navigation" role="group" aria-label="페이지 이동">
+            <button type="button" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1}>이전</button>
+            <span aria-live="polite">{currentPage} / {pageNumbers.length}</span>
+            <button type="button" onClick={() => setCurrentPage((page) => Math.min(pageNumbers.length, page + 1))} disabled={currentPage === pageNumbers.length}>다음</button>
+          </div>
         ) : null}
         <div className="pdf-document-history" role="group" aria-label="문서 변경 이력">
-          <button type="button" onClick={undoDocumentChange} disabled={!historyState.canUndo} aria-label="적용 전으로 되돌리기">&lt;</button>
-          <button type="button" onClick={redoDocumentChange} disabled={!historyState.canRedo} aria-label="다시 적용하기">&gt;</button>
-          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!historyState.canReset && movableTexts.length === 0 && imageAttachments.length === 0}>전체 초기화</button>
+          <button type="button" onClick={undoDocumentChange} disabled={!isEditMode || !historyState.canUndo} aria-label="적용 전으로 되돌리기">&lt;</button>
+          <button type="button" onClick={redoDocumentChange} disabled={!isEditMode || !historyState.canRedo} aria-label="다시 적용하기">&gt;</button>
+          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!isEditMode || (!historyState.canReset && movableTexts.length === 0 && imageAttachments.length === 0)}>전체 초기화</button>
           <button
             type="button"
             className={`pdf-text-move-button ${textMoveMode ? 'active' : ''}`}
             onClick={() => {
-              setTextMoveMode((current) => !current);
+              const next = !textMoveMode;
+              setTextMoveMode(next);
               setTextReplaceMode(false);
+              setAreaTextReplaceMode(!next);
               setSelectedMovableTextId(null);
               setEditingMovableText(null);
             }}
+            disabled={!isEditMode}
             aria-pressed={textMoveMode}
             title={textMoveMode ? 'PDF 텍스트 이동을 종료합니다.' : 'PDF 본문에서 한 줄의 텍스트를 선택해 이동합니다.'}
           >
@@ -975,21 +1405,34 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             type="button"
             className={`pdf-text-move-button ${textReplaceMode ? 'active' : ''}`}
             onClick={() => {
-              setTextReplaceMode((current) => !current);
+              const next = !textReplaceMode;
+              setTextReplaceMode(next);
               setTextMoveMode(false);
+              setAreaTextReplaceMode(!next);
               setSelectedMovableTextId(null);
               setEditingMovableText(null);
             }}
+            disabled={!isEditMode}
             aria-pressed={textReplaceMode}
             title={textReplaceMode ? 'PDF 텍스트 교체를 종료합니다.' : 'PDF 본문에서 변경할 텍스트를 선택한 뒤 새 내용을 입력합니다.'}
           >
             텍스트 교체
           </button>
-          <button type="button" className="pdf-text-move-button" onClick={() => imageInputRef.current?.click()} title="현재 보고 있는 PDF 페이지에 이미지를 첨부합니다.">이미지 첨부</button>
+          <button type="button" className="pdf-text-move-button" disabled={!isEditMode} onClick={() => imageInputRef.current?.click()} title="현재 보고 있는 PDF 페이지에 이미지를 첨부합니다.">이미지 첨부</button>
           <input ref={imageInputRef} className="pdf-image-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={addImageAttachment} />
         </div>
         {toolbarActions}
         <div className="viewer-download-actions">
+          {hasAppliedHighlights ? (
+            <button
+              type="button"
+              className="viewer-highlight-clear-button"
+              onClick={clearAppliedHighlights}
+              disabled={downloadStatus !== 'idle'}
+            >
+              하이라이트 제거
+            </button>
+          ) : null}
           <span className="viewer-download-label">다운로드</span>
           <button
             type="button"
@@ -1003,6 +1446,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         </div>
       </div>
       {downloadMessage ? <div className={`pdf-visual-convert-message${downloadFailed ? ' is-error' : ''}`} role={downloadFailed ? 'alert' : 'status'}>{downloadMessage}</div> : null}
+      {isEditMode ? <TextEditFormatToolbar
+        editing={editingMovableText}
+        onChange={updateEditingMovableTextStyle}
+        onCommit={commitEditMovableText}
+        fonts={availableFonts}
+        onFontChange={changeEditingMovableTextFont}
+      /> : null}
       <div ref={viewerRef} className="document-body-scroll pdf-viewer pdf-viewer-scroll">
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (
@@ -1013,16 +1463,22 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 scale={scale}
                 highlightKeyword={userHighlight.keyword}
                 highlightOptions={userHighlight}
+                highlightEntries={userHighlights}
                 findResult={selectedSearchResult}
                 replacePreview={appliedReplacePreview}
                 batchReplaceRequest={batchReplaceRequest}
+                onBatchReplaceHandled={acknowledgeBatchReplacePage}
                 textMoveMode={textMoveMode}
                 textReplaceMode={textReplaceMode}
+                areaTextReplaceMode={isEditMode && areaTextReplaceMode}
+                editingEnabled={isEditMode}
                 movableTexts={movableTexts.filter((item) => item.pageNumber === pageNumber)}
                 imageAttachments={imageAttachments.filter((item) => item.pageNumber === pageNumber)}
                 selectedMovableTextId={selectedMovableTextId}
                 editingMovableText={editingMovableText}
                 onCreateMovableText={addMovableText}
+                onCreateMovableTexts={addMovableTexts}
+                onUpdateMovableTextPreviewFont={updateMovableTextPreviewFont}
                 onMoveMovableText={moveMovableText}
                 onMoveMovableTextEnd={finishMoveMovableText}
                 onSelectMovableText={selectMovableText}

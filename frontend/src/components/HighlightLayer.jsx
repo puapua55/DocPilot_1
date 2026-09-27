@@ -20,20 +20,23 @@ function HighlightLayer({ boxes, width, height, color = 'yellow' }) {
         height: `${height}px`
       }}
     >
-      {boxes.map((box, index) => (
-        <div
-          key={`${box.page}-${box.x}-${box.y}-${index}`}
-          className="highlight-box"
-          data-highlight-color={color}
-          style={{
-            left: `${box.x}px`,
-            top: `${box.y}px`,
-            width: `${box.width}px`,
-            height: `${box.height}px`,
-            backgroundColor
-          }}
-        />
-      ))}
+      {boxes.map((box, index) => {
+        const boxColor = HIGHLIGHT_COLORS[box.color] ? box.color : color;
+        return (
+          <div
+            key={`${box.page}-${box.x}-${box.y}-${index}`}
+            className="highlight-box"
+            data-highlight-color={boxColor}
+            style={{
+              left: `${box.x}px`,
+              top: `${box.y}px`,
+              width: `${box.width}px`,
+              height: `${box.height}px`,
+              backgroundColor: HIGHLIGHT_COLORS[boxColor] || backgroundColor
+            }}
+          />
+        );
+      })}
     </div>
   );
 }

@@ -41,23 +41,23 @@ function PdfTextLayer({ pageNumber, textContent, viewport, width, height, onRend
   useEffect(() => {
     const container = layerRef.current;
 
-    if (!textLayer || !textContent || !viewport || !width || !height) {
+    if (!container || !textContent || !viewport || !width || !height) {
       return undefined;
     }
 
     let cancelled = false;
-    textLayer.replaceChildren();
-    textLayer.dataset.rendered = 'false';
-    textLayer.style.setProperty('--total-scale-factor', String(viewport.scale));
-    textLayer.style.setProperty('--scale-factor', String(viewport.scale));
-    const task = new TextLayer({ textContentSource: textContent, container: textLayer, viewport });
+    container.replaceChildren();
+    container.dataset.rendered = 'false';
+    container.style.setProperty('--total-scale-factor', String(viewport.scale));
+    container.style.setProperty('--scale-factor', String(viewport.scale));
+    const task = new TextLayer({ textContentSource: textContent, container, viewport });
     // PDF.js positions spans in the unrotated page box; CSS rotates that box.
-    textLayer.style.width = `${viewport.rawDims.pageWidth * viewport.scale}px`;
-    textLayer.style.height = `${viewport.rawDims.pageHeight * viewport.scale}px`;
+    container.style.width = `${viewport.rawDims.pageWidth * viewport.scale}px`;
+    container.style.height = `${viewport.rawDims.pageHeight * viewport.scale}px`;
     task.render().then(async () => {
       await document.fonts.ready;
       if (cancelled) return;
-      alignTextWidths(task, textContent, viewport, textLayer);
+      alignTextWidths(task, textContent, viewport, container);
       const items = textContent.items.filter((item) => typeof item.str === 'string');
       task.textDivs.forEach((span, index) => {
         const item = items[index];
@@ -72,7 +72,7 @@ function PdfTextLayer({ pageNumber, textContent, viewport, width, height, onRend
           });
         }
       });
-      textLayer.dataset.rendered = 'true';
+      container.dataset.rendered = 'true';
       onRendered?.();
     }).catch((error) => {
       if (!cancelled && error?.name !== 'AbortException') {
@@ -83,7 +83,7 @@ function PdfTextLayer({ pageNumber, textContent, viewport, width, height, onRend
     return () => {
       cancelled = true;
       task.cancel();
-      textLayer.replaceChildren();
+      container.replaceChildren();
     };
   }, [height, onRendered, pageNumber, textContent, viewport, width]);
 

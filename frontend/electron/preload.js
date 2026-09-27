@@ -21,6 +21,12 @@ contextBridge.exposeInMainWorld('docPilotAi', {
 });
 
 contextBridge.exposeInMainWorld('docPilotFonts', {
-  resolve: (fontFamilies) => ipcRenderer.invoke('docpilot-fonts:resolve',
-    Array.isArray(fontFamilies) ? fontFamilies.filter((value) => typeof value === 'string').slice(0, 12) : [])
+  resolve: (request) => {
+    const candidates = Array.isArray(request) ? request : request?.candidates;
+    return ipcRenderer.invoke('docpilot-fonts:resolve', {
+      candidates: Array.isArray(candidates) ? candidates.filter((value) => typeof value === 'string').slice(0, 12) : [],
+      preferBold: request?.preferBold === true
+    });
+  },
+  list: () => ipcRenderer.invoke('docpilot-fonts:list')
 });

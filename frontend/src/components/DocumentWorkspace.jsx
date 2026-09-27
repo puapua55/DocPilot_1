@@ -10,6 +10,8 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
   replacePreview,
   selectedSearchResult,
   errorMessage,
+  isEditMode,
+  onEditModeChange,
   onDocumentSelect,
   onDocumentClear,
   onDocumentReselect,
@@ -26,6 +28,8 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
           highlightStatusMessage={highlightStatusMessage}
           replacePreview={replacePreview}
           selectedSearchResult={selectedSearchResult}
+          isEditMode={isEditMode}
+          onEditModeChange={onEditModeChange}
           onClose={onDocumentClear}
           onChangeFile={onDocumentSelect}
           onReselect={onDocumentReselect}

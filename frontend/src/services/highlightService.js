@@ -189,12 +189,58 @@ export function calculateHighlightBoxes({
   return highlightBoxes;
 }
 
+// DOM Range is the most accurate highlight mechanism, but certain large PDF
+// title glyphs have no usable Range rectangles after the browser text-layer
+// layout pass. Use the PDF text item's own geometry as a narrow fallback for
+// the selected search-result line, rather than highlighting every occurrence
+// of the word on the page.
+export function calculateFindBoxesFromPdfText({
+  keyword,
+  pageNumber,
+  textItems: rawTextItems,
+  viewport,
+  lineText
+}) {
+  const normalizedKeyword = String(keyword || '').trim();
+  const normalizedLine = String(lineText || '').replace(/\s+/g, ' ').trim();
+  if (!normalizedKeyword || !viewport) return [];
+  const spans = createViewportTextSpans(rawTextItems, viewport);
+  const matched = spans.filter((item) => (
+    findHighlightMatchIndexes(item.text, normalizedKeyword, 'contains').length > 0
+  ));
+  const exactLineItems = normalizedLine
+    ? matched.filter((item) => item.text.replace(/\s+/g, ' ').trim() === normalizedLine)
+    : [];
+  const targetItems = exactLineItems.length ? exactLineItems : matched;
+  const boxes = [];
+  targetItems.forEach((item) => {
+    const itemLength = Array.from(item.text).length;
+    const charWidth = item.width / Math.max(itemLength, 1);
+    findHighlightMatchIndexes(item.text, normalizedKeyword, 'contains').forEach((foundIndex) => {
+      boxes.push({
+        page: pageNumber,
+        text: item.text.slice(foundIndex, foundIndex + normalizedKeyword.length),
+        fullText: item.text,
+        x: clamp(item.left + charWidth * foundIndex - DEFAULT_PADDING_X, 0, viewport.width),
+        y: clamp(item.top - DEFAULT_PADDING_Y, 0, viewport.height),
+        width: Math.min(viewport.width, charWidth * normalizedKeyword.length + DEFAULT_PADDING_X * 2),
+        height: Math.min(viewport.height, item.height + DEFAULT_PADDING_Y * 2)
+      });
+    });
+  });
+  return boxes;
+}
+
 export function createHighlightBoxesFromTextLayer(pageElement, keyword, options = {}) {
   const boxes = [];
   const normalizedKeyword = String(keyword || '').trim();
   const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
   const targetLineNumber = Number(options?.lineNumber);
   const targetMatchIndex = Number(options?.matchIndex);
+  // PDF content-stream order is not guaranteed to be visual top-to-bottom
+  // order. Use the result's actual line text as the primary identity when it
+  // is available; lineNumber is only a fallback for simple PDFs.
+  const targetLineText = String(options?.lineText || '').replace(/\s+/g, ' ').trim();
   const LINE_Y_TOLERANCE = 5;
 
   if (!pageElement || !normalizedKeyword) {
@@ -254,11 +300,23 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword, options 
     }))
   );
 
+  // Search extraction and the browser text layer can group a multi-line
+  // title differently. Prefer an exact source-line match, but if that
+  // source line was merged/split during rendering, keep matching the target
+  // keyword rather than dropping the highlight entirely.
+  const hasExactTargetLine = targetLineText && lineGroups.some((line) => (
+    String(line.text || '').replace(/\s+/g, ' ').trim() === targetLineText
+  ));
+
   lineGroups.forEach((lineGroup, lineIndex) => {
-    if (Number.isFinite(targetLineNumber) && targetLineNumber > 0 && targetLineNumber !== lineIndex + 1) {
+    const lineText = lineGroup.text || '';
+    const normalizedLineText = lineText.replace(/\s+/g, ' ').trim();
+    if (targetLineText && hasExactTargetLine && targetLineText !== normalizedLineText) {
       return;
     }
-    const lineText = lineGroup.text || '';
+    if (!targetLineText && Number.isFinite(targetLineNumber) && targetLineNumber > 0 && targetLineNumber !== lineIndex + 1) {
+      return;
+    }
     console.log('[Highlight] lineText:', lineText);
 
     const matchIndexes = findHighlightMatchIndexes(lineText, normalizedKeyword, matchMode);

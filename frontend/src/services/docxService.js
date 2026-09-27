@@ -626,7 +626,9 @@ export function isWordDocument(documentFile) {
 
 export function getWordPreviewModel(documentFile, docxPreview = {}) {
   return {
-    type: 'docx',
+    // DocumentViewer and the document-action modals use the normalized
+    // viewer kind "word" for both .docx content and its Word renderer.
+    type: 'word',
     fileName: documentFile.name,
     fileSize: documentFile.size,
     html: docxPreview.html || '',

@@ -672,13 +672,14 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       ? options.color
       : 'yellow';
     const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
+    const selectedTargets = Array.isArray(options?.selectedTargets) ? options.selectedTargets : null;
 
     if (!root || !normalizedKeyword) {
       return { count: 0, results: [] };
     }
 
     ensureInitialHistorySnapshot();
-    clearDocxHighlights();
+    if (options.append !== true) clearDocxHighlights();
 
     const blockMetadata = getDocxBlockMetadata(root);
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -727,6 +728,15 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       let cursor = 0;
 
       matchIndexes.forEach((matchIndex, occurrenceIndex) => {
+        const selectedTarget = selectedTargets?.find((target) => {
+          const raw = target?.raw || target || {};
+          return Number(raw.blockIndex) === Number(metadata.blockIndex)
+            && Number(raw.matchIndex) === matchIndex;
+        });
+        if (selectedTargets && !selectedTarget) return;
+        const targetColor = ['yellow', 'green', 'blue', 'pink'].includes(selectedTarget?.color)
+          ? selectedTarget.color
+          : color;
         if (matchIndex > cursor) {
           fragment.appendChild(document.createTextNode(text.slice(cursor, matchIndex)));
         }
@@ -734,9 +744,9 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
         const id = `docx-highlight-${metadata.pageNumber}-${metadata.paragraphNumber || 0}-${results.length}`;
         const mark = document.createElement('span');
         mark.className = 'docx-highlight';
-        mark.dataset.highlightColor = color;
+        mark.dataset.highlightColor = targetColor;
         mark.dataset.docxHighlightId = id;
-        mark.style.backgroundColor = DOCX_HIGHLIGHT_COLORS[color];
+        mark.style.backgroundColor = DOCX_HIGHLIGHT_COLORS[targetColor];
         mark.textContent = text.slice(matchIndex, matchIndex + normalizedKeyword.length);
         fragment.appendChild(mark);
 
@@ -751,7 +761,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
           originalText: text.slice(matchIndex, matchIndex + normalizedKeyword.length),
           matchedText: text.slice(matchIndex, matchIndex + normalizedKeyword.length),
           keyword: normalizedKeyword,
-          color,
+          color: targetColor,
           matchIndex,
           occurrenceIndex
         });

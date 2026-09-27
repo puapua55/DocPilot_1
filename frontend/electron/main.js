@@ -139,6 +139,18 @@ function getWindowsFontDirectories() {
   return directories.filter((directory) => existsSync(directory));
 }
 
+function getKoreanFontDisplayName(font) {
+  const records = font?.name?.records || {};
+  const recordNames = ['fullName', 'typographicFamily', 'fontFamily'];
+  for (const recordName of recordNames) {
+    const record = records[recordName];
+    if (!record || typeof record !== 'object') continue;
+    const koreanName = record.ko || record['ko-KR'] || record['ko_KR'];
+    if (typeof koreanName === 'string' && koreanName.trim()) return koreanName.trim();
+  }
+  return '';
+}
+
 function getLocalFontEntries() {
   if (localFontCache.size) return [...localFontCache.values()];
   getWindowsFontDirectories().forEach((directory) => {
@@ -152,7 +164,12 @@ function getLocalFontEntries() {
             .filter(Boolean);
           const normalizedNames = names.map(normalizeFontName).filter(Boolean);
           if (!normalizedNames.length) return;
-          const item = { filePath, names, normalizedNames };
+          const item = {
+            filePath,
+            names,
+            normalizedNames,
+            koreanDisplayName: getKoreanFontDisplayName(font)
+          };
           localFontCache.set(filePath, item);
         } catch {
           // Unsupported or protected font files are ignored; a bundled font
@@ -163,28 +180,64 @@ function getLocalFontEntries() {
   return [...localFontCache.values()];
 }
 
-function findLocalFont(fontFamilies = []) {
+function isBoldFontEntry(entry) {
+  return entry.normalizedNames.some((name) => /(bold|black|heavy|semibold|demibold|extrabold|ultrabold)/i.test(name));
+}
+
+function findLocalFont(fontFamilies = [], preferBold = false) {
   const requested = [...new Set((Array.isArray(fontFamilies) ? fontFamilies : [fontFamilies])
     .map(normalizeFontName).filter(Boolean))];
   if (!requested.length) return null;
   const match = getLocalFontEntries().map((entry) => ({
     entry,
-    score: Math.max(...requested.flatMap((name) => entry.normalizedNames.map((candidate) => (
-      candidate === name ? 100 : candidate.includes(name) || name.includes(candidate) ? 50 : 0
-    ))))
+    // Candidates are ordered deliberately: a font chosen in the editor must
+    // win over the original PDF font retained as a fallback.  Previously two
+    // exact matches received the same score, so filesystem enumeration could
+    // silently embed HCRDotum instead of the font selected in the toolbar.
+    score: Math.max(...requested.map((name, index) => {
+      const nameScore = Math.max(...entry.normalizedNames.map((candidate) => (
+        candidate === name ? 100 : candidate.includes(name) || name.includes(candidate) ? 50 : 0
+      )));
+      if (!nameScore) return 0;
+      // The candidate order takes precedence; bold is only a tie breaker for
+      // different files matching the same requested candidate.
+      return (nameScore * 10000) - (index * 100) + (preferBold ? (isBoldFontEntry(entry) ? 10 : -10) : 0);
+    }))
   })).filter((candidate) => candidate.score > 0).sort((first, second) => second.score - first.score)[0];
   return match?.entry || null;
 }
 
 function registerFontIpc() {
-  ipcMain.handle('docpilot-fonts:resolve', (_event, fontFamilies = []) => {
-    const localFont = findLocalFont(fontFamilies);
+  ipcMain.handle('docpilot-fonts:resolve', (_event, request = []) => {
+    const fontFamilies = Array.isArray(request) ? request : request?.candidates;
+    const localFont = findLocalFont(fontFamilies, request?.preferBold === true);
     if (!localFont) return { found: false };
     return {
       found: true,
       family: localFont.names[0] || '',
+      fullName: localFont.names[1] || localFont.names[0] || '',
       base64: readFileSync(localFont.filePath).toString('base64')
     };
+  });
+  ipcMain.handle('docpilot-fonts:list', () => {
+    const fonts = new Map();
+    getLocalFontEntries().forEach((entry) => {
+      const family = entry.names[0] || '';
+      const fullName = entry.names[1] || family;
+      const candidate = fullName || family;
+      if (!candidate || fonts.has(candidate)) return;
+      fonts.set(candidate, {
+        candidate,
+        family,
+        // Windows font files often carry both English and Korean name table
+        // records. Keep the English full name as the resolver key, while the
+        // selector shows the Korean name whenever the font provides one.
+        label: entry.koreanDisplayName || fullName || family
+      });
+    });
+    return [...fonts.values()]
+      .sort((first, second) => first.label.localeCompare(second.label, 'ko'))
+      .slice(0, 1000);
   });
 }
 
@@ -220,6 +273,10 @@ function createMainWindow() {
       sandbox: true
     }
   });
+  // The packaged app uses the in-app toolbar. Hide Electron's default
+  // File/Edit/View menu strip so the document workspace starts at the top.
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.setAutoHideMenuBar(true);
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
