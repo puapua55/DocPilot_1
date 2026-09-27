@@ -7,14 +7,70 @@ import { useEffect, useState } from 'react';
 const CARDS = [
   { title: '정확한 문서 검색' },
   { title: '위치 하이라이트' },
-  { title: '즉시 텍스트 교체' }
+  { title: '텍스트 일괄 변경' }
 ];
+
+function formatSearchLocation(result) {
+  const page = Number(result?.pageNumber ?? result?.page ?? result?.pageIndex);
+  const line = Number(result?.lineNumber ?? result?.line ?? result?.lineIndex);
+  return {
+    page: Number.isFinite(page) && page > 0 ? `${page}페이지` : '-',
+    line: Number.isFinite(line) && line > 0 ? `줄 ${line}` : '-'
+  };
+}
+
+function getSearchResultText(result) {
+  return String(
+    result?.matchedText
+    ?? result?.originalText
+    ?? result?.matchText
+    ?? result?.text
+    ?? result?.context
+    ?? result?.word
+    ?? ''
+  ).trim() || '-';
+}
+
+function ChatSearchResults({ results, keyword, hasMoreResults, onResultClick }) {
+  if (!Array.isArray(results) || results.length === 0) return null;
+
+  return (
+    <div className="chat-search-results" aria-label="AI 문서 검색 결과">
+      <div className="chat-search-table-wrap">
+        <table className="chat-search-table">
+          <thead>
+            <tr><th>페이지</th><th>위치</th><th>내용</th><th>검색어</th></tr>
+          </thead>
+          <tbody>
+            {results.map((result, index) => {
+              const location = formatSearchLocation(result);
+              return (
+                <tr
+                  key={result?.id || `${location.page}-${location.line}-${index}`}
+                  data-search-result-trigger="true"
+                  className="chat-search-result-row"
+                  onClick={() => onResultClick?.(result)}
+                >
+                  <td>{location.page}</td>
+                  <td>{location.line}</td>
+                  <td className="chat-search-result-text" title={getSearchResultText(result)}>{getSearchResultText(result)}</td>
+                  <td>{String(result?.keyword || keyword || '-')}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {hasMoreResults ? <p className="chat-search-more">나머지 결과는 정확한 문서 검색에서 확인할 수 있습니다.</p> : null}
+    </div>
+  );
+}
 
 function AssistantPanel({
   messages, loading, error, selectedDocument, runningActionId, onSendMessage,
-  onSearchCardClick, onHighlightCardClick, onReplaceCardClick,
-  onExecuteSearchAction, onExecuteHighlightAction,
-  onExecuteReplaceApplyAction, onExecuteReplaceConvertAction
+  onSearchCardClick, onHighlightCardClick, onBatchReplaceCardClick,
+  onSearchResultClick,
+  onExecuteSearchAction, onExecuteHighlightAction
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [geminiStatus, setGeminiStatus] = useState(null);
@@ -26,7 +82,7 @@ function AssistantPanel({
   }, [settingsApi]);
 
   const getCardActionProps = (index) => {
-    const handler = [onSearchCardClick, onHighlightCardClick, onReplaceCardClick][index];
+    const handler = [onSearchCardClick, onHighlightCardClick, onBatchReplaceCardClick][index];
     return {
       className: 'feature-card feature-card-actionable', onClick: handler, role: 'button', tabIndex: 0,
       onKeyDown: (event) => {
@@ -67,6 +123,14 @@ function AssistantPanel({
               <div key={message.id} className={`chat-row ${message.role === 'user' ? 'user' : 'assistant'}`}>
                 <div className="chat-bubble">
                   {message.text}
+                  {message.role === 'assistant' ? (
+                    <ChatSearchResults
+                      results={message.searchResults}
+                      keyword={message.searchKeyword}
+                      hasMoreResults={message.hasMoreSearchResults}
+                      onResultClick={onSearchResultClick}
+                    />
+                  ) : null}
                   {message.role === 'assistant' && message.action ? (
                     <AiActionCard
                       action={message.action}
@@ -75,8 +139,6 @@ function AssistantPanel({
                       runningType={runningType}
                       onSearch={(action) => onExecuteSearchAction?.(message.id, action)}
                       onHighlight={(action) => onExecuteHighlightAction?.(message.id, action)}
-                      onReplaceApply={(action) => onExecuteReplaceApplyAction?.(message.id, action)}
-                      onReplaceConvert={(action) => onExecuteReplaceConvertAction?.(message.id, action)}
                     />
                   ) : null}
                 </div>

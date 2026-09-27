@@ -7,6 +7,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/runtime/jre/
 frontend/release/
+frontend/release-final/
 frontend/out/
 frontend/.electron-builder/
 frontend/*.zip

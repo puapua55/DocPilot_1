@@ -25,6 +25,19 @@
 .document-tool-header p { margin-top: 4px; color: var(--muted); font-size: 0.84rem; }
 .chat-feed { flex: 1 1 auto; min-width: 0; min-height: 0; max-height: none; overflow-y: auto; padding: 10px; border: 1px solid #e1e8f8; border-radius: 16px; background: #f8faff; }
 .chat-bubble { white-space: pre-wrap; }
+.chat-search-results { margin-top: 10px; color: #263651; font-size: 0.78rem; white-space: normal; }
+.chat-search-table-wrap { overflow-x: auto; border: 1px solid #d7e2f8; border-radius: 10px; background: #fff; }
+.chat-search-table { width: 100%; min-width: 390px; border-collapse: collapse; table-layout: fixed; }
+.chat-search-table th, .chat-search-table td { padding: 8px 9px; border-bottom: 1px solid #e4ebf8; text-align: left; vertical-align: middle; }
+.chat-search-table th { background: #f1f5ff; color: #405a88; font-weight: 800; white-space: nowrap; }
+.chat-search-table th:nth-child(1), .chat-search-table td:nth-child(1) { width: 62px; }
+.chat-search-table th:nth-child(2), .chat-search-table td:nth-child(2) { width: 48px; }
+.chat-search-table th:nth-child(4), .chat-search-table td:nth-child(4) { width: 58px; }
+.chat-search-table tbody tr:last-child td { border-bottom: 0; }
+.chat-search-result-row { cursor: pointer; }
+.chat-search-result-row:hover { background: #eef4ff; }
+.chat-search-result-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-search-more { margin: 7px 2px 0; color: #687896; }
 .chat-loading { color: var(--muted); }
 .chat-error { padding: 10px 12px; border: 1px solid #fecdd3; border-radius: 12px; background: #fff1f2; color: #be123c; font-size: 0.84rem; }
 .chat-input-form { flex: 0 0 auto; min-width: 0; align-items: stretch; }

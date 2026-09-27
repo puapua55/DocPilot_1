@@ -64,7 +64,7 @@ function filterMovedSourceSearchResults(results, movableTexts) {
   const hidden = movableTexts
     .map((item) => ({
       pageNumber: Number(item.pageNumber),
-      text: normalizeMovableMatchText(item.sourceSelection?.selectedText || item.sourceText || item.originalText)
+      text: normalizeMovableMatchText(item.previousSourceText || item.sourceSelection?.selectedText || item.sourceText || item.originalText)
     }))
     .filter((item) => item.pageNumber > 0 && item.text);
   const consumed = new Set();
@@ -130,6 +130,9 @@ function collectInstantReplacementReviewItems(viewScale = 1) {
         sourceText: replacementText,
         originalText: replacementText,
         originalUnicodeText: replacementText,
+        // Retain the replaced source separately: the PDF text layer may still
+        // expose it when the converter had to use a visual cover fallback.
+        previousSourceText: String(source.originalText || source.sourceText || ''),
         sourceFullText: '',
         originalRect,
         currentRect,
@@ -181,9 +184,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [viewMode, setViewMode] = useState('scroll');
   const [currentPage, setCurrentPage] = useState(1);
   const [textMoveMode, setTextMoveMode] = useState(false);
+  const [textReplaceMode, setTextReplaceMode] = useState(false);
   const [movableTexts, setMovableTexts] = useState([]);
+  const [imageAttachments, setImageAttachments] = useState([]);
+  const [batchReplaceRequest, setBatchReplaceRequest] = useState(null);
   const [selectedMovableTextId, setSelectedMovableTextId] = useState(null);
   const [editingMovableText, setEditingMovableText] = useState(null);
+  const [selectedImageId, setSelectedImageId] = useState(null);
+  const imageInputRef = useRef(null);
   const [userHighlight, setUserHighlight] = useState({
     keyword: String(highlightKeyword || ''),
     color: 'yellow',
@@ -195,9 +203,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setHistoryState({ canUndo: index > 0, canRedo: index >= 0 && index < snapshots.length - 1, canReset: index > 0 });
   };
 
-  const commitPdfChange = (highlight, replace, nextMovableTexts = movableTexts, selectedMovableTextId = null) => {
+  const commitPdfChange = (highlight, replace, nextMovableTexts = movableTexts, selectedMovableTextId = null, nextImages = imageAttachments, nextSelectedImageId = selectedImageId) => {
     const history = historyRef.current;
-    const snapshot = { highlight, replace, movableTexts: nextMovableTexts, selectedMovableTextId };
+    const snapshot = { highlight, replace, movableTexts: nextMovableTexts, selectedMovableTextId, imageAttachments: nextImages, selectedImageId: nextSelectedImageId };
     const current = history.snapshots[history.index];
     if (current && JSON.stringify(current) === JSON.stringify(snapshot)) return;
     historyRef.current = history.index < 0
@@ -211,7 +219,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setUserHighlight(snapshot.highlight);
     setAppliedReplacePreview(snapshot.replace);
     setMovableTexts(snapshot.movableTexts || []);
+    setImageAttachments(snapshot.imageAttachments || []);
     setSelectedMovableTextId(snapshot.selectedMovableTextId || null);
+    setSelectedImageId(snapshot.selectedImageId || null);
     setEditingMovableText(null);
     return true;
   };
@@ -248,11 +258,20 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   const addMovableText = (selection) => {
     const id = `movable-text-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const next = [...movableTexts, { ...selection, id }];
-    setMovableTexts(next);
+    setMovableTexts((current) => {
+      const next = [...current, { ...selection, id }];
+      commitPdfChange(userHighlight, appliedReplacePreview, next, id);
+      return next;
+    });
     setSelectedMovableTextId(id);
-    setEditingMovableText(null);
-    commitPdfChange(userHighlight, appliedReplacePreview, next, id);
+    setEditingMovableText(selection.autoEdit ? {
+      id,
+      value: String(selection.displayText ?? selection.text ?? ''),
+      fontWeight: selection.fontWeight || 'normal',
+      fontStyle: selection.fontStyle || 'normal',
+      textDecoration: selection.textDecoration || 'none',
+      color: selection.color || '#111111'
+    } : null);
   };
 
   const moveMovableText = (id, currentRect) => {
@@ -336,6 +355,83 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     commitPdfChange(userHighlight, appliedReplacePreview, next, null);
   };
 
+  const getActivePageNumber = () => {
+    const viewer = viewerRef.current;
+    if (!viewer) return currentPage || 1;
+    const middle = viewer.getBoundingClientRect().top + viewer.clientHeight / 2;
+    return Number(Object.entries(pageRefs.current).sort(([, first], [, second]) => (
+      Math.abs(first.getBoundingClientRect().top - middle) - Math.abs(second.getBoundingClientRect().top - middle)
+    ))[0]?.[0]) || currentPage || 1;
+  };
+
+  const addImageAttachment = async (event) => {
+    const fileToAdd = event.target.files?.[0];
+    event.target.value = '';
+    if (!fileToAdd) return;
+    if (!/^image\/(png|jpeg|jpg|webp)$/i.test(fileToAdd.type)) {
+      setDownloadFailed(true);
+      setDownloadMessage('PNG, JPG/JPEG 또는 WebP 이미지만 첨부할 수 있습니다.');
+      return;
+    }
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('이미지 파일을 읽지 못했습니다.'));
+      reader.readAsDataURL(fileToAdd);
+    });
+    const image = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error('이미지를 열지 못했습니다.'));
+      element.src = dataUrl;
+    });
+    let embeddedDataUrl = dataUrl;
+    let mimeType = fileToAdd.type.toLowerCase();
+    // pdf-lib embeds PNG/JPEG. Convert WebP to PNG before saving.
+    if (mimeType === 'image/webp') {
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      canvas.getContext('2d')?.drawImage(image, 0, 0);
+      embeddedDataUrl = canvas.toDataURL('image/png');
+      mimeType = 'image/png';
+    }
+    const pageNumber = getActivePageNumber();
+    const page = pageRefs.current[pageNumber];
+    const pageWidth = (page?.clientWidth || 600) / scale;
+    const pageHeight = (page?.clientHeight || 800) / scale;
+    const aspectRatio = image.naturalWidth / Math.max(image.naturalHeight, 1);
+    const initialWidth = Math.min(pageWidth * 0.5, Math.max(72, image.naturalWidth / scale));
+    const height = Math.min(pageHeight * 0.5, initialWidth / aspectRatio);
+    const width = height * aspectRatio;
+    const id = `pdf-image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const attachment = {
+      id, pageNumber, dataUrl: embeddedDataUrl, mimeType,
+      aspectRatio,
+      currentRect: { x: Math.max(12, (pageWidth - width) / 2), y: Math.max(12, (pageHeight - height) / 2), width, height },
+      sourcePageWidth: pageWidth, sourcePageHeight: pageHeight
+    };
+    const next = [...imageAttachments, attachment];
+    setImageAttachments(next);
+    setSelectedImageId(id);
+    setSelectedMovableTextId(null);
+    commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, null, next, id);
+  };
+
+  const moveImageAttachment = (id, currentRect) => setImageAttachments((items) => items.map((item) => item.id === id ? { ...item, currentRect } : item));
+  const finishImageAttachmentMove = (id, currentRect) => {
+    const next = imageAttachments.map((item) => item.id === id ? { ...item, currentRect } : item);
+    setImageAttachments(next);
+    setSelectedImageId(id);
+    commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, next, id);
+  };
+  const deleteImageAttachment = (id) => {
+    const next = imageAttachments.filter((item) => item.id !== id);
+    setImageAttachments(next);
+    setSelectedImageId(null);
+    commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, next, null);
+  };
+
   const downloadAsPdf = async () => {
     if (downloadStatus !== 'idle') return;
     setDownloadStatus('pdf-running');
@@ -360,8 +456,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           color: window.getComputedStyle(box).backgroundColor
         }));
       });
-      if (appliedReplacePreview?.originalText || pendingMovableTexts.length > 0 || highlights.length > 0) {
-        const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts: pendingMovableTexts, highlights });
+      if (appliedReplacePreview?.originalText || pendingMovableTexts.length > 0 || highlights.length > 0 || imageAttachments.length > 0) {
+        const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts: pendingMovableTexts, highlights, images: imageAttachments });
         if (result?.movableTextCount) {
           console.debug('[PdfJsViewer] PDF text move save results', result.textMoveResults?.map((item) => ({
             displayText: item.displayText,
@@ -480,6 +576,17 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     getInstantReplacementReviewItems() {
       return collectInstantReplacementReviewItems(scale);
     },
+    setPersistedReplacementReviewItems(items) {
+      const next = (Array.isArray(items) ? items : []).map((item) => ({
+        ...item,
+        persistedToPdf: true,
+        hasChanges: false,
+        coverRects: [],
+        sourceSelection: null
+      }));
+      setMovableTexts((current) => [...current, ...next]);
+      return next.length;
+    },
     scrollToSearchResult(result) {
       return scrollToPdfSearchResult(result);
     },
@@ -523,22 +630,74 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       const matches = searchKeywordInDocument(pages.map((page) => ({
         page: page.pageNumber, lines: page.lines.map((line) => line.text)
       })), originalText, { matchMode });
+      const pageMatchOrdinals = new Map();
+      const positionedMatches = matches.map((match) => {
+        const pageNumber = Number(match.pageNumber ?? match.page);
+        const pageMatchOrdinal = pageMatchOrdinals.get(pageNumber) || 0;
+        pageMatchOrdinals.set(pageNumber, pageMatchOrdinal + 1);
+        return { ...match, pageMatchOrdinal };
+      });
       const results = Array.isArray(options.selectedTargets)
-        ? matches.filter((match) => options.selectedTargets.some((target) => {
+        ? positionedMatches.filter((match) => options.selectedTargets.some((target) => {
           const raw = target.raw || target;
           return Number(raw.pageNumber ?? raw.page) === match.pageNumber
             && Number(raw.lineNumber ?? raw.line) === match.lineNumber
             && Number(raw.matchIndex) === match.matchIndex;
       }))
-        : matches;
+        : positionedMatches;
       if (results.length) {
+        // Resolve each hit to a browser Range in PdfPage. This reuses the
+        // manual drag-selection geometry instead of the line preview path.
+        setViewMode('scroll');
+        setAppliedReplacePreview(null);
+        setBatchReplaceRequest({
+          id: `batch-range-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          originalText,
+          newText,
+          targets: results
+        });
+        return { count: results.length, replaceCount: results.length, results };
+
         const nextReplace = { originalText, newText, matchMode, selectedTargets: results };
-        // Hidden pages have no DOM Range geometry. Instant replacement needs
-        // every selected page rendered so its exact glyph rectangles can be
-        // saved, even when the user was viewing one page at a time.
+        // Search results do not carry browser Range geometry. Render the
+        // preview first, then promote its exact rectangles to the same
+        // movable-text objects used by a manual "텍스트 교체" selection.
         setViewMode('scroll');
         setAppliedReplacePreview(nextReplace);
-        commitPdfChange(userHighlight, nextReplace);
+        let previewItems = [];
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          previewItems = collectInstantReplacementReviewItems(scale);
+          if (previewItems.length >= results.length) break;
+        }
+        if (previewItems.length < results.length) {
+          setAppliedReplacePreview(null);
+          throw new Error(`검색된 ${results.length}건 중 ${previewItems.length}건의 교체 위치만 준비되었습니다. 문서 화면이 모두 표시된 뒤 다시 적용해주세요.`);
+        }
+
+        const batchItems = previewItems.map((item, index) => ({
+          ...item,
+          id: `batch-replace-${item.id}-${index}`,
+          // The source text is retained only to remove/hide the old glyphs
+          // on export. The object itself always displays and edits newText.
+          sourceText: item.previousSourceText || originalText,
+          originalText: item.previousSourceText || originalText,
+          originalUnicodeText: item.previousSourceText || originalText,
+          previousSourceText: item.previousSourceText || originalText,
+          persistedToPdf: false,
+          hasChanges: false,
+          coverRects: [item.originalRect],
+          allowMove: true,
+          sourceSelection: null
+        }));
+        setAppliedReplacePreview(null);
+        setMovableTexts((current) => {
+          const next = [...current, ...batchItems];
+          commitPdfChange(userHighlight, null, next, batchItems[0]?.id || null);
+          return next;
+        });
+        setSelectedMovableTextId(batchItems[0]?.id || null);
+        setEditingMovableText(null);
       }
       return { count: results.length, replaceCount: results.length, results };
     },
@@ -628,7 +787,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           highlight: { keyword: String(highlightKeyword || ''), color: 'yellow', matchMode: 'contains' },
           replace: replacePreview?.mode === 'review' ? null : replacePreview,
           movableTexts: [],
-          selectedMovableTextId: null
+          selectedMovableTextId: null,
+          imageAttachments: [],
+          selectedImageId: null
         }],
         index: 0
       };
@@ -639,7 +800,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setViewMode('scroll');
       setTextMoveMode(false);
       setMovableTexts([]);
+      setImageAttachments([]);
+      setBatchReplaceRequest(null);
       setSelectedMovableTextId(null);
+      setSelectedImageId(null);
       setEditingMovableText(null);
       setErrorMessage('');
       setDownloadMessage('');
@@ -792,12 +956,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         <div className="pdf-document-history" role="group" aria-label="문서 변경 이력">
           <button type="button" onClick={undoDocumentChange} disabled={!historyState.canUndo} aria-label="적용 전으로 되돌리기">&lt;</button>
           <button type="button" onClick={redoDocumentChange} disabled={!historyState.canRedo} aria-label="다시 적용하기">&gt;</button>
-          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!historyState.canReset && movableTexts.length === 0}>전체 초기화</button>
+          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!historyState.canReset && movableTexts.length === 0 && imageAttachments.length === 0}>전체 초기화</button>
           <button
             type="button"
             className={`pdf-text-move-button ${textMoveMode ? 'active' : ''}`}
             onClick={() => {
               setTextMoveMode((current) => !current);
+              setTextReplaceMode(false);
               setSelectedMovableTextId(null);
               setEditingMovableText(null);
             }}
@@ -806,6 +971,22 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           >
             텍스트 이동
           </button>
+          <button
+            type="button"
+            className={`pdf-text-move-button ${textReplaceMode ? 'active' : ''}`}
+            onClick={() => {
+              setTextReplaceMode((current) => !current);
+              setTextMoveMode(false);
+              setSelectedMovableTextId(null);
+              setEditingMovableText(null);
+            }}
+            aria-pressed={textReplaceMode}
+            title={textReplaceMode ? 'PDF 텍스트 교체를 종료합니다.' : 'PDF 본문에서 변경할 텍스트를 선택한 뒤 새 내용을 입력합니다.'}
+          >
+            텍스트 교체
+          </button>
+          <button type="button" className="pdf-text-move-button" onClick={() => imageInputRef.current?.click()} title="현재 보고 있는 PDF 페이지에 이미지를 첨부합니다.">이미지 첨부</button>
+          <input ref={imageInputRef} className="pdf-image-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={addImageAttachment} />
         </div>
         {toolbarActions}
         <div className="viewer-download-actions">
@@ -832,9 +1013,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 scale={scale}
                 highlightKeyword={userHighlight.keyword}
                 highlightOptions={userHighlight}
+                findResult={selectedSearchResult}
                 replacePreview={appliedReplacePreview}
+                batchReplaceRequest={batchReplaceRequest}
                 textMoveMode={textMoveMode}
+                textReplaceMode={textReplaceMode}
                 movableTexts={movableTexts.filter((item) => item.pageNumber === pageNumber)}
+                imageAttachments={imageAttachments.filter((item) => item.pageNumber === pageNumber)}
                 selectedMovableTextId={selectedMovableTextId}
                 editingMovableText={editingMovableText}
                 onCreateMovableText={addMovableText}
@@ -847,6 +1032,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 onCommitEditMovableText={commitEditMovableText}
                 onCancelEditMovableText={cancelEditMovableText}
                 onDeleteMovableText={deleteMovableText}
+                selectedImageId={selectedImageId}
+                onSelectImage={setSelectedImageId}
+                onMoveImage={moveImageAttachment}
+                onMoveImageEnd={finishImageAttachmentMove}
+                onDeleteImage={deleteImageAttachment}
                 onPageReady={(element) => {
                   if (element) pageRefs.current[pageNumber] = element;
                   else delete pageRefs.current[pageNumber];

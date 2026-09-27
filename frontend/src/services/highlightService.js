@@ -193,6 +193,8 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword, options 
   const boxes = [];
   const normalizedKeyword = String(keyword || '').trim();
   const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
+  const targetLineNumber = Number(options?.lineNumber);
+  const targetMatchIndex = Number(options?.matchIndex);
   const LINE_Y_TOLERANCE = 5;
 
   if (!pageElement || !normalizedKeyword) {
@@ -252,12 +254,18 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword, options 
     }))
   );
 
-  lineGroups.forEach((lineGroup) => {
+  lineGroups.forEach((lineGroup, lineIndex) => {
+    if (Number.isFinite(targetLineNumber) && targetLineNumber > 0 && targetLineNumber !== lineIndex + 1) {
+      return;
+    }
     const lineText = lineGroup.text || '';
     console.log('[Highlight] lineText:', lineText);
 
     const matchIndexes = findHighlightMatchIndexes(lineText, normalizedKeyword, matchMode);
     matchIndexes.forEach((foundIndex) => {
+      if (Number.isFinite(targetMatchIndex) && targetMatchIndex >= 0 && targetMatchIndex !== foundIndex) {
+        return;
+      }
       const endIndex = foundIndex + normalizedKeyword.length;
 
       console.log('[Highlight] match range:', { foundIndex, endIndex });

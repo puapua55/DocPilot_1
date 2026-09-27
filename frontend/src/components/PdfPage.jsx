@@ -143,15 +143,42 @@ function getSelectedTextLayerSpans(textLayer, range) {
     .sort((a, b) => Number(a.dataset.textItemIndex) - Number(b.dataset.textItemIndex));
 }
 
+// A partial selection (for example selecting "문서 검색" from a single
+// "문서 검색 및 편집 지원 프로그램" PDF item) still belongs to that item's
+// font. Keep the preview descriptor available even when the DOM source data
+// was produced before its font analysis completed.
+function getSelectionSourceFont(sourceInfo, textContent, selectedText) {
+  const index = Number(sourceInfo?.textItemIndex);
+  const indexedFont = Number.isInteger(index) ? textContent?.fontPreviews?.[index] : null;
+  if (sourceInfo?.sourceFont?.fontCandidates?.length) return sourceInfo.sourceFont;
+  if (indexedFont?.fontCandidates?.length) return indexedFont;
+
+  const textItems = textContent?.items || [];
+  const matchedIndex = textItems.findIndex((item) => (
+    typeof item?.str === 'string' && item.str.includes(selectedText)
+  ));
+  return matchedIndex >= 0 ? textContent?.fontPreviews?.[matchedIndex] || null : null;
+}
+
+function collectFontCandidates(...fonts) {
+  return [...new Set(fonts.flatMap((font) => (
+    Array.isArray(font?.fontCandidates) ? font.fontCandidates : []
+  )).filter((candidate) => typeof candidate === 'string' && candidate.trim()))];
+}
+
 function PdfPage({
   pdf,
   pageNumber,
   scale,
   highlightKeyword,
   highlightOptions = {},
+  findResult,
   replacePreview,
+  batchReplaceRequest,
   textMoveMode = false,
+  textReplaceMode = false,
   movableTexts = [],
+  imageAttachments = [],
   selectedMovableTextId = null,
   editingMovableText = null,
   onCreateMovableText,
@@ -164,6 +191,11 @@ function PdfPage({
   onCommitEditMovableText,
   onCancelEditMovableText,
   onDeleteMovableText,
+  selectedImageId = null,
+  onSelectImage,
+  onMoveImage,
+  onMoveImageEnd,
+  onDeleteImage,
   onPageReady
 }) {
   const canvasRef = useRef(null);
@@ -172,18 +204,23 @@ function PdfPage({
   const [renderError, setRenderError] = useState('');
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
   const [highlightBoxes, setHighlightBoxes] = useState([]);
+  const [findBoxes, setFindBoxes] = useState([]);
   const [fallbackBoxes, setFallbackBoxes] = useState([]);
   const [replacementPreviewItems, setReplacementPreviewItems] = useState([]);
   const [viewport, setViewport] = useState(null);
   const [textContent, setTextContent] = useState(null);
   const [textLayerVersion, setTextLayerVersion] = useState(0);
   const moveRef = useRef(null);
+  const imageMoveRef = useRef(null);
+  const handledBatchRequestRef = useRef('');
+  const batchSelectionActiveRef = useRef(false);
   const handleTextLayerRendered = useCallback(() => {
     setTextLayerVersion((version) => version + 1);
   }, []);
 
   const handleTextSelection = useCallback(() => {
-    if (!textMoveMode || !pageRef.current) return;
+    const isBatchSelection = batchSelectionActiveRef.current;
+    if ((!textMoveMode && !textReplaceMode && !isBatchSelection) || !pageRef.current) return;
 
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
@@ -204,6 +241,7 @@ function PdfPage({
     // PDF.js item.str is the authoritative Unicode value for a complete item.
     // For partial/multi-item selections, retain the browser's selected range.
     const selectedText = (wholeSpan ? spanText : selectionText) || spanText;
+    const displayText = String(isBatchSelection ? batchReplaceRequest?.newText : selectedText);
     // Do not block a user-selected range because PDF.js exposed unusual
     // Unicode. The export layer will choose direct removal or overlay
     // fallback based on whether the source can be safely identified.
@@ -291,12 +329,29 @@ function PdfPage({
       width: cover.width * scale,
       height: cover.height * scale
     });
-    const sourceFont = sourceSelection?.sourceFont;
-    const measuredText = measureDisplayText(selectedText, fontSize, computedStyle);
+    const resolvedSourceFont = getSelectionSourceFont(sourceInfo, textContent, selectedText);
+    if (sourceSelection && resolvedSourceFont) {
+      sourceSelection = { ...sourceSelection, sourceFont: resolvedSourceFont };
+    }
+    const sourceFont = sourceSelection?.sourceFont || resolvedSourceFont;
+    const fontCandidates = collectFontCandidates(
+      sourceFont,
+      sourceInfo?.sourceFont,
+      textContent?.fontPreviews?.[Number(sourceInfo?.textItemIndex)]
+    );
+    const measuredText = measureDisplayText(displayText, fontSize, computedStyle);
     const horizontalSafetyPadding = Math.max(2, fontSize * 0.15);
     const verticalSafetyPadding = Math.max(1, fontSize * 0.1);
+    // Batch replacements keep the manual selection's exact cover range, but
+    // place a shorter replacement in the horizontal center of that range.
+    // Longer text keeps the original left edge to avoid spilling into the
+    // neighbouring text cell.
+    const centeredX = isBatchSelection && measuredText.width < currentRect.width
+      ? currentRect.x + (currentRect.width - measuredText.width) / 2
+      : currentRect.x;
     const displayRect = {
       ...currentRect,
+      x: centeredX,
       width: Math.max(currentRect.width, measuredText.width + horizontalSafetyPadding * 2),
       height: Math.max(currentRect.height, measuredText.height + verticalSafetyPadding * 2)
     };
@@ -309,10 +364,10 @@ function PdfPage({
     }
 
     onCreateMovableText?.({
-      type: 'movableText',
+      type: (textReplaceMode || isBatchSelection) ? 'replacementText' : 'movableText',
       pageNumber,
-      displayText: selectedText,
-      text: selectedText,
+      displayText,
+      text: displayText,
       // PDF.js can expose a compact source string while browser selection
       // presents layout spaces between glyphs. Retain both representations.
       // Keep layout/source text separately, but use the actual selected word
@@ -337,13 +392,24 @@ function PdfPage({
       fontFamily: computedStyle?.fontFamily || 'Helvetica, Arial, sans-serif',
       fontWeight: computedStyle?.fontWeight || 'normal',
       fontStyle: computedStyle?.fontStyle || 'normal',
-      color: sampledTextColor || color,
+      // PDF operator color is authoritative. Canvas sampling is retained only
+      // for documents where the source operator does not expose one.
+      color: sourceFont?.textColor || sampledTextColor || color,
       createdFromSelection: true,
+      // Batch replacement differs only in how this Range was obtained.
+      // From here onward it follows the same replacement object contract as
+      // a user-dragged "텍스트 교체" selection.
+      allowMove: textMoveMode,
+      autoEdit: textReplaceMode && !isBatchSelection,
       // A browser selection is represented by PDF.js Unicode text. Preserve
       // that exact text for export rather than replaying the source glyph run.
       forceUnicodeFallback: true,
       sourceSelection,
-      sourceFont: sourceInfo?.sourceFont || null,
+      sourceFont: sourceFont || null,
+      // Preserve the original PDF font name for partial search selections as
+      // well as whole-item manual selections. This is consumed by Electron's
+      // local Windows-font resolver during PDF export.
+      fontCandidates,
       glyphText: sourceFont?.glyphText || null,
       originalGlyphText: sourceFont?.glyphText || null,
       originalEncodedText: sourceInfo?.encodedText || null,
@@ -357,13 +423,62 @@ function PdfPage({
       fallbackReason: '저장 시 원본 텍스트 직접 제거 가능 여부를 확인합니다.'
     });
     selection.removeAllRanges();
-  }, [onCreateMovableText, pageNumber, pageSize, scale, textMoveMode, viewport]);
+  }, [batchReplaceRequest, onCreateMovableText, pageNumber, pageSize, scale, textContent, textMoveMode, textReplaceMode, viewport]);
+
+  useLayoutEffect(() => {
+    if (!batchReplaceRequest || !pageRef.current || handledBatchRequestRef.current === batchReplaceRequest.id) return;
+    const targets = (batchReplaceRequest.targets || []).filter((target) => Number(target.pageNumber ?? target.page) === pageNumber);
+    if (!targets.length) return;
+
+    const textLayer = pageRef.current.querySelector('.textLayer');
+    if (!textLayer) return;
+    const nodes = [];
+    const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT);
+    let combined = '';
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const start = combined.length;
+      combined += node.textContent || '';
+      nodes.push({ node, start, end: combined.length });
+    }
+    const originalText = String(batchReplaceRequest.originalText || '');
+    if (!originalText || !nodes.length) return;
+    const occurrences = [];
+    const lowerText = combined.toLocaleLowerCase();
+    const lowerOriginal = originalText.toLocaleLowerCase();
+    let offset = 0;
+    while (offset <= lowerText.length - lowerOriginal.length) {
+      const found = lowerText.indexOf(lowerOriginal, offset);
+      if (found < 0) break;
+      occurrences.push(found);
+      offset = found + Math.max(lowerOriginal.length, 1);
+    }
+    targets.forEach((target, index) => {
+      const occurrence = occurrences[Number(target.pageMatchOrdinal ?? index)];
+      if (!Number.isInteger(occurrence)) return;
+      const end = occurrence + originalText.length;
+      const startNode = nodes.find((entry) => occurrence >= entry.start && occurrence < entry.end);
+      const endNode = nodes.find((entry) => end > entry.start && end <= entry.end);
+      if (!startNode || !endNode) return;
+      const range = document.createRange();
+      range.setStart(startNode.node, occurrence - startNode.start);
+      range.setEnd(endNode.node, end - endNode.start);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      batchSelectionActiveRef.current = true;
+      handleTextSelection();
+      batchSelectionActiveRef.current = false;
+    });
+    handledBatchRequestRef.current = batchReplaceRequest.id;
+  }, [batchReplaceRequest, handleTextSelection, pageNumber, textLayerVersion]);
 
   const handleMovableTextPointerDown = (event, item) => {
-    if ((!textMoveMode && !item.isReplacement) || event.button !== 0) return;
+    if (event.button !== 0) return;
     event.stopPropagation();
     event.preventDefault();
     onSelectMovableText?.(item.id);
+    if (!textMoveMode || item.allowMove === false) return;
     moveRef.current = {
       id: item.id,
       startX: event.clientX,
@@ -372,39 +487,64 @@ function PdfPage({
     };
   };
 
+  const handleImagePointerDown = (event, item, action = 'move') => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectImage?.(item.id);
+    imageMoveRef.current = { id: item.id, action, startX: event.clientX, startY: event.clientY, startRect: item.currentRect, aspectRatio: item.aspectRatio || (item.currentRect.width / Math.max(item.currentRect.height, 1)) };
+  };
+
   useEffect(() => {
     const handlePointerMove = (event) => {
-      if (!moveRef.current) return;
-      const { id, startX, startY, startRect } = moveRef.current;
-      const pageWidth = pageSize.width / scale;
-      const pageHeight = pageSize.height / scale;
-      const currentRect = {
-        ...startRect,
-        x: Math.min(
-          Math.max(0, startRect.x + (event.clientX - startX) / scale),
-          Math.max(0, pageWidth - startRect.width)
-        ),
-        y: Math.min(
-          Math.max(0, startRect.y + (event.clientY - startY) / scale),
-          Math.max(0, pageHeight - startRect.height)
-        )
-      };
-      moveRef.current.currentRect = currentRect;
-      onMoveMovableText?.(id, currentRect);
+      if (moveRef.current) {
+        const { id, startX, startY, startRect } = moveRef.current;
+        const pageWidth = pageSize.width / scale;
+        const pageHeight = pageSize.height / scale;
+        const currentRect = {
+          ...startRect,
+          x: Math.min(Math.max(0, startRect.x + (event.clientX - startX) / scale), Math.max(0, pageWidth - startRect.width)),
+          y: Math.min(Math.max(0, startRect.y + (event.clientY - startY) / scale), Math.max(0, pageHeight - startRect.height))
+        };
+        moveRef.current.currentRect = currentRect;
+        onMoveMovableText?.(id, currentRect);
+      }
+      if (imageMoveRef.current) {
+        const active = imageMoveRef.current;
+        const pageWidth = pageSize.width / scale;
+        const pageHeight = pageSize.height / scale;
+        const dx = (event.clientX - active.startX) / scale;
+        const dy = (event.clientY - active.startY) / scale;
+        const currentRect = active.action === 'resize'
+          ? (() => {
+            const width = Math.max(36, Math.min(pageWidth - active.startRect.x, active.startRect.width + dx));
+            const height = Math.max(24, Math.min(pageHeight - active.startRect.y, width / Math.max(active.aspectRatio, 0.01)));
+            return { ...active.startRect, width: Math.min(width, height * active.aspectRatio), height };
+          })()
+          : { ...active.startRect, x: Math.min(Math.max(0, active.startRect.x + dx), Math.max(0, pageWidth - active.startRect.width)), y: Math.min(Math.max(0, active.startRect.y + dy), Math.max(0, pageHeight - active.startRect.height)) };
+        active.currentRect = currentRect;
+        onMoveImage?.(active.id, currentRect);
+      }
     };
     const handlePointerUp = () => {
       if (moveRef.current?.currentRect) {
         onMoveMovableTextEnd?.(moveRef.current.id, moveRef.current.currentRect);
       }
       moveRef.current = null;
+      if (imageMoveRef.current?.currentRect) onMoveImageEnd?.(imageMoveRef.current.id, imageMoveRef.current.currentRect);
+      imageMoveRef.current = null;
     };
     const handleKeyDown = (event) => {
-      if (!selectedMovableTextId) return;
+      if (!selectedMovableTextId && !selectedImageId) return;
       if (event.target instanceof HTMLElement && event.target.closest('input, textarea')) return;
-      if (event.key === 'Escape') onSelectMovableText?.(null);
+      if (event.key === 'Escape') {
+        onSelectMovableText?.(null);
+        onSelectImage?.(null);
+      }
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
-        onDeleteMovableText?.(selectedMovableTextId);
+        if (selectedImageId) onDeleteImage?.(selectedImageId);
+        else onDeleteMovableText?.(selectedMovableTextId);
       }
     };
 
@@ -416,7 +556,7 @@ function PdfPage({
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onDeleteMovableText, onMoveMovableText, onMoveMovableTextEnd, onSelectMovableText, pageSize, scale, selectedMovableTextId]);
+  }, [onDeleteImage, onDeleteMovableText, onMoveImage, onMoveImageEnd, onMoveMovableText, onMoveMovableTextEnd, onSelectImage, onSelectMovableText, pageSize, scale, selectedImageId, selectedMovableTextId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -575,6 +715,29 @@ function PdfPage({
   }, [fallbackBoxes, highlightKeyword, highlightOptions, pageNumber, textLayerVersion]);
 
   useLayoutEffect(() => {
+    const targetPage = Number(findResult?.pageNumber ?? findResult?.page);
+    // Search results show a surrounding word for context, but the temporary
+    // Ctrl+F-style marker should color only the search term itself.
+    const keyword = String(findResult?.keyword ?? findResult?.matchedText ?? findResult?.originalText ?? '').trim();
+
+    if (!pageRef.current || targetPage !== pageNumber || !keyword) {
+      setFindBoxes([]);
+      return undefined;
+    }
+
+    let frameId = window.requestAnimationFrame(() => {
+      const boxes = createHighlightBoxesFromTextLayer(pageRef.current, keyword, {
+        matchMode: 'contains',
+        lineNumber: Number(findResult?.lineNumber ?? findResult?.line),
+        matchIndex: Number(findResult?.matchIndex)
+      });
+      setFindBoxes(boxes.map((box) => ({ ...box, page: pageNumber })));
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [findResult, pageNumber, textLayerVersion]);
+
+  useLayoutEffect(() => {
     if (!pageRef.current || !replacePreview?.originalText || replacePreview?.mode === 'review') {
       setReplacementPreviewItems([]);
       return undefined;
@@ -649,7 +812,28 @@ function PdfPage({
         onEditCommit={onCommitEditMovableText}
         onEditCancel={onCancelEditMovableText}
       />
+      <ImageAttachmentLayer items={imageAttachments} scale={scale} selectedId={selectedImageId} onPointerDown={handleImagePointerDown} />
       <HighlightLayer boxes={highlightBoxes} width={pageSize.width} height={pageSize.height} color={highlightOptions.color} />
+      <HighlightLayer boxes={findBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
+    </div>
+  );
+}
+
+function ImageAttachmentLayer({ items, scale, selectedId, onPointerDown }) {
+  if (!items.length) return null;
+  return (
+    <div className="pdf-image-layer" aria-label="첨부 이미지">
+      {items.map((item) => (
+        <div
+          key={item.id}
+          className={`pdf-image-object${selectedId === item.id ? ' is-selected' : ''}`}
+          style={{ left: `${item.currentRect.x * scale}px`, top: `${item.currentRect.y * scale}px`, width: `${item.currentRect.width * scale}px`, height: `${item.currentRect.height * scale}px` }}
+          onPointerDown={(event) => onPointerDown?.(event, item, 'move')}
+        >
+          <img src={item.dataUrl} alt="첨부 이미지" draggable="false" />
+          {selectedId === item.id ? <button type="button" className="pdf-image-resize-handle" aria-label="이미지 크기 조절" onPointerDown={(event) => onPointerDown?.(event, item, 'resize')} /> : null}
+        </div>
+      ))}
     </div>
   );
 }

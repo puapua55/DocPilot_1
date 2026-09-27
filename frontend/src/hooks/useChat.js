@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { sendChatMessage } from '../services/llmService';
 import { INITIAL_CHAT_MESSAGES } from '../utils/constants';
 
-const RESTRICTED_CHAT_MESSAGE = '채팅은 정확한 문서 검색, 위치 하이라이트, 즉시 텍스트 교체 요청에만 사용할 수 있습니다.';
-const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'replace']);
+const RESTRICTED_CHAT_MESSAGE = '채팅은 정확한 문서 검색과 위치 하이라이트 요청에만 사용할 수 있습니다.';
+const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight']);
 
 export function useChat(selectedDocument, previewModel, documentViewerRef) {
   const [messages, setMessages] = useState(INITIAL_CHAT_MESSAGES);
@@ -26,7 +26,7 @@ export function useChat(selectedDocument, previewModel, documentViewerRef) {
       setMessages((current) => [...current, userMessage, {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
-        text: '문서를 먼저 선택한 뒤 정확한 문서 검색, 위치 하이라이트 또는 즉시 텍스트 교체를 요청해주세요.',
+        text: '문서를 먼저 선택한 뒤 정확한 문서 검색 또는 위치 하이라이트를 요청해주세요.',
         intent: 'unsupported',
         action: null
       }]);

@@ -256,6 +256,7 @@ function SearchModal({
                   {results.map((result, index) => (
                     <tr
                       key={result.id}
+                      data-search-result-trigger="true"
                       className={`search-result-row ${activeResultId === result.id ? 'active' : ''}`}
                       onClick={() => handleResultClick(result)}
                       aria-current={activeResultId === result.id ? 'true' : undefined}

@@ -2,6 +2,22 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { isPdfFile } from '../utils/fileUtils';
 
+// PDF.js 6 uses the new Map helper while rendering optional-content
+// configuration. Electron 38 ships Chromium 140, which does not provide it
+// yet, so otherwise valid PDFs fail at page.render() with
+// "getOrInsertComputed is not a function".
+if (typeof Map.prototype.getOrInsertComputed !== 'function') {
+  Object.defineProperty(Map.prototype, 'getOrInsertComputed', {
+    configurable: true,
+    value(key, computeValue) {
+      if (this.has(key)) return this.get(key);
+      const value = computeValue(key);
+      this.set(key, value);
+      return value;
+    }
+  });
+}
+
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 // PDF.js only needs these files for some fonts and CJK encodings. They must be

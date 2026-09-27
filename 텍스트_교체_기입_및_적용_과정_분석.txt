@@ -1,0 +1,139 @@
+DocPilot PDF 뷰어 - '텍스트 교체' 입력 및 적용 과정 분석
+작성일: 2026-09-27
+
+1. 분석 범위
+
+이 문서는 PDF 뷰어 도구막대의 '텍스트 교체'를 켠 뒤, PDF 본문에서 텍스트를 선택하고 새 내용을 입력하여 화면에 반영한 다음 PDF로 저장하는 현재 코드 흐름을 설명한다.
+
+주요 코드 위치:
+- frontend/src/components/PdfJsViewer.jsx
+- frontend/src/components/PdfPage.jsx
+- frontend/src/components/PdfTextLayer.jsx
+- frontend/src/services/pdfOverlayConvertService.js
+- frontend/src/App.jsx
+- frontend/src/components/DocumentViewer.jsx
+- frontend/src/components/PdfViewer.jsx
+
+
+2. 사용자 동작과 이벤트 흐름
+
+2.1 텍스트 교체 모드 켜기
+
+PdfJsViewer.jsx의 PDF 도구막대에 '텍스트 교체' 버튼이 있다. 버튼을 누르면 textReplaceMode가 켜지고 textMoveMode는 꺼진다. 두 편집 모드는 동시에 켜지지 않는다.
+
+PdfJsViewer는 textReplaceMode 값을 각 페이지 컴포넌트 PdfPage에 전달한다.
+
+2.2 PDF 본문에서 텍스트 선택
+
+PdfPage.jsx의 PDF 페이지 최상위 요소는 onMouseUp 이벤트에 handleTextSelection을 연결한다. 선택을 끝내면 아래 조건을 확인한다.
+- 텍스트 이동 또는 텍스트 교체 모드 중 하나가 켜져 있어야 한다.
+- 선택 영역이 PDF.js의 .textLayer 안에 있어야 한다.
+- 선택 문자열과 화면 좌표가 유효해야 한다.
+
+PdfTextLayer.jsx가 PDF.js TextLayer로 PDF 페이지의 선택 가능한 텍스트 span들을 만든다. 각 span에는 PDF.js 원본 텍스트와 PDF 글꼴·좌표 메타데이터가 기록된다.
+
+handleTextSelection은 브라우저의 window.getSelection()과 Range를 이용해 선택 문자열, 선택 사각형, 페이지 내 좌표, 글꼴 크기·색상, 배경색을 수집한다. 전체 span을 선택한 경우에는 PDF.js 원본 Unicode 문자열을 우선 사용하고, 부분 또는 여러 span 선택은 브라우저 Range 선택 문자열을 사용한다.
+
+선택 데이터를 onCreateMovableText 콜백으로 보낸다. 텍스트 교체 모드에서는 항목의 type을 replacementText로 표시하고 autoEdit를 true, allowMove를 false로 지정한다.
+
+2.3 입력창 표시
+
+PdfJsViewer.jsx의 addMovableText가 선택 데이터를 movableTexts 상태 배열에 추가한다. autoEdit가 true이면 editingMovableText 상태를 만들고, 입력값 초기값을 선택된 원문으로 설정한다. 글꼴 굵기, 기울임, 밑줄, 취소선, 색상도 초기 편집 상태에 복사한다.
+
+PdfPage.jsx의 MovableTextLayer는 각 항목에 대해 원본 좌표의 movable-text-cover와 새 텍스트 객체를 그린다. 텍스트 교체 항목은 allowMove가 false이므로 객체를 잡아 끌어 이동할 수 없다. 새 텍스트 객체 안에는 movable-text-editor와 입력 필드가 렌더링된다.
+
+화면상 원문은 PDF 캔버스 위의 cover 레이어가 선택 영역을 덮으면서 가려진다. 이는 이 시점에 원본 PDF 파일의 내용을 변경하는 것이 아니다. 현재 뷰어 DOM에서만 덮어 보이게 하는 임시 표시다.
+
+
+3. 입력한 새 내용의 적용
+
+입력 필드의 onChange는 updateEditingMovableText를 호출하여 editingMovableText.value를 갱신한다. 이 단계에서는 입력 중인 상태만 바뀌며 PDF 파일이나 최종 movableTexts 항목은 아직 갱신되지 않는다.
+
+사용자가 Enter를 누르거나 입력 필드 바깥을 클릭하면 commitEditMovableText가 실행된다.
+- 입력 문자열 양끝 공백을 제거한다.
+- 대응되는 movableTexts 항목의 displayText, text, editedText를 새 내용으로 교체한다.
+- 서식 값을 항목에 반영한다.
+- 입력 상태를 닫는다.
+- 새 movableTexts 배열을 상태에 저장하고 변경 이력에 스냅샷을 추가한다.
+
+빈 문자열을 입력한 뒤 Enter 또는 blur가 발생하면 입력 상태만 닫고 항목의 원문 표시값은 바꾸지 않는다. Escape는 cancelEditMovableText를 호출해 입력 상태만 닫는다. 현재 Escape 동작은 새로 만든 교체 항목이나 원본 덮개를 제거하지 않으므로, 선택 직후 Escape를 눌러도 항목은 대기 변경으로 남을 수 있다.
+
+
+4. 뷰어에서 원본과 변경 텍스트가 보이는 방식
+
+원문은 선택 영역에 그려진 cover가 가린다. 입력창을 닫고 나면 새 텍스트가 같은 좌표에 표시된다. 텍스트 교체 모드에서는 allowMove=false이므로 새 텍스트를 다른 위치로 끌 수 없다.
+
+이 화면 표시는 편집 미리보기다. 아직 저장을 실행하지 않았다면 원본 파일은 변경되지 않았다. 뷰어의 변경 이력은 화면 편집 상태를 되돌리는 데 사용된다.
+
+
+5. PDF 저장 과정
+
+5.1 저장 호출
+
+PdfJsViewer.jsx의 다운로드 버튼은 downloadAsPdf를 실행한다. 저장 대상으로 아직 PDF에 반영되지 않은 movableTexts 항목과 이미 저장된 뒤 다시 수정된 항목을 추린다. 이 배열과 원본 파일을 App.jsx로 전달한다.
+
+호출 경로:
+PdfJsViewer.downloadAsPdf
+  -> DocumentViewer의 onVisualPdfConvert 전달
+  -> PdfViewer 전달
+  -> PdfJsViewer의 onVisualConvert 호출
+  -> App.handleVisualPdfConvert
+  -> pdfOverlayConvertService.convertPdfWithOriginalOverlay
+
+5.2 선택 데이터를 PDF 편집 작업으로 변환
+
+pdfOverlayConvertService.js의 collectMovableTextReplacements는 movableTexts 각 항목을 PDF 좌표계에서 저장할 replacement 레코드로 정규화한다. 이 과정에서 UI 항목의 type 값은 저장 종류 movable-text로 지정된다. 원본 선택 문자열, 원본 위치, 현재 텍스트 위치, 페이지 크기, 글꼴 크기·색상·서식 등을 함께 전달한다.
+
+화면의 텍스트 교체 모드는 이동을 제한하지만, 저장 엔진은 이 항목을 텍스트 이동과 같은 movable-text 삽입·원본 제거 경로로 처리한다. 차이는 텍스트 교체 항목의 현재 위치가 원래 선택 위치로 고정되어 있다는 점이다.
+
+5.3 원본 제거 시도 및 새 내용 기록
+
+buildPdfWithTextEdits는 forceUnicodeFallback이 설정된 UI 선택 텍스트를 removeSimpleMovedText에 전달해 원본 PDF 콘텐츠 스트림에서 선택된 문자열을 찾아 제거하려고 시도한다. 제거 성공 여부와 삭제 방식은 저장 결과 보고서에 기록된다.
+
+그 뒤 새 내용은 대체 폰트 기반 PDF 텍스트와 글리프 외곽선으로 PDF 페이지에 그려진다. 일반적으로 새 내용은 원래 선택 위치에 저장된다. 텍스트 이동 모드에서 좌표가 변경된 항목이라면 변경된 좌표에 기록된다.
+
+원본 콘텐츠 스트림에서 일치하는 문자열을 찾아 제거하지 못한 경우에도 movable-text 항목에는 일반 교체용 흰색 덮개를 추가하지 않는 경로가 있다. 새 내용은 기록되지만 원본 문자가 PDF 안에 남을 수 있다. 따라서 저장 후 PDF에서 원문과 새 문자가 겹쳐 보이거나, 검색·복사에서 원문이 발견될 가능성을 배제할 수 없다. 저장 UI는 직접 제거 수와 제거 미확인 수를 포함한 상태 메시지를 표시하도록 되어 있다.
+
+
+6. 적용 단계별 파일 변경 여부
+
+단계                         뷰어 화면                         원본 PDF 파일
+--------------------------------------------------------------------------
+모드 켜기                    변경 없음                         변경 없음
+텍스트 선택                  입력 대상과 덮개 미리보기 생성     변경 없음
+새 내용 입력 중              입력 필드만 갱신                   변경 없음
+Enter 또는 바깥 클릭         새 내용 미리보기로 갱신            변경 없음
+PDF 다운로드                 저장 진행 및 결과 파일 생성         새 PDF 파일 다운로드
+
+
+7. 현재 동작의 제한 및 주의점
+
+- '적용'은 편집 화면에 반영한다는 뜻이다. Enter 또는 입력창 blur 후에도 원본 파일에 저장된 것은 아니며, 최종 PDF 다운로드가 별도의 저장 단계다.
+- 텍스트 교체는 원문을 PDF 구조 안에서 안전하게 제거할 수 있는지에 따라 저장 결과가 달라질 수 있다.
+- 원본 제거 검색은 PDF 콘텐츠 스트림의 실제 텍스트 명령을 대상으로 하므로, 화면에서 보이는 선택 문자열과 내부 저장 문자열·글꼴 인코딩이 다르면 제거에 실패할 수 있다.
+- 부분 선택이나 여러 텍스트 span에 걸친 선택은 단일 전체 span 선택보다 원본 콘텐츠 스트림과 대응시키기 어렵다. 이 경우도 저장 시 원문 제거 성공을 보장할 수 없다.
+- 빈 내용은 교체값으로 커밋되지 않는다. 원문을 삭제하려는 목적이라면 현재 UI 동작만으로는 빈 문자열 적용이 지원되지 않는다.
+- Escape는 입력 취소처럼 보이지만, 현재 구현은 입력 상태만 닫고 선택 항목과 원본 cover를 취소하지 않는다. 사용자가 기대하는 완전한 취소와 동작이 다를 수 있다.
+- 텍스트 교체 선택 객체는 최초 선택 좌표를 사용한다. 이동 모드처럼 객체를 끌어 새 위치를 지정할 수 없다.
+
+
+8. 핵심 함수 색인
+
+파일                                             주요 함수 / 역할
+--------------------------------------------------------------------------------
+PdfJsViewer.jsx                                  addMovableText: 선택 항목 추가 및 자동 입력창 열기
+PdfJsViewer.jsx                                  updateEditingMovableText: 입력 중 상태 갱신
+PdfJsViewer.jsx                                  commitEditMovableText: 새 문자열과 서식 커밋
+PdfJsViewer.jsx                                  cancelEditMovableText: 입력 상태 닫기
+PdfJsViewer.jsx                                  downloadAsPdf: 저장할 객체 수집 및 변환 호출
+PdfPage.jsx                                      handleTextSelection: PDF 텍스트 Range를 편집 항목으로 변환
+PdfPage.jsx                                      MovableTextLayer: 원문 덮개, 편집 객체, 입력창 렌더링
+PdfOverlayConvertService.js                     collectMovableTextReplacements: 화면 편집 상태 정규화
+PdfOverlayConvertService.js                     convertPdfWithOriginalOverlay: PDF 저장 작업 진입점
+PdfOverlayConvertService.js                     buildPdfWithTextEdits: 원문 제거 시도 및 새 텍스트 기록
+App.jsx                                          handleVisualPdfConvert: 서비스 호출과 다운로드 처리 연결
+
+
+9. 요약
+
+현재 '텍스트 교체'는 PDF 본문에서 선택한 한 구간을 같은 위치에서 새 문자열로 바꾸는 화면 편집 기능이다. 선택 직후 입력창이 열리고, Enter 또는 blur로 새 문자열이 편집 상태에 반영된다. 화면의 원문은 덮개로 숨겨진다. PDF 다운로드 시에는 원본 텍스트의 실제 제거를 시도한 뒤 새 문자열을 PDF에 기록한다. 원본 제거가 실패할 수 있으므로, 화면 미리보기에서 원문이 안 보이는 것만으로 저장 파일 내부에서도 원문이 제거되었다고 판단할 수는 없다.

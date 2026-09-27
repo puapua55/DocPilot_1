@@ -114,6 +114,15 @@ function collectMovableTextReplacements(movableTexts = []) {
       // objects created before the explicit flag was introduced.
       forceUnicodeFallback: true,
       sourceFont: item.sourceFont || null,
+      // Retain every copy of the original font hint. Older editor objects
+      // may only have it under sourceSelection/sourceFont, while newer batch
+      // objects also store it at the top level.
+      fontCandidates: [...new Set([
+        ...(Array.isArray(item.fontCandidates) ? item.fontCandidates : []),
+        ...(Array.isArray(item.sourceFont?.fontCandidates) ? item.sourceFont.fontCandidates : []),
+        ...(Array.isArray(item.sourceSelection?.sourceFont?.fontCandidates)
+          ? item.sourceSelection.sourceFont.fontCandidates : [])
+      ].filter((candidate) => typeof candidate === 'string' && candidate.trim()))],
       originalGlyphText: item.originalGlyphText || item.sourceFont?.glyphText || null,
       originalEncodedText: item.originalEncodedText || null,
       fontAnalysis: item.fontAnalysis || null,
@@ -314,13 +323,25 @@ function base64ToBytes(base64) {
   return bytes;
 }
 
-async function loadReplacementFont() {
+function dataUrlToBytes(dataUrl) {
+  const match = String(dataUrl || '').match(/^data:image\/(png|jpe?g);base64,(.+)$/i);
+  if (!match) throw new Error('첨부 이미지 형식을 읽지 못했습니다.');
+  return { format: match[1].toLowerCase(), bytes: base64ToBytes(match[2]) };
+}
+
+async function loadReplacementFont(fontCandidates = []) {
+  const localFont = await window.docPilotFonts?.resolve?.(fontCandidates);
+  if (localFont?.found && typeof localFont.base64 === 'string' && localFont.base64.trim()) {
+    return { bytes: base64ToBytes(localFont.base64), source: 'local', family: localFont.family || '' };
+  }
   const injected = window.__DOC_PILOT_KOREAN_FONT_BASE64__;
-  if (typeof injected === 'string' && injected.trim()) return base64ToBytes(injected);
+  if (typeof injected === 'string' && injected.trim()) {
+    return { bytes: base64ToBytes(injected), source: 'injected', family: '' };
+  }
 
   const response = await fetch(FONT_URL);
   if (!response.ok) throw new Error('교체 텍스트용 글꼴을 불러오지 못했습니다.');
-  return base64ToBytes(await response.text());
+  return { bytes: base64ToBytes(await response.text()), source: 'bundled', family: 'Noto Sans KR' };
 }
 
 function normalizeRotation(angle) {
@@ -378,6 +399,18 @@ function mapReplacementToPage(replacement, page) {
   };
 }
 
+function mapImageToPage(attachment, page) {
+  const { width: pageWidth, height: pageHeight } = page.getSize();
+  const rotation = normalizeRotation(page.getRotation()?.angle);
+  const display = getDisplaySize(pageWidth, pageHeight, rotation);
+  const rect = attachment.currentRect || {};
+  const scaleX = display.width / Math.max(Number(attachment.sourcePageWidth) || 1, 1);
+  const scaleY = display.height / Math.max(Number(attachment.sourcePageHeight) || 1, 1);
+  const first = displayPointToPdf(rect.x * scaleX, rect.y * scaleY, pageWidth, pageHeight, rotation);
+  const last = displayPointToPdf((rect.x + rect.width) * scaleX, (rect.y + rect.height) * scaleY, pageWidth, pageHeight, rotation);
+  return { x: round(Math.min(first.x, last.x)), y: round(Math.min(first.y, last.y)), width: round(Math.abs(last.x - first.x)), height: round(Math.abs(last.y - first.y)) };
+}
+
 function mapHighlightToPage(highlight, page) {
   const { width: pageWidth, height: pageHeight } = page.getSize();
   const rotation = normalizeRotation(page.getRotation()?.angle);
@@ -430,7 +463,7 @@ export function makeOverlayConvertedFileName(fileName = 'document.pdf') {
   return `${fileName.replace(/\.pdf$/i, '')}_overlay_converted.pdf`;
 }
 
-export async function convertPdfWithOriginalOverlay({ file, replacement = {}, movableTexts = [], highlights = [], download = true }) {
+export async function convertPdfWithOriginalOverlay({ file, replacement = {}, movableTexts = [], highlights = [], images = [], download = true }) {
   const { isPdfFile } = await import('../utils/fileUtils.js');
   if (!file || !isPdfFile(file)) throw new Error('먼저 PDF 파일을 선택해주세요.');
 
@@ -440,10 +473,10 @@ export async function convertPdfWithOriginalOverlay({ file, replacement = {}, mo
     ...collectMovableTextReplacements(movableTexts)
   ];
   if (!replacements.length) replacements = collectReplacementPlanFallback(replacement);
-  if (!replacements.length && !highlights.length) throw new Error('먼저 텍스트 교체, 이동 또는 하이라이트를 화면에 적용해주세요.');
+  if (!replacements.length && !highlights.length && !images.length) throw new Error('먼저 텍스트, 이미지 또는 하이라이트를 화면에 적용해주세요.');
 
   const sourceBytes = await file.arrayBuffer();
-  const { outputBytes, ...report } = await buildPdfWithTextEdits({ sourceBytes, replacements, highlights });
+  const { outputBytes, ...report } = await buildPdfWithTextEdits({ sourceBytes, replacements, highlights, images });
   const outputFileName = makeOverlayConvertedFileName(file.name);
   if (download) downloadPdf(outputBytes, outputFileName);
   return { ...report, outputFileName, fileName: outputFileName, outputBytes: download ? undefined : outputBytes };
@@ -451,7 +484,7 @@ export async function convertPdfWithOriginalOverlay({ file, replacement = {}, mo
 
 // Keep byte generation separate from browser download so saved content can be
 // reopened and verified independently of the editor DOM.
-export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacements: input = [], highlights: inputHighlights = [] }) {
+export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacements: input = [], highlights: inputHighlights = [], images: inputImages = [] }) {
   const replacements = input.map((item) => ({ ...item, canDirectEdit: false }));
   const highlights = inputHighlights.filter((item) => (
     Number.isFinite(Number(item?.pageNumber)) && Number(item.pageNumber) > 0
@@ -461,6 +494,14 @@ export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacemen
     && Number.isFinite(Number(item?.width)) && Number(item.width) > 0
     && Number.isFinite(Number(item?.height)) && Number(item.height) > 0
   ));
+  const images = inputImages.filter((item) => (
+    Number.isInteger(Number(item?.pageNumber)) && Number(item.pageNumber) > 0
+    && Number.isFinite(Number(item?.sourcePageWidth)) && Number(item.sourcePageWidth) > 0
+    && Number.isFinite(Number(item?.sourcePageHeight)) && Number(item.sourcePageHeight) > 0
+    && Number.isFinite(Number(item?.currentRect?.x)) && Number.isFinite(Number(item?.currentRect?.y))
+    && Number(item?.currentRect?.width) > 0 && Number(item?.currentRect?.height) > 0
+    && /^data:image\/(png|jpe?g);base64,/i.test(String(item?.dataUrl || ''))
+  ));
   const pdfDocument = await PDFDocument.load(sourceBytes);
   const pages = pdfDocument.getPages();
   if (replacements.some((item) => !Number.isInteger(item.pageNumber) || !pages[item.pageNumber - 1])) {
@@ -468,10 +509,15 @@ export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacemen
   }
   let replacementFont;
   let replacementOutlineFont;
+  let fontSource = { source: 'none', family: '' };
   // Replacement text is always embedded before the direct planner runs. The
   // planner may still decline the operation and leave the item for overlay.
   if (replacements.some((item) => item.type === 'pdf' || !item.fontPreserved)) {
-  const fallbackFontBytes = fontBytes || await loadReplacementFont();
+  const preferredFontCandidates = replacements.flatMap((item) => item.fontCandidates || []);
+  fontSource = fontBytes
+    ? { bytes: fontBytes, source: 'provided', family: '' }
+    : await loadReplacementFont(preferredFontCandidates);
+  const fallbackFontBytes = fontSource.bytes;
   pdfDocument.registerFontkit({
     create: (bytes) => {
       const font = fontkit.create(bytes);
@@ -532,6 +578,13 @@ export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacemen
     const paint = parseHighlightPaint(highlight.color);
     page.drawRectangle({ ...mapped, color: paint.color, opacity: paint.opacity });
   });
+  for (const attachment of images) {
+    const page = pages[Number(attachment.pageNumber) - 1];
+    if (!page) continue;
+    const { format, bytes } = dataUrlToBytes(attachment.dataUrl);
+    const image = format === 'png' ? await pdfDocument.embedPng(bytes) : await pdfDocument.embedJpg(bytes);
+    page.drawImage(image, mapImageToPage(attachment, page));
+  }
   replacements.forEach((replacement) => {
     const page = pages[replacement.pageNumber - 1];
     if (!page) return;
@@ -575,8 +628,13 @@ export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacemen
     // outlines. Some external viewers retain ToUnicode but render a variable
     // font subset with blank glyphs; these paths remain visible regardless of
     // that font mapping.
-    drawFallbackTextOutlines(page, replacementOutlineFont, replacement.text, mapped, textColor,
-      replacement.fontWeight === 'bold');
+    // An installed Windows TTF/OTF is embedded directly and renders reliably.
+    // Avoid a second outline pass in that case, which otherwise makes the
+    // replacement look darker than the original text.
+    if (fontSource.source !== 'local') {
+      drawFallbackTextOutlines(page, replacementOutlineFont, replacement.text, mapped, textColor,
+        replacement.fontWeight === 'bold');
+    }
     if (replacement.textDecoration === 'underline' || replacement.textDecoration === 'line-through') {
       const lineWidth = Math.max(1, mapped.fontSize * 0.06);
       const lineY = replacement.textDecoration === 'underline'
@@ -621,6 +679,7 @@ export async function buildPdfWithTextEdits({ sourceBytes, fontBytes, replacemen
     method: 'original-pdf-hybrid-text-edit',
     movableTextCount: movableResults.length,
     highlightCount: highlights.length,
+    imageCount: images.length,
     pagePlanCount: new Set(movableResults.map((item) => item.pageNumber)).size,
     directEditCount: replacements.filter((item) => item.canDirectEdit === true).length,
     pdfDirectReplaceCount: pdfReplacementResults.filter((item) => item.replaceMode === 'direct-replace').length,

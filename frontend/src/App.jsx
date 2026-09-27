@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import AppErrorBoundary from './components/AppErrorBoundary';
 import AssistantPanel from './components/AssistantPanel';
+import BatchTextReplaceModal from './components/BatchTextReplaceModal';
 import DocumentWorkspace from './components/DocumentWorkspace';
 import HighlightModal from './components/HighlightModal';
-import ReplaceModal from './components/ReplaceModal';
 import SearchModal from './components/SearchModal';
 import { useChat } from './hooks/useChat';
 import { useDocument } from './hooks/useDocument';
-import { applyTextReplacement, convertTextReplacement, getDocumentFileType } from './services/documentReplaceService';
 import { searchKeywordInDocument } from './services/searchService';
 
 function normalizeCount(result) {
@@ -25,30 +24,14 @@ function getSearchResults(result) {
   return [];
 }
 
-function formatSearchResultSummary(results) {
-  if (!results.length) return '';
-  const visible = results.slice(0, 5);
-  const lines = visible.map((result, index) => {
-    const page = result.pageNumber ?? result.page ?? result.pageIndex;
-    const line = result.lineNumber ?? result.line ?? result.lineIndex;
-    const location = [page != null ? `${page}페이지` : '', line != null ? `${line}번째 줄` : ''].filter(Boolean).join(' / ');
-    const text = String(result.text ?? result.matchText ?? result.context ?? result.word ?? '').trim();
-    return `${index + 1}. ${location || '문서 내 검색 결과'}${text ? `\n   ${text}` : ''}`;
-  });
-  if (results.length > 5) lines.push(`총 ${results.length}건 중 상위 5건만 표시합니다.`);
-  return `\n\n${lines.join('\n')}`;
-}
-
 function App() {
   const documentViewerRef = useRef(null);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [isHighlightModalOpen, setIsHighlightModalOpen] = useState(false);
-  const [isReplaceModalOpen, setIsReplaceModalOpen] = useState(false);
+  const [isBatchReplaceModalOpen, setIsBatchReplaceModalOpen] = useState(false);
   const [highlightKeyword, setHighlightKeyword] = useState('');
   const [highlightStatusMessage, setHighlightStatusMessage] = useState('');
-  const [replacePreview, setReplacePreview] = useState(null);
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
-  const [, setModifiedDocxHtml] = useState('');
   const [runningActionId, setRunningActionId] = useState(null);
   const { selectedDocument, previewModel, documentText, errorMessage, handleDocumentSelect, clearSelectedDocument } = useDocument();
   const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument, previewModel, documentViewerRef);
@@ -58,8 +41,8 @@ function App() {
   useEffect(() => { console.log('[App] selectedSearchResult:', selectedSearchResult); }, [selectedSearchResult]);
 
   const resetDocumentViewState = () => {
-    setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsReplaceModalOpen(false);
-    setHighlightKeyword(''); setHighlightStatusMessage(''); setReplacePreview(null); setSelectedSearchResult(null); setModifiedDocxHtml(''); setRunningActionId(null); clearSelectedDocument();
+    setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsBatchReplaceModalOpen(false);
+    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); clearSelectedDocument();
   };
 
   const handleDocumentSearch = async (keyword, options = {}) => {
@@ -94,6 +77,12 @@ function App() {
   const handleSearchReset = () => {
     documentViewerRef.current?.clearSearchSelection?.();
     setSelectedSearchResult(null);
+  };
+
+  const handleTemporarySearchDismiss = (event) => {
+    if (!selectedSearchResult) return;
+    if (event.target instanceof Element && event.target.closest('[data-search-result-trigger="true"]')) return;
+    handleSearchReset();
   };
 
   const handleHighlightSearch = async (keyword, options = {}) => {
@@ -169,115 +158,94 @@ function App() {
     }
   };
 
-  const handleReplacePreviewTargets = async (originalText, _newText, options = {}) => {
-    return handleDocumentSearch(originalText, {
-      matchMode: options?.matchMode === 'exact' ? 'exact' : 'contains'
-    });
-  };
-
-  const handleReplaceApply = async (originalText, newText, options = {}) => {
-    if (!selectedDocument?.file) throw new Error('현재 선택된 문서가 없습니다.');
-    const file = selectedDocument.file;
-    const fileType = getDocumentFileType(file);
-    const result = await applyTextReplacement({
-      file,
-      fileType,
-      documentViewerRef,
-      originalText,
-      newText,
-      options,
-      onPdfApply: setReplacePreview
-    });
-
-    // PDF "화면에 적용" is an immediate content-stream edit. Render the
-    // replacement layer first and save from that layer: it is the only source
-    // that has the exact glyph-range rectangles for an instant replacement.
-    // Do not turn it into a movable-text item here. A movable item represents
-    // a drag selection and has different deletion semantics for a substring.
-    if (fileType === 'pdf' && result.replaceCount > 0) {
-      let previewCount = 0;
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        previewCount = document.querySelectorAll('.pdf-viewer .replacement-layer > div').length;
-        if (previewCount >= result.results.length) break;
-      }
-      if (previewCount < result.results.length) {
-        throw new Error('교체 대상의 위치 정보를 준비하지 못했습니다. 문서를 다시 연 뒤 재시도해주세요.');
-      }
-      const reviewItems = documentViewerRef.current?.getInstantReplacementReviewItems?.() || [];
-      if (reviewItems.length !== result.results.length) {
-        throw new Error('교체 대상의 편집 영역을 준비하지 못했습니다. 문서를 다시 연 뒤 재시도해주세요.');
-      }
-      const highlights = documentViewerRef.current?.getPdfHighlights?.() || [];
-      const movableTexts = documentViewerRef.current?.getMovableTexts?.() || [];
-      const converted = await handleVisualPdfConvert({
-        replacement: {
-          originalText,
-          newText,
-          matchMode: options?.matchMode === 'exact' ? 'exact' : 'contains',
-          selectedTargets: result.results
-        },
-        movableTexts,
-        highlights,
-        download: false
-      });
-      const updatedFile = new File([converted.outputBytes], file.name, {
-        type: 'application/pdf',
-        lastModified: Date.now()
-      });
-      // Keep the newly written text as a selected, editable review object
-      // after the saved PDF has reloaded. It is already in the content stream,
-      // so an untouched review object is excluded from a later save.
-      setReplacePreview({
-        mode: 'review',
-        id: `instant-replace-review-${Date.now()}`,
-        items: reviewItems
-      });
-      await handleDocumentSelect(updatedFile);
-    }
-
-    if (fileType === 'docx') {
-      setModifiedDocxHtml(documentViewerRef.current?.getModifiedHtml?.() ?? '');
-    }
-
-    return result;
-  };
-
-  const handleReplaceConvert = async (originalText, newText, options = {}) => {
-    if (!selectedDocument?.file) throw new Error('현재 선택된 문서가 없습니다.');
-    const file = selectedDocument.file;
-    const fileType = getDocumentFileType(file);
-    return convertTextReplacement({
-      file, fileType, originalText, newText,
-      options: { ...options, viewerHighlights: documentViewerRef.current?.getPdfHighlights?.() }
-    });
-  };
-
   const handleVisualPdfConvert = async (payload = {}) => {
     const replacement = payload?.replacement || payload;
     const movableTexts = Array.isArray(payload?.movableTexts) ? payload.movableTexts : [];
     const highlights = Array.isArray(payload?.highlights) ? payload.highlights : [];
+    const images = Array.isArray(payload?.images) ? payload.images : [];
     if (!selectedDocument?.file || previewModel?.type !== 'pdf') {
       throw new Error('현재 선택된 PDF 문서가 없습니다.');
     }
 
-    if ((!replacement?.originalText || replacement?.newText == null) && movableTexts.length === 0 && highlights.length === 0) {
-      throw new Error('화면에 적용된 교체, 이동 또는 하이라이트 결과가 없습니다.');
+    if ((!replacement?.originalText || replacement?.newText == null) && movableTexts.length === 0 && highlights.length === 0 && images.length === 0) {
+      throw new Error('화면에 적용된 텍스트 이동 또는 하이라이트 결과가 없습니다.');
     }
     const { convertPdfWithOriginalOverlay } = await import('./services/pdfOverlayConvertService');
-    return convertPdfWithOriginalOverlay({ file: selectedDocument.file, replacement, movableTexts, highlights, download: payload?.download !== false });
+    return convertPdfWithOriginalOverlay({ file: selectedDocument.file, replacement, movableTexts, highlights, images, download: payload?.download !== false });
   };
 
-  const handleReplaceResultClick = (result) => {
-    const target = result?.raw || result;
-    const moved = documentViewerRef.current?.scrollToReplaceResult?.(target)
-      ?? documentViewerRef.current?.scrollToSearchResult?.(target)
-      ?? false;
-    if (!moved) console.warn('[App] replace result navigation was not handled:', target);
-  };
+  const handleBatchReplaceApply = async (originalText, newText, options = {}) => {
+    if (!selectedDocument?.file) throw new Error('먼저 문서를 선택해주세요.');
+    if (!documentViewerRef.current?.replaceText) throw new Error('현재 문서 뷰어에서 텍스트 변경을 지원하지 않습니다.');
 
-  const handleReplaceReset = () => {
-    documentViewerRef.current?.clearSearchSelection?.();
+    const matchMode = options.matchMode === 'exact' ? 'exact' : 'contains';
+    const selectedTargets = Array.isArray(options.selectedTargets) ? options.selectedTargets : [];
+    const fileType = previewModel?.type;
+    const result = await documentViewerRef.current.replaceText(originalText, newText, {
+      matchMode,
+      selectedTargets
+    });
+    const appliedCount = normalizeCount(result);
+    if (!appliedCount) throw new Error('선택한 검색 결과를 적용할 수 없습니다. 검색을 다시 실행해주세요.');
+
+    if (fileType === 'pdf') {
+      // Batch results are promoted by PdfJsViewer to the same editor objects
+      // created by a manual text selection. Save them through the PDF button.
+      setHighlightStatusMessage(`${appliedCount}건을 변경했습니다. 변경된 문구는 텍스트 이동·텍스트 교체로 계속 편집할 수 있으며, PDF 버튼을 누르면 저장됩니다.`);
+      return { count: appliedCount, replaceCount: appliedCount };
+
+      let overlayCount = 0;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        overlayCount = document.querySelectorAll('.pdf-viewer .replacement-layer > div').length;
+        if (overlayCount >= appliedCount) break;
+      }
+      if (overlayCount < appliedCount) {
+        throw new Error(`화면에서 교체 위치를 ${appliedCount}건 중 ${overlayCount}건만 확인했습니다. 검색 결과를 다시 확인해주세요.`);
+      }
+      const replacementReviewItems = documentViewerRef.current?.getInstantReplacementReviewItems?.() || [];
+      replacementReviewItems.forEach((item) => {
+        item.previousSourceText = originalText;
+        item.sourceText = String(item.displayText || newText);
+        item.originalText = item.sourceText;
+        item.originalUnicodeText = item.sourceText;
+      });
+
+      const converted = await handleVisualPdfConvert({
+        replacement: {
+          originalText,
+          newText,
+          matchMode,
+          selectedTargets: result.results
+        },
+        download: false
+      });
+      if (!converted?.outputBytes?.byteLength) throw new Error('변경된 PDF 데이터를 만들지 못했습니다.');
+
+      const updatedFile = new File([converted.outputBytes], selectedDocument.file.name, {
+        type: 'application/pdf',
+        lastModified: Date.now()
+      });
+      await handleDocumentSelect(updatedFile);
+      if (replacementReviewItems.length) {
+        // Preserve the replacement objects in the viewer so subsequent move /
+        // replace actions target the new text rather than a covered text layer.
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        documentViewerRef.current?.setPersistedReplacementReviewItems?.(replacementReviewItems);
+      }
+      const unresolved = Number(converted.noCoverUnresolvedCount || 0);
+      setHighlightStatusMessage(unresolved
+        ? `${appliedCount}건을 변경했습니다. 원문 제거를 확인하지 못한 항목 ${unresolved}건은 PDF 구조상 남아 있을 수 있습니다.`
+        : `${appliedCount}건을 변경해 PDF 뷰어에 적용했습니다.`);
+      return { count: appliedCount, replaceCount: appliedCount };
+    }
+
+    if (fileType === 'word') {
+      setHighlightStatusMessage(`${appliedCount}건을 변경해 문서 화면에 적용했습니다.`);
+      return { count: appliedCount, replaceCount: appliedCount };
+    }
+
+    throw new Error('지원하지 않는 문서 형식입니다.');
   };
 
   const requireDocumentForAction = () => {
@@ -291,15 +259,6 @@ function App() {
     if (String(action?.keyword || '').trim()) return true;
     appendAssistantMessage(label === '검색어' ? '검색어가 없어 작업을 실행할 수 없습니다.' : '하이라이트 대상 단어가 없어 작업을 실행할 수 없습니다.');
     return false;
-  };
-
-  const validateReplaceAction = (action) => {
-    if (!requireDocumentForAction()) return false;
-    if (!String(action?.originalText || '').trim() || !String(action?.newText || '').trim()) {
-      appendAssistantMessage('기존 단어와 변경 단어를 확인해주세요.');
-      return false;
-    }
-    return true;
   };
 
   const runAction = async (messageId, type, task) => {
@@ -322,7 +281,17 @@ function App() {
       const rawResult = await handleDocumentSearch(action.keyword, { matchMode: 'contains' });
       const results = getSearchResults(rawResult);
       const count = results.length || normalizeCount(rawResult);
-      appendAssistantMessage(`검색을 실행했습니다.\n검색어: ${action.keyword}\n검색 결과: ${count}건${formatSearchResultSummary(results)}`);
+      const visibleResults = results.slice(0, 20);
+      const hasMoreResults = results.length > visibleResults.length;
+      appendAssistantMessage(
+        `검색을 실행했습니다.\n검색어: ${action.keyword}\n검색 결과: ${count}건${hasMoreResults ? '\n채팅에는 상위 20건을 표시합니다.' : ''}`,
+        {
+          searchResults: visibleResults,
+          searchKeyword: action.keyword,
+          searchResultCount: count,
+          hasMoreSearchResults: hasMoreResults
+        }
+      );
     });
   };
 
@@ -340,54 +309,10 @@ function App() {
     });
   };
 
-  const executeReplaceApplyAction = async (messageId, action) => {
-    if (!validateReplaceAction(action)) return;
-    await runAction(messageId, 'replace-apply', async () => {
-      const file = selectedDocument.file;
-      const fileType = getDocumentFileType(file);
-      if ((fileType === 'docx' || fileType === 'word') && !documentViewerRef.current?.replaceText) throw new Error('현재 뷰어에서 텍스트 교체 기능을 사용할 수 없습니다.');
-      const result = await applyTextReplacement({
-        file,
-        fileType,
-        documentViewerRef,
-        originalText: action.originalText,
-        newText: action.newText,
-        options: { matchMode: 'contains' },
-        onPdfApply: setReplacePreview
-      });
-      if (fileType === 'docx') {
-        setModifiedDocxHtml(documentViewerRef.current?.getModifiedHtml?.() ?? '');
-        setHighlightStatusMessage(normalizeCount(result) > 0 ? `DOCX 텍스트 치환 ${normalizeCount(result)}건` : '교체할 텍스트를 찾을 수 없습니다.');
-      }
-      const countText = result.replaceCount == null ? '미리보기 적용' : `${normalizeCount(result)}건`;
-      appendAssistantMessage(`화면에 텍스트 치환을 적용했습니다.\n기존 단어: ${action.originalText}\n변경 단어: ${action.newText}\n적용 건수: ${countText}`);
-    });
-  };
-
-  const executeReplaceConvertAction = async (messageId, action) => {
-    if (!validateReplaceAction(action)) return;
-    await runAction(messageId, 'replace-convert', async () => {
-      const file = selectedDocument.file;
-      const fileType = getDocumentFileType(file);
-      const result = await convertTextReplacement({
-        file,
-        fileType,
-        originalText: action.originalText,
-        newText: action.newText,
-        options: {
-          matchMode: 'contains',
-          viewerHighlights: documentViewerRef.current?.getPdfHighlights?.()
-        }
-      });
-      const fileName = result?.fileName || result?.outputFileName || `${file.name} 변환 파일`;
-      appendAssistantMessage(`변환 파일 다운로드를 실행했습니다.\n기존 단어: ${action.originalText}\n변경 단어: ${action.newText}\n파일명: ${fileName}${result?.replaceCount != null ? `\n치환 건수: ${result.replaceCount}건` : ''}`);
-    });
-  };
-
   const appContent = (
-    <div className="app-page"><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
-      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} replacePreview={replacePreview} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
-      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onReplaceCardClick={() => setIsReplaceModalOpen(true)} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteReplaceApplyAction={executeReplaceApplyAction} onExecuteReplaceConvertAction={executeReplaceConvertAction} />
+    <div className="app-page" onPointerDown={handleTemporarySearchDismiss}><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
+      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
+      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onBatchReplaceCardClick={() => setIsBatchReplaceModalOpen(true)} onSearchResultClick={handleSearchResultClick} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} />
     </main></div>
     {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
     <HighlightModal
@@ -400,16 +325,13 @@ function App() {
       onResultClick={handleHighlightResultClick}
       onClose={() => setIsHighlightModalOpen(false)}
     />
-    <ReplaceModal
-      isOpen={isReplaceModalOpen}
+    <BatchTextReplaceModal
+      isOpen={isBatchReplaceModalOpen}
       selectedDocument={selectedDocument}
       previewModel={previewModel}
-      onPreviewTargets={handleReplacePreviewTargets}
-      onApply={handleReplaceApply}
-      onConvert={handleReplaceConvert}
-      onResultClick={handleReplaceResultClick}
-      onReset={handleReplaceReset}
-      onClose={() => setIsReplaceModalOpen(false)}
+      onSearch={handleDocumentSearch}
+      onApply={handleBatchReplaceApply}
+      onClose={() => setIsBatchReplaceModalOpen(false)}
     />
     </div>
   );

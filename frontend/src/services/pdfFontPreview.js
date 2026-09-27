@@ -6,15 +6,28 @@ import { OPS } from 'pdfjs-dist';
 export async function describePdfTextFonts(page, textContent) {
   const operators = await page.getOperatorList();
   const fonts = new Map();
+  const fontColors = new Map();
   let currentFont = null;
+  let currentTextColor = null;
   const stack = [];
   operators.fnArray.forEach((op, index) => {
     const args = operators.argsArray[index];
-    if (op === OPS.save) stack.push(currentFont);
-    else if (op === OPS.restore) currentFont = stack.pop() || null;
+    if (op === OPS.save) stack.push({ font: currentFont, textColor: currentTextColor });
+    else if (op === OPS.restore) {
+      const restored = stack.pop();
+      currentFont = restored?.font || null;
+      currentTextColor = restored?.textColor || null;
+    }
     else if (op === OPS.setFont) currentFont = args[0];
+    else if (op === OPS.setFillRGBColor && typeof args[0] === 'string') currentTextColor = args[0];
+    else if (op === OPS.setFillGray && Number.isFinite(Number(args[0]))) {
+      const channel = Math.round(Math.max(0, Math.min(1, Number(args[0])) * 255));
+      currentTextColor = `rgb(${channel}, ${channel}, ${channel})`;
+    }
     else if (op === OPS.showText && currentFont) {
       if (!fonts.has(currentFont)) fonts.set(currentFont, new Map());
+      if (!fontColors.has(currentFont)) fontColors.set(currentFont, new Set());
+      if (currentTextColor) fontColors.get(currentFont).add(currentTextColor);
       const map = fonts.get(currentFont);
       for (const glyph of args[0]) {
         if (typeof glyph === 'number' || !glyph.unicode || !glyph.fontChar || glyph.accent) continue;
@@ -31,6 +44,21 @@ export async function describePdfTextFonts(page, textContent) {
     descriptors.set(fontName, {
       pdfFontName: fontName,
       fontFamily: embedded ? `"${font.loadedName}"` : (style.fontSubstitution || font.fallbackName || style.fontFamily),
+      // Prefer the original PDF family name when available. PDF.js's loaded
+      // name is often an internal identifier (for example g_d0_f1), which
+      // cannot be matched against a Windows-installed font file.
+      fontCandidates: [
+        font.name,
+        font.familyName,
+        font.fallbackName,
+        style.fontFamily,
+        style.fontSubstitution,
+        font.loadedName
+      ].filter((value, index, values) => typeof value === 'string' && value.trim()
+        && values.indexOf(value) === index),
+      textColor: fontColors.get(fontName)?.size === 1
+        ? [...fontColors.get(fontName)][0]
+        : null,
       fontWeight: embedded ? 'normal' : font.black ? '900' : font.bold ? 'bold' : 'normal',
       fontStyle: embedded ? 'normal' : font.italic ? 'italic' : 'normal',
       embedded,

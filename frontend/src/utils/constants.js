@@ -10,14 +10,13 @@ export const INITIAL_CHAT_MESSAGES = [
   {
     id: 'welcome-ai',
     role: 'assistant',
-    text: '문서 작업 요청만 지원합니다. 정확한 문서 검색, 위치 하이라이트 또는 즉시 텍스트 교체를 요청해주세요.'
+    text: '문서 작업 요청만 지원합니다. 정확한 문서 검색 또는 위치 하이라이트를 요청해주세요.'
   }
 ];
 
 export const FEATURE_MESSAGES = {
   search: '정확한 문서 검색 기능은 다음 단계에서 구현 예정입니다.',
   highlight: '위치 하이라이트 기능은 다음 단계에서 구현 예정입니다.',
-  replace: '즉시 텍스트 교체 기능은 다음 단계에서 구현 예정입니다.'
 };
 
 export const DOCUMENT_LABELS = {

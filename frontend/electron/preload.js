@@ -19,3 +19,8 @@ contextBridge.exposeInMainWorld('docPilotAi', {
     history: Array.isArray(request?.history) ? request.history : []
   })
 });
+
+contextBridge.exposeInMainWorld('docPilotFonts', {
+  resolve: (fontFamilies) => ipcRenderer.invoke('docpilot-fonts:resolve',
+    Array.isArray(fontFamilies) ? fontFamilies.filter((value) => typeof value === 'string').slice(0, 12) : [])
+});
