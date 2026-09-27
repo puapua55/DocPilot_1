@@ -39,14 +39,41 @@ export function getXmlPrefixSummary(xmlText) {
   };
 }
 
-export function replaceTextInDocxXml(xmlText, originalText, newText) {
-  const source=String(xmlText??''), target=String(originalText||''), replacement=String(newText??'');
+function isWordSeparator(char){return char==null||char===' '||char==='\n'||char==='\t';}
+function replaceTextWithMode(text,target,replacement,matchMode='contains'){
+  if(matchMode!=='exact'){
+    const count=text.split(target).length-1;
+    return {text:text.split(target).join(replacement),count};
+  }
+  let cursor=0,count=0,output='';
+  while(cursor<=text.length-target.length){
+    const found=text.indexOf(target,cursor);
+    if(found===-1)break;
+    const before=found>0?text[found-1]:null;
+    const afterIndex=found+target.length;
+    const after=afterIndex<text.length?text[afterIndex]:null;
+    if(isWordSeparator(before)&&isWordSeparator(after)){
+      output+=text.slice(cursor,found)+replacement;
+      cursor=afterIndex;
+      count+=1;
+    }else{
+      output+=text.slice(cursor,found+target.length);
+      cursor=found+target.length;
+    }
+  }
+  output+=text.slice(cursor);
+  return {text:output,count};
+}
+
+export function replaceTextInDocxXml(xmlText, originalText, newText, options={}) {
+  const source=String(xmlText??''), target=String(originalText||''), replacement=String(newText??''), matchMode=options?.matchMode==='exact'?'exact':'contains';
   if (!target) return {xmlText:source,replaceCount:0};
   let replaceCount=0;
   const replacedXmlText=source.replace(/(<([A-Za-z_][A-Za-z0-9_.-]*):t\b[^>]*>)([\s\S]*?)(<\/\2:t>)/g,(match,openTag,_prefix,encodedText,closeTag)=>{
     const text=unescapeXmlText(encodedText); if(!text.includes(target)) return match;
-    replaceCount += text.split(target).length-1;
-    return `${openTag}${escapeXmlText(text.split(target).join(replacement))}${closeTag}`;
+    const replaced=replaceTextWithMode(text,target,replacement,matchMode); if(replaced.count===0)return match;
+    replaceCount += replaced.count;
+    return `${openTag}${escapeXmlText(replaced.text)}${closeTag}`;
   });
   if(replaceCount===0) console.warn('[DocxConvert] no direct w:t replacements. split-run replacement is not enabled yet.');
   return {xmlText:replacedXmlText,replaceCount};
@@ -142,7 +169,7 @@ async function validateConvertedDocxBlob(blob,originalBytes,replacements,origina
   }catch(error){console.error('[DocxConvert] converted DOCX validation failed:',error);throw new Error('변환된 DOCX 내부 ZIP 무결성 검증에 실패했습니다.');}
 }
 
-export async function convertDocxFileWithTextReplace(file,originalText,newText){
+export async function convertDocxFileWithTextReplace(file,originalText,newText,options={}){
   if(!file)throw new Error('DOCX 파일이 선택되지 않았습니다.');
   if(!String(file.name||'').toLowerCase().endsWith('.docx'))throw new Error('DOC 형식은 현재 변환 저장을 지원하지 않습니다. DOCX 파일을 사용해주세요.');
   const target=String(originalText||'').trim(),replacement=String(newText??'');if(!target)throw new Error('기존 단어를 입력하세요.');
@@ -157,7 +184,7 @@ export async function convertDocxFileWithTextReplace(file,originalText,newText){
   const xmlPaths=getDocxTextXmlPaths(zip);console.log('[DocxConvert] text XML paths only:',xmlPaths);if(!xmlPaths.includes('word/document.xml'))throw new Error('DOCX 본문 XML(word/document.xml)을 찾지 못했습니다.');
   const replacements=new Map();let totalReplaceCount=0;const encoder=new TextEncoder();
   for(const path of xmlPaths){
-    const xmlText=await readZipText(zip,path);if(!xmlText)continue;const before=getXmlPrefixSummary(xmlText),result=replaceTextInDocxXml(xmlText,target,replacement),after=getXmlPrefixSummary(result.xmlText);
+    const xmlText=await readZipText(zip,path);if(!xmlText)continue;const before=getXmlPrefixSummary(xmlText),result=replaceTextInDocxXml(xmlText,target,replacement,options),after=getXmlPrefixSummary(result.xmlText);
     if(path==='word/document.xml'){
       const changed=(before.hasWDocument&&!after.hasWDocument)||(!before.hasNs0Document&&after.hasNs0Document)||before.wTextCount!==after.wTextCount||before.tblCount!==after.tblCount||before.trCount!==after.trCount||before.tcCount!==after.tcCount||before.sectPrCount!==after.sectPrCount;
       if(changed)throw new Error('DOCX 본문 XML 구조 보존 검증에 실패했습니다. 변환을 중단합니다.');
@@ -168,5 +195,5 @@ export async function convertDocxFileWithTextReplace(file,originalText,newText){
   await validateConvertedDocxBlob(blob,originalBytes,replacements,target,replacement);
   const outputFileName=makeDocxConvertedFileName(file.name);downloadBlob(blob,outputFileName);
   console.log('[DocxConvert] done:',{outputFileName,replaceCount:totalReplaceCount,integrityCheck:'raw ZIP structure + changed XML CRC + styles raw record preservation passed'});
-  return {outputFileName,replaceCount:totalReplaceCount};
+  return {outputFileName,fileName:outputFileName,replaceCount:totalReplaceCount,fileType:'docx'};
 }

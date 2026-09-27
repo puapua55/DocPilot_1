@@ -41,7 +41,7 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
   await page.getByLabel('기존 단어').fill('테스트');
   await page.getByLabel('변경 단어').fill('시험');
 
-  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '변환', exact: true }).click()]);
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '변환 파일 다운로드', exact: true }).click()]);
   expect(download.suggestedFilename()).toBe('테스트1_docx_converted.docx');
   const downloadedPath = testInfo.outputPath('테스트1_docx_converted.docx');
   await download.saveAs(downloadedPath);
@@ -56,5 +56,5 @@ test('DOCX [변환]은 텍스트만 바꾸고 표/스타일/ZIP 구조를 보존
   expect(hasTableGridStyle(originalStylesXml)).toBe(true);expect(hasTableGridStyle(convertedStylesXml)).toBe(true);expect(convertedStylesXml).toBe(originalStylesXml);
   const {stdout:entryList}=await execFileAsync('unzip',['-Z1',downloadedPath],{encoding:'utf8'});const entries=entryList.split(/\r?\n/);
   for(const entryPath of ['word/styles.xml','word/fontTable.xml','word/settings.xml','word/theme/theme1.xml','_rels/.rels','word/_rels/document.xml.rels','[Content_Types].xml']) expect(entries).toContain(entryPath);
-  await expect(page.getByText(/DOCX 파일 변환 완료/)).toBeVisible();
+  await expect(page.getByRole('dialog').getByText(/변환 파일이 생성되었습니다: 테스트1_docx_converted\.docx/)).toBeVisible();
 });

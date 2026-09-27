@@ -15,10 +15,10 @@ import java.util.Map;
 @RequestMapping("/api/chat")
 public class ChatController {
 
-    private final OpenAiChatService openAiChatService;
+    private final GeminiChatService geminiChatService;
 
-    public ChatController(OpenAiChatService openAiChatService) {
-        this.openAiChatService = openAiChatService;
+    public ChatController(GeminiChatService geminiChatService) {
+        this.geminiChatService = geminiChatService;
     }
 
     @PostMapping
@@ -26,7 +26,7 @@ public class ChatController {
         if (request == null || request.message() == null || request.message().trim().isEmpty()) {
             throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "message는 필수입니다.");
         }
-        OpenAiChatService.ChatResult result = openAiChatService.chat(request);
+        GeminiChatService.ChatResult result = geminiChatService.chat(request);
         return new ChatResponse(result.answer(), result.intent(), result.action());
     }
 

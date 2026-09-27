@@ -1,6 +1,6 @@
 function ZoomControls({ scale, onZoomIn, onZoomOut }) {
   return (
-    <div className="zoom-controls" aria-label="PDF 확대 축소 컨트롤">
+    <div className="zoom-controls" aria-label="문서 확대 축소 컨트롤">
       <button
         type="button"
         className="zoom-button"

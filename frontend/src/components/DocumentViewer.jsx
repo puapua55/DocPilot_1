@@ -1,10 +1,10 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { formatFileSize, isPdfFile } from '../utils/fileUtils';
 import PdfViewer from './PdfViewer';
 import PreviewInfoBox from './PreviewInfoBox';
+import WordViewer from './WordViewer';
+import { convertDocxFileWithHighlights } from '../services/docxHighlightService';
 import ZoomControls from './ZoomControls';
-import WordPreviewPlaceholder from './WordPreviewPlaceholder';
-import DocxViewer from './DocxViewer';
 
 const DEFAULT_SCALE = 1;
 const DOCX_DEFAULT_SCALE = 1;
@@ -21,46 +21,75 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   selectedSearchResult,
   onClose,
   onChangeFile,
-  onReselect
+  onReselect,
+  onVisualPdfConvert
 }, ref) {
   const inputRef = useRef(null);
-  const innerViewerRef = useRef(null);
-  const viewerType = getViewerType(file, previewModel);
-  const maxScale = viewerType === 'docx' ? 2 : MAX_SCALE;
-  const [scale, setScale] = useState(() => (viewerType === 'docx' ? DOCX_DEFAULT_SCALE : DEFAULT_SCALE));
-
-  useEffect(() => {
-    if (viewerType === 'docx') {
-      setScale(DOCX_DEFAULT_SCALE);
-      return;
-    }
-
-    setScale(DEFAULT_SCALE);
-  }, [viewerType]);
+  const viewerRef = useRef(null);
+  const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [docxPdfDownloadState, setDocxPdfDownloadState] = useState('idle');
 
   useImperativeHandle(ref, () => ({
-    searchDocument(keyword) {
-      return innerViewerRef.current?.searchDocument?.(keyword) || [];
+    async getDocumentText() {
+      try {
+        return await viewerRef.current?.getDocumentText?.() ?? '';
+      } catch (error) {
+        console.warn('[DocumentViewer] document text extraction failed:', error);
+        return '';
+      }
     },
-
-    highlightText(keyword) {
-      return innerViewerRef.current?.highlightText?.(keyword) || 0;
+    searchDocument(keyword, options) {
+      return viewerRef.current?.searchDocument?.(keyword, options) ?? [];
     },
-
-    replaceText(originalText, newText) {
-      return innerViewerRef.current?.replaceText?.(originalText, newText) || 0;
+    getPdfHighlights() {
+      return viewerRef.current?.getPdfHighlights?.() ?? [];
     },
-
+    getMovableTexts() {
+      return viewerRef.current?.getMovableTexts?.() ?? [];
+    },
+    getInstantReplacementReviewItems() {
+      return viewerRef.current?.getInstantReplacementReviewItems?.() ?? [];
+    },
     scrollToSearchResult(result) {
-      return innerViewerRef.current?.scrollToSearchResult?.(result);
+      return viewerRef.current?.scrollToSearchResult?.(result) ?? false;
     },
-
+    clearSearchSelection() {
+      viewerRef.current?.clearSearchSelection?.();
+    },
+    highlightText(keyword, options) {
+      return viewerRef.current?.highlightText?.(keyword, options) ?? { count: 0, results: [] };
+    },
+    scrollToHighlightResult(result) {
+      return viewerRef.current?.scrollToHighlightResult?.(result)
+        ?? viewerRef.current?.scrollToSearchResult?.(result)
+        ?? false;
+    },
+    clearHighlightSelection() {
+      viewerRef.current?.clearHighlightSelection?.();
+    },
+    replaceText(originalText, newText, options) {
+      return viewerRef.current?.replaceText?.(originalText, newText, options)
+        ?? { count: 0, replaceCount: 0, results: [] };
+    },
+    scrollToReplaceResult(result) {
+      return viewerRef.current?.scrollToReplaceResult?.(result)
+        ?? viewerRef.current?.scrollToSearchResult?.(result)
+        ?? false;
+    },
     clearHighlights() {
-      return innerViewerRef.current?.clearHighlights?.();
+      viewerRef.current?.clearHighlights?.();
     },
-
-    getViewerType() {
-      return viewerType;
+    undoDocumentChange() {
+      return viewerRef.current?.undoDocumentChange?.() ?? false;
+    },
+    redoDocumentChange() {
+      return viewerRef.current?.redoDocumentChange?.() ?? false;
+    },
+    resetAllDocumentChanges() {
+      return viewerRef.current?.resetAllDocumentChanges?.() ?? false;
+    },
+    getModifiedHtml() {
+      return viewerRef.current?.getModifiedHtml?.() ?? '';
     }
   }));
 
@@ -81,59 +110,49 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     event.target.value = '';
   };
 
-  const renderContent = () => {
-    if (!previewModel) {
-      return <PreviewInfoBox />;
+  const downloadCurrentDocx = () => {
+    if (!file) return;
+    const highlights = viewerRef.current?.getDocxHighlights?.() || [];
+    if (highlights.length > 0) {
+      convertDocxFileWithHighlights(file, highlights).catch((error) => {
+        console.error('[DocumentViewer] DOCX highlight download failed:', error);
+      });
+      return;
     }
-
-    if (viewerType === 'pdf') {
-      return (
-        <PdfViewer
-          file={file}
-          highlightKeyword={highlightKeyword}
-          replacePreview={replacePreview}
-          selectedSearchResult={selectedSearchResult}
-          scale={scale}
-        />
-      );
-    }
-
-    if (viewerType === 'docx') {
-      return (
-        <DocxViewer
-          ref={innerViewerRef}
-          file={file}
-          scale={scale}
-          onZoomChange={setScale}
-        />
-      );
-    }
-
-    if (viewerType === 'doc') {
-      return (
-        <WordPreviewPlaceholder
-          fileName={previewModel.fileName}
-          fileSize={formatFileSize(previewModel.fileSize)}
-          message="DOC 형식은 현재 미리보기가 제한됩니다."
-          description="DOCX 파일을 사용해주세요."
-        />
-      );
-    }
-
-    return (
-      <div className="unsupported-document">
-        지원하지 않는 문서 형식입니다.
-      </div>
-    );
+    const url = URL.createObjectURL(file);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = file.name;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  return (
-    <section className="document-viewer">
-      <div className="document-viewer-header">
-        <div className="document-viewer-file">
-          <strong>{file?.name}</strong>
-          <span>{formatFileSize(file?.size ?? 0)}</span>
-        </div>
+  const downloadCurrentDocxAsPdf = async () => {
+    if (docxPdfDownloadState !== 'idle') return;
+    setDocxPdfDownloadState('running');
+    try {
+      await viewerRef.current?.downloadAsPdf?.();
+      setDocxPdfDownloadState('idle');
+    } catch (error) {
+      console.error('[DocumentViewer] DOCX PDF download failed:', error);
+      setDocxPdfDownloadState('error');
+      window.setTimeout(() => setDocxPdfDownloadState('idle'), 2500);
+    }
+  };
+
+  const docxDownloadActions = (
+    <div className="viewer-download-actions docx-download-actions" aria-label="DOCX 다운로드">
+      <span className="viewer-download-label">다운로드</span>
+      <button type="button" className="viewer-download-button pdf" onClick={downloadCurrentDocxAsPdf} disabled={docxPdfDownloadState === 'running'} aria-label="PDF 다운로드">
+        {docxPdfDownloadState === 'running' ? 'PDF 생성 중...' : docxPdfDownloadState === 'error' ? 'PDF 실패' : 'PDF'}
+      </button>
+      <button type="button" className="viewer-download-button docx" onClick={downloadCurrentDocx} aria-label="DOCX 다운로드">
+        DOCX
+      </button>
+    </div>
+  );
+
+  const viewerActions = (
         <div className="document-viewer-actions">
           <button
             type="button"
@@ -142,7 +161,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           >
             다시 선택
           </button>
-          {previewModel && (previewModel.type === 'pdf' || viewerType === 'docx') ? (
+          {previewModel?.type === 'pdf' || previewModel?.type === 'word' ? (
             <ZoomControls
               scale={scale}
               onZoomOut={() => setScale((current) => Math.max(MIN_SCALE, current - SCALE_STEP))}
@@ -157,6 +176,47 @@ const DocumentViewer = forwardRef(function DocumentViewer({
             onChange={handleFileChange}
           />
         </div>
+  );
+
+  const renderContent = () => {
+    if (!previewModel) {
+      return <PreviewInfoBox />;
+    }
+
+    if (previewModel.type === 'pdf') {
+      return (
+        <PdfViewer
+          ref={viewerRef}
+          file={file}
+          highlightKeyword={highlightKeyword}
+          replacePreview={replacePreview}
+          selectedSearchResult={selectedSearchResult}
+          scale={scale}
+          toolbarActions={viewerActions}
+          onVisualConvert={onVisualPdfConvert}
+        />
+      );
+    }
+
+    if (previewModel.type === 'word') {
+      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} toolbarActions={viewerActions} downloadActions={docxDownloadActions} />;
+    }
+
+    return (
+      <div className="unsupported-document">
+        지원하지 않는 문서 형식입니다.
+      </div>
+    );
+  };
+
+  return (
+    <section className="document-viewer">
+      <div className="document-viewer-header document-file-header">
+        <div className="document-viewer-file">
+          <strong>{file?.name}</strong>
+          <span>{formatFileSize(file?.size ?? 0)}</span>
+        </div>
+        {previewModel?.type !== 'word' && previewModel?.type !== 'pdf' ? viewerActions : null}
       </div>
       {highlightStatusMessage ? (
         <div className="inline-notice" role="status">
@@ -167,30 +227,5 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     </section>
   );
 });
-
-function getViewerType(file, previewModel) {
-  const name = file?.name?.toLowerCase?.() || previewModel?.fileName?.toLowerCase?.() || '';
-  const type = file?.type || '';
-
-  if (previewModel?.type === 'pdf' || type === 'application/pdf' || name.endsWith('.pdf')) {
-    return 'pdf';
-  }
-
-  if (
-    previewModel?.type === 'docx' ||
-    previewModel?.type === 'word' ||
-    type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-    type === 'application/msword' ||
-    name.endsWith('.docx') ||
-    name.endsWith('.doc')
-  ) {
-    if (name.endsWith('.docx') || type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || previewModel?.type === 'docx') {
-      return 'docx';
-    }
-    return 'doc';
-  }
-
-  return previewModel?.type || 'unknown';
-}
 
 export default DocumentViewer;

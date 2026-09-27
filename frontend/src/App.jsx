@@ -1,276 +1,340 @@
 import { useEffect, useRef, useState } from 'react';
 import AppErrorBoundary from './components/AppErrorBoundary';
 import AssistantPanel from './components/AssistantPanel';
+import BatchTextReplaceModal from './components/BatchTextReplaceModal';
 import DocumentWorkspace from './components/DocumentWorkspace';
 import HighlightModal from './components/HighlightModal';
-import ReplaceModal from './components/ReplaceModal';
 import SearchModal from './components/SearchModal';
 import { useChat } from './hooks/useChat';
 import { useDocument } from './hooks/useDocument';
-import { countKeywordMatches } from './services/highlightService';
-import { applyTextReplacement, convertTextReplacement, getDocumentFileType } from './services/documentReplaceService';
 import { searchKeywordInDocument } from './services/searchService';
+
+function normalizeCount(result) {
+  if (typeof result === 'number') return result;
+  if (Array.isArray(result)) return result.length;
+  if (result && typeof result.count === 'number') return result.count;
+  if (result && typeof result.matchCount === 'number') return result.matchCount;
+  if (result && typeof result.replaceCount === 'number') return result.replaceCount;
+  return 0;
+}
+
+function getSearchResults(result) {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.results)) return result.results;
+  return [];
+}
 
 function App() {
   const documentViewerRef = useRef(null);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [isHighlightModalOpen, setIsHighlightModalOpen] = useState(false);
-  const [isReplaceModalOpen, setIsReplaceModalOpen] = useState(false);
+  const [isBatchReplaceModalOpen, setIsBatchReplaceModalOpen] = useState(false);
   const [highlightKeyword, setHighlightKeyword] = useState('');
   const [highlightStatusMessage, setHighlightStatusMessage] = useState('');
-  const [replacePreview, setReplacePreview] = useState(null);
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
-  const [runningActionId, setRunningActionId] = useState('');
-  const {
-    selectedDocument,
-    previewModel,
-    documentText,
-    errorMessage,
-    handleDocumentSelect,
-    clearSelectedDocument
-  } = useDocument();
-  const { messages, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument);
+  const [runningActionId, setRunningActionId] = useState(null);
+  const { selectedDocument, previewModel, documentText, errorMessage, handleDocumentSelect, clearSelectedDocument } = useDocument();
+  const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument, previewModel, documentViewerRef);
 
-  useEffect(() => {
-    console.log('[App] highlightKeyword:', highlightKeyword);
-  }, [highlightKeyword]);
-
-  useEffect(() => {
-    console.log('[App] selectedFile:', selectedDocument?.file ?? null);
-  }, [selectedDocument]);
-
-  useEffect(() => {
-    console.log('[App] selectedSearchResult:', selectedSearchResult);
-  }, [selectedSearchResult]);
+  useEffect(() => { console.log('[App] highlightKeyword:', highlightKeyword); }, [highlightKeyword]);
+  useEffect(() => { console.log('[App] selectedFile:', selectedDocument?.file ?? null); }, [selectedDocument]);
+  useEffect(() => { console.log('[App] selectedSearchResult:', selectedSearchResult); }, [selectedSearchResult]);
 
   const resetDocumentViewState = () => {
-    setIsSearchModalOpen(false);
-    setIsHighlightModalOpen(false);
-    setIsReplaceModalOpen(false);
-    setHighlightKeyword('');
-    setHighlightStatusMessage('');
-    setReplacePreview(null);
-    setSelectedSearchResult(null);
-    clearSelectedDocument();
+    setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsBatchReplaceModalOpen(false);
+    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); clearSelectedDocument();
+  };
+
+  const handleDocumentSearch = async (keyword, options = {}) => {
+    if (!selectedDocument) {
+      return [];
+    }
+
+    if (documentViewerRef.current?.searchDocument) {
+      return await documentViewerRef.current.searchDocument(keyword, options);
+    }
+
+    if (previewModel?.type === 'pdf') {
+      return searchKeywordInDocument(documentText, keyword, options);
+    }
+
+    console.warn('[App] searchDocument is not available for the current viewer.');
+    return [];
   };
 
   const handleSearchResultClick = (result) => {
     console.log('[SearchResult] clicked:', result);
+    const target = result?.raw || result;
+    const moved = documentViewerRef.current?.scrollToSearchResult?.(target) ?? false;
 
-    if (result?.type === 'docx') {
-      documentViewerRef.current?.scrollToSearchResult?.(result);
+    if (!moved) {
+      console.warn('[App] search result navigation was not handled:', target);
     }
 
-    setSelectedSearchResult({
-      ...result,
-      clickedAt: Date.now()
-    });
-    setIsSearchModalOpen(false);
+    setSelectedSearchResult({ ...target, clickedAt: Date.now() });
   };
 
-  const searchActiveDocument = (keyword) => {
-    if (documentViewerRef.current?.getViewerType?.() === 'docx') {
-      return documentViewerRef.current?.searchDocument?.(keyword) || [];
-    }
-
-    return searchKeywordInDocument(documentText, keyword);
+  const handleSearchReset = () => {
+    documentViewerRef.current?.clearSearchSelection?.();
+    setSelectedSearchResult(null);
   };
 
-  const handleHighlightSearch = (keyword) => {
+  const handleTemporarySearchDismiss = (event) => {
+    if (!selectedSearchResult) return;
+    if (event.target instanceof Element && event.target.closest('[data-search-result-trigger="true"]')) return;
+    handleSearchReset();
+  };
+
+  const handleHighlightSearch = async (keyword, options = {}) => {
     if (!selectedDocument) {
       return {
         ok: false,
-        message: '먼저 문서를 선택해주세요.'
+        message: '현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.',
+        count: 0,
+        results: []
       };
     }
 
-    if (documentViewerRef.current?.getViewerType?.() === 'docx') {
-      const matchCount = documentViewerRef.current?.highlightText?.(keyword) || 0;
-
-      if (matchCount === 0) {
-        setHighlightStatusMessage('검색 결과가 없습니다.');
-        return {
-          ok: true,
-          closeModal: true
-        };
-      }
-
-      setHighlightStatusMessage(`${matchCount}개의 검색 결과를 표시했습니다.`);
-
+    if (previewModel?.type !== 'word' && previewModel?.type !== 'pdf') {
       return {
-        ok: true,
-        closeModal: true
+        ok: false,
+        message: '지원하는 문서 형식이 아닙니다.',
+        count: 0,
+        results: []
       };
     }
 
-    const matchCount = countKeywordMatches(documentText, keyword);
-
-    setHighlightKeyword(keyword);
-
-    if (matchCount === 0) {
-      setHighlightStatusMessage('검색 결과가 없습니다.');
+    if (!documentViewerRef.current?.highlightText) {
       return {
-        ok: true,
-        closeModal: true
+        ok: false,
+        message: '현재 뷰어에서 하이라이트 기능을 사용할 수 없습니다.',
+        count: 0,
+        results: []
       };
     }
 
-    setHighlightStatusMessage(`${matchCount}개의 검색 결과를 표시했습니다.`);
+    const result = await documentViewerRef.current.highlightText(keyword, {
+      color: options?.color || 'yellow',
+      matchMode: options?.matchMode === 'exact' ? 'exact' : 'contains'
+    });
+    const count = normalizeCount(result);
+    const results = getSearchResults(result);
+
+    setHighlightKeyword('');
+    setHighlightStatusMessage(
+      count > 0
+        ? `총 ${count}건을 하이라이트했습니다.`
+        : '하이라이트할 단어를 찾을 수 없습니다.'
+    );
 
     return {
       ok: true,
-      closeModal: true
+      count,
+      matchCount: count,
+      results
     };
   };
 
-  const runAiDocumentAction = async (messageId, actionType, run) => {
-    setRunningActionId(`${messageId}:${actionType}`);
+  const handleHighlightClearAll = async () => {
+    documentViewerRef.current?.clearHighlights?.();
+    documentViewerRef.current?.clearHighlightSelection?.();
+    setHighlightKeyword('');
+    setHighlightStatusMessage('하이라이트를 모두 제거했습니다.');
+    return true;
+  };
 
-    try {
-      await run();
-    } catch (error) {
-      console.error('[App] AI document action failed:', error);
-      appendAssistantMessage(error?.message || '문서 작업을 완료하지 못했습니다.');
-    } finally {
-      setRunningActionId('');
+  const handleHighlightReset = () => {
+    documentViewerRef.current?.clearHighlightSelection?.();
+  };
+
+  const handleHighlightResultClick = (result) => {
+    const target = result?.raw || result;
+    const moved = documentViewerRef.current?.scrollToHighlightResult?.(target)
+      ?? documentViewerRef.current?.scrollToSearchResult?.(target)
+      ?? false;
+
+    if (!moved) {
+      console.warn('[App] highlight result navigation was not handled:', target);
     }
   };
 
-  const getAiActionFile = () => {
-    const file = selectedDocument?.file;
-    if (!file) {
-      throw new Error('먼저 문서를 선택해주세요.');
+  const handleVisualPdfConvert = async (payload = {}) => {
+    const replacement = payload?.replacement || payload;
+    const movableTexts = Array.isArray(payload?.movableTexts) ? payload.movableTexts : [];
+    const highlights = Array.isArray(payload?.highlights) ? payload.highlights : [];
+    const images = Array.isArray(payload?.images) ? payload.images : [];
+    if (!selectedDocument?.file || previewModel?.type !== 'pdf') {
+      throw new Error('현재 선택된 PDF 문서가 없습니다.');
     }
 
-    return { file, fileType: getDocumentFileType(file) };
+    if ((!replacement?.originalText || replacement?.newText == null) && movableTexts.length === 0 && highlights.length === 0 && images.length === 0) {
+      throw new Error('화면에 적용된 텍스트 이동 또는 하이라이트 결과가 없습니다.');
+    }
+    const { convertPdfWithOriginalOverlay } = await import('./services/pdfOverlayConvertService');
+    return convertPdfWithOriginalOverlay({ file: selectedDocument.file, replacement, movableTexts, highlights, images, download: payload?.download !== false });
   };
 
-  const handleAiReplaceApply = (messageId, action) => runAiDocumentAction(messageId, 'replace-apply', async () => {
-    const { file, fileType } = getAiActionFile();
-    const result = await applyTextReplacement({
-      file,
-      fileType,
-      documentViewerRef,
-      originalText: action.originalText,
-      newText: action.newText,
-      onPdfApply: setReplacePreview
+  const handleBatchReplaceApply = async (originalText, newText, options = {}) => {
+    if (!selectedDocument?.file) throw new Error('먼저 문서를 선택해주세요.');
+    if (!documentViewerRef.current?.replaceText) throw new Error('현재 문서 뷰어에서 텍스트 변경을 지원하지 않습니다.');
+
+    const matchMode = options.matchMode === 'exact' ? 'exact' : 'contains';
+    const selectedTargets = Array.isArray(options.selectedTargets) ? options.selectedTargets : [];
+    const fileType = previewModel?.type;
+    const result = await documentViewerRef.current.replaceText(originalText, newText, {
+      matchMode,
+      selectedTargets
     });
+    const appliedCount = normalizeCount(result);
+    if (!appliedCount) throw new Error('선택한 검색 결과를 적용할 수 없습니다. 검색을 다시 실행해주세요.');
 
-    appendAssistantMessage(`화면 적용 완료: ${result.replaceCount ?? 0}건`);
-  });
+    if (fileType === 'pdf') {
+      // Batch results are promoted by PdfJsViewer to the same editor objects
+      // created by a manual text selection. Save them through the PDF button.
+      setHighlightStatusMessage(`${appliedCount}건을 변경했습니다. 변경된 문구는 텍스트 이동·텍스트 교체로 계속 편집할 수 있으며, PDF 버튼을 누르면 저장됩니다.`);
+      return { count: appliedCount, replaceCount: appliedCount };
 
-  const handleAiReplaceConvert = (messageId, action) => runAiDocumentAction(messageId, 'replace-convert', async () => {
-    const { file, fileType } = getAiActionFile();
-    const result = await convertTextReplacement({
-      file,
-      fileType,
-      originalText: action.originalText,
-      newText: action.newText
-    });
+      let overlayCount = 0;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        overlayCount = document.querySelectorAll('.pdf-viewer .replacement-layer > div').length;
+        if (overlayCount >= appliedCount) break;
+      }
+      if (overlayCount < appliedCount) {
+        throw new Error(`화면에서 교체 위치를 ${appliedCount}건 중 ${overlayCount}건만 확인했습니다. 검색 결과를 다시 확인해주세요.`);
+      }
+      const replacementReviewItems = documentViewerRef.current?.getInstantReplacementReviewItems?.() || [];
+      replacementReviewItems.forEach((item) => {
+        item.previousSourceText = originalText;
+        item.sourceText = String(item.displayText || newText);
+        item.originalText = item.sourceText;
+        item.originalUnicodeText = item.sourceText;
+      });
 
-    appendAssistantMessage(
-      result.replaceCount > 0
-        ? `변환 파일 다운로드 완료: ${result.outputFileName}`
-        : '교체할 텍스트를 찾을 수 없습니다.'
-    );
-  });
+      const converted = await handleVisualPdfConvert({
+        replacement: {
+          originalText,
+          newText,
+          matchMode,
+          selectedTargets: result.results
+        },
+        download: false
+      });
+      if (!converted?.outputBytes?.byteLength) throw new Error('변경된 PDF 데이터를 만들지 못했습니다.');
 
-  const handleAiSearch = (messageId, action) => runAiDocumentAction(messageId, 'search', async () => {
-    getAiActionFile();
-    const keyword = String(action?.keyword || '').trim();
-    const results = searchActiveDocument(keyword);
-
-    if (!keyword) {
-      appendAssistantMessage('검색어를 확인해주세요.');
-      return;
+      const updatedFile = new File([converted.outputBytes], selectedDocument.file.name, {
+        type: 'application/pdf',
+        lastModified: Date.now()
+      });
+      await handleDocumentSelect(updatedFile);
+      if (replacementReviewItems.length) {
+        // Preserve the replacement objects in the viewer so subsequent move /
+        // replace actions target the new text rather than a covered text layer.
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        documentViewerRef.current?.setPersistedReplacementReviewItems?.(replacementReviewItems);
+      }
+      const unresolved = Number(converted.noCoverUnresolvedCount || 0);
+      setHighlightStatusMessage(unresolved
+        ? `${appliedCount}건을 변경했습니다. 원문 제거를 확인하지 못한 항목 ${unresolved}건은 PDF 구조상 남아 있을 수 있습니다.`
+        : `${appliedCount}건을 변경해 PDF 뷰어에 적용했습니다.`);
+      return { count: appliedCount, replaceCount: appliedCount };
     }
 
-    if (results.length === 0) {
-      appendAssistantMessage(`"${keyword}" 검색 결과가 없습니다.`);
-      return;
+    if (fileType === 'word') {
+      setHighlightStatusMessage(`${appliedCount}건을 변경해 문서 화면에 적용했습니다.`);
+      return { count: appliedCount, replaceCount: appliedCount };
     }
 
-    const summary = results.slice(0, 5).map((result, index) => {
-      const pageNumber = result.pageNumber ?? result.page;
-      const paragraphNumber = result.paragraphNumber ?? result.paragraphIndex ?? result.lineNumber ?? result.line;
-      const text = result.text || result.previewText || result.fullText || result.matchedText || '';
-      const location = [
-        pageNumber ? `${pageNumber}페이지` : null,
-        paragraphNumber ? `문단 ${paragraphNumber}` : null
-      ].filter(Boolean).join(' / ');
+    throw new Error('지원하지 않는 문서 형식입니다.');
+  };
 
-      return `${index + 1}. ${location || '-'}\n${text}`;
-    }).join('\n\n');
+  const requireDocumentForAction = () => {
+    if (selectedDocument?.file) return true;
+    appendAssistantMessage('현재 선택된 문서가 없습니다. 먼저 PDF 또는 DOCX 파일을 업로드해주세요.');
+    return false;
+  };
 
-    appendAssistantMessage(`"${keyword}" 검색 결과 ${results.length}건을 찾았습니다.\n\n${summary}`);
-  });
+  const validateKeywordAction = (action, label = '검색어') => {
+    if (!requireDocumentForAction()) return false;
+    if (String(action?.keyword || '').trim()) return true;
+    appendAssistantMessage(label === '검색어' ? '검색어가 없어 작업을 실행할 수 없습니다.' : '하이라이트 대상 단어가 없어 작업을 실행할 수 없습니다.');
+    return false;
+  };
+
+  const runAction = async (messageId, type, task) => {
+    if (runningActionId) return;
+    setRunningActionId(`${messageId}:${type}`);
+    try { await task(); }
+    catch (error) { appendAssistantMessage(`작업 실행 중 오류가 발생했습니다.\n사유: ${error?.message || '알 수 없는 오류'}`); }
+    finally { setRunningActionId(null); }
+  };
+
+  const executeSearchAction = async (messageId, action) => {
+    if (!validateKeywordAction(action)) return;
+    await runAction(messageId, 'search', async () => {
+      if (previewModel?.type !== 'word' && previewModel?.type !== 'pdf') {
+        throw new Error('지원하지 않는 파일 형식입니다.');
+      }
+      if (!documentViewerRef.current?.searchDocument && previewModel?.type !== 'pdf') {
+        throw new Error('현재 뷰어에서 검색 기능을 사용할 수 없습니다.');
+      }
+      const rawResult = await handleDocumentSearch(action.keyword, { matchMode: 'contains' });
+      const results = getSearchResults(rawResult);
+      const count = results.length || normalizeCount(rawResult);
+      const visibleResults = results.slice(0, 20);
+      const hasMoreResults = results.length > visibleResults.length;
+      appendAssistantMessage(
+        `검색을 실행했습니다.\n검색어: ${action.keyword}\n검색 결과: ${count}건${hasMoreResults ? '\n채팅에는 상위 20건을 표시합니다.' : ''}`,
+        {
+          searchResults: visibleResults,
+          searchKeyword: action.keyword,
+          searchResultCount: count,
+          hasMoreSearchResults: hasMoreResults
+        }
+      );
+    });
+  };
+
+  const executeHighlightAction = async (messageId, action) => {
+    if (!validateKeywordAction(action, '하이라이트')) return;
+    await runAction(messageId, 'highlight', async () => {
+      if (!documentViewerRef.current?.highlightText) throw new Error('현재 뷰어에서 하이라이트 기능을 사용할 수 없습니다.');
+      const result = await handleHighlightSearch(action.keyword, {
+        color: 'yellow',
+        matchMode: 'contains'
+      });
+      if (!result.ok) throw new Error(result.message || '하이라이트를 적용하지 못했습니다.');
+      const count = normalizeCount(result);
+      appendAssistantMessage(`하이라이트를 적용했습니다.\n대상 단어: ${action.keyword}\n적용 건수: ${count}건\n총 ${count}건을 하이라이트했습니다.`);
+    });
+  };
 
   const appContent = (
-    <div className="app-page">
-      <div className="ambient ambient-left" />
-      <div className="ambient ambient-right" />
-      <div className="app-shell">
-        <main className="main-layout">
-          <DocumentWorkspace
-            viewerRef={documentViewerRef}
-            selectedDocument={selectedDocument}
-            previewModel={previewModel}
-            highlightKeyword={highlightKeyword}
-            highlightStatusMessage={highlightStatusMessage}
-            replacePreview={replacePreview}
-            selectedSearchResult={selectedSearchResult}
-            errorMessage={errorMessage}
-            onDocumentSelect={handleDocumentSelect}
-            onDocumentClear={resetDocumentViewState}
-            onDocumentReselect={resetDocumentViewState}
-          />
-          <AssistantPanel
-            messages={messages}
-            selectedDocument={selectedDocument}
-            runningActionId={runningActionId}
-            onSendMessage={handleSendMessage}
-            onSearchCardClick={() => setIsSearchModalOpen(true)}
-            onHighlightCardClick={() => setIsHighlightModalOpen(true)}
-            onReplaceCardClick={() => setIsReplaceModalOpen(true)}
-            onExecuteSearchAction={handleAiSearch}
-            onExecuteReplaceApplyAction={handleAiReplaceApply}
-            onExecuteReplaceConvertAction={handleAiReplaceConvert}
-          />
-        </main>
-      </div>
-      {isSearchModalOpen ? (
-        <SearchModal
-          documentText={documentText}
-          selectedDocument={selectedDocument}
-          onResultClick={handleSearchResultClick}
-          onSearchDocument={(keyword) => {
-            return searchActiveDocument(keyword);
-          }}
-          onClose={() => setIsSearchModalOpen(false)}
-        />
-      ) : null}
-      <HighlightModal
-        isOpen={isHighlightModalOpen}
-        onClose={() => setIsHighlightModalOpen(false)}
-        onSearch={handleHighlightSearch}
-      />
-      <ReplaceModal
-        isOpen={isReplaceModalOpen}
-        selectedDocument={selectedDocument}
-        previewModel={previewModel}
-        onApplyPreview={setReplacePreview}
-        onReplaceDocument={(originalText, newText) => {
-          if (documentViewerRef.current?.getViewerType?.() === 'docx') {
-            return documentViewerRef.current?.replaceText?.(originalText, newText) || 0;
-          }
-
-          return null;
-        }}
-        onClose={() => setIsReplaceModalOpen(false)}
-      />
+    <div className="app-page" onPointerDown={handleTemporarySearchDismiss}><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
+      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
+      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onBatchReplaceCardClick={() => setIsBatchReplaceModalOpen(true)} onSearchResultClick={handleSearchResultClick} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} />
+    </main></div>
+    {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
+    <HighlightModal
+      isOpen={isHighlightModalOpen}
+      selectedDocument={selectedDocument}
+      previewModel={previewModel}
+      onApply={handleHighlightSearch}
+      onClearAll={handleHighlightClearAll}
+      onReset={handleHighlightReset}
+      onResultClick={handleHighlightResultClick}
+      onClose={() => setIsHighlightModalOpen(false)}
+    />
+    <BatchTextReplaceModal
+      isOpen={isBatchReplaceModalOpen}
+      selectedDocument={selectedDocument}
+      previewModel={previewModel}
+      onSearch={handleDocumentSearch}
+      onApply={handleBatchReplaceApply}
+      onClose={() => setIsBatchReplaceModalOpen(false)}
+    />
     </div>
   );
-
   return <AppErrorBoundary>{appContent}</AppErrorBoundary>;
 }
 

@@ -1,20 +1,9 @@
 import {
   normalizeDocumentFile,
-  uploadDocumentForDev,
   validateDocumentFile
 } from './fileService';
-import {
-  extractWordContentForDev,
-  getWordDocumentInfo,
-  getWordPreviewModel,
-  isWordDocument
-} from './docxService';
-import {
-  extractPdfTextByPages,
-  getPdfDocumentInfo,
-  getPdfPreviewModel,
-  isPdfDocument
-} from './pdfService';
+import { extractWordContentForDev, getWordPreviewModel, isWordDocument } from './docxService';
+import { getPdfPreviewModel, isPdfDocument } from './pdfService';
 import { saveDocumentForDev } from './storageService';
 
 export async function openDocument(file) {
@@ -30,14 +19,10 @@ export async function openDocument(file) {
 
   const documentFile = normalizeDocumentFile(file);
 
-  await uploadDocumentForDev(file);
-
   if (isPdfDocument(documentFile)) {
-    const documentText = await extractPdfTextByPages(file);
-    const documentInfo = await getPdfDocumentInfo(file);
-
-    console.log('[documentText]', documentText);
-    console.log('[documentText pages]', documentText.length);
+    // Let the viewer load the PDF and extract text in the background so that
+    // preview activation and error reporting do not wait for text extraction.
+    const documentText = [];
 
     return {
       ok: true,
@@ -58,8 +43,11 @@ export async function openDocument(file) {
   }
 
   if (isWordDocument(documentFile)) {
-    const documentText = (await extractWordContentForDev(file)) || [];
-    const documentInfo = await getWordDocumentInfo(file);
+    const docxPreview = await extractWordContentForDev(file);
+    const documentText = docxPreview.documentText || [];
+
+    console.log('[DOCX] text pages:', documentText.length);
+    console.log('[DOCX] conversion messages:', docxPreview.messages);
 
     return {
       ok: true,
@@ -70,9 +58,8 @@ export async function openDocument(file) {
         documentInfo
       },
       preview: {
-        ...getWordPreviewModel(documentFile),
-        documentText,
-        documentInfo
+        ...getWordPreviewModel(documentFile, docxPreview),
+        documentText
       },
       documentText,
       documentInfo

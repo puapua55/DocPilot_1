@@ -32,14 +32,14 @@
 - [ ] 답변에서 필요한 경우 `제공된 일부 내용 기준`임을 알림
 
 ## 자동 E2E 범위
-`frontend/tests/ai-document-chat.spec.js`에서는 OpenAI 외부 호출을 mock하고 다음을 자동 검증합니다.
+`frontend/tests/ai-document-chat.spec.js`에서는 Gemini 외부 호출을 mock하고 다음을 자동 검증합니다.
 
 1. 문서 없는 상태에서 `/api/chat`의 `documentText`가 빈 문자열인지 확인
 2. 테스트용 실제 PDF를 생성/업로드하고 `documentTextLength > 0`, `[1페이지]` 및 PDF 본문 포함 여부 확인
 3. 테스트용 실제 DOCX를 생성/업로드하고 `documentTextLength > 0` 및 DOCX 본문 포함 여부 확인
 4. PDF/DOCX 상태에서 기존 빠른 문서 작업 버튼 3개가 유지되는지 확인
 
-외부 OpenAI 응답의 의미 품질은 API Key가 없는 CI에서 직접 검증하지 않습니다. 대신 `OpenAiChatServiceTest`로 grounded-answer 지시문과 문서 길이 제한을 검증하고, 실제 API Key가 있는 개발 환경에서는 위 수동 체크리스트로 최종 확인합니다.
+외부 Gemini 응답의 의미 품질은 API Key가 없는 CI에서 직접 검증하지 않습니다. 대신 `GeminiChatServiceTest`로 문서 작업 전용 지시문과 문서 길이 제한을 검증하고, 실제 API Key가 있는 개발 환경에서는 위 수동 체크리스트로 최종 확인합니다.
 
 # 4차 Tool Calling 설계 메모
 

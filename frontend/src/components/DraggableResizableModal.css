@@ -1,0 +1,50 @@
+.draggable-modal {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+  box-sizing: border-box;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+}
+
+.draggable-modal.search-modal {
+  overflow: hidden;
+}
+
+.draggable-modal-header {
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.draggable-modal.search-modal .draggable-modal-header .search-modal-title {
+  margin: 0;
+  padding: 0 54px;
+}
+
+.draggable-modal-header .search-modal-close {
+  position: absolute;
+  top: 8px;
+  right: 0;
+}
+
+.draggable-modal-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.is-modal-dragging,
+.is-modal-dragging * {
+  cursor: move !important;
+  user-select: none !important;
+}

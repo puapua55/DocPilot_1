@@ -10,6 +10,27 @@ import {
 } from './pdfFontRegistry';
 
 const TEXT_BASELINE_RATIO = 0.85;
+const FONT_DEFINITIONS = [
+  {
+    pdfFontName: 'MalgunGothic',
+    fileName: 'MalgunGothic-Regular.ttf',
+    candidates: [
+      '/fonts/MalgunGothic-Regular.base64.txt',
+      '/fonts/MalgunGothic-Regular.base64',
+      '/fonts/malgun.base64.txt',
+      '/fonts/malgun.ttf.base64'
+    ]
+  },
+  {
+    pdfFontName: 'NotoSansKR',
+    fileName: 'NotoSansKR-Regular.ttf',
+    candidates: [
+      '/fonts/NotoSansKR-Regular.base64.txt',
+      '/fonts/NotoSansKR-Regular.base64',
+      '/fonts/NotoSansKR-Regular.ttf.base64'
+    ]
+  }
+];
 
 function parsePx(value) {
   return Number(String(value || '').replace('px', '').trim()) || 0;
@@ -25,8 +46,14 @@ function downloadBlob(blob, outputFileName) {
 
   link.href = url;
   link.download = outputFileName;
+  link.style.display = 'none';
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+
+  window.setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
 function makeHtmlStructureFileName(fileName = 'document.pdf') {
@@ -79,9 +106,9 @@ export async function convertPdfViaHtmlText(file, originalText, newText) {
   };
 }
 
-export async function extractPdfToHtmlText(file) {
-  const htmlStructure = await extractPdfToHtmlStructure(file);
-  const pageHtml = String(htmlStructure?.html ?? '');
+export async function extractPdfToHtmlText(file, options = {}) {
+  const htmlStructure = await extractPdfToHtmlStructure(file, options);
+  const htmlText = String(htmlStructure?.html ?? '');
 
   if (!pageHtml.includes('pdf-page') || !pageHtml.includes('pdf-text')) {
     throw new Error('PDF에서 HTML 텍스트 구조를 생성하지 못했습니다.');
@@ -96,7 +123,7 @@ export async function extractPdfToHtmlText(file) {
   return htmlText;
 }
 
-export function replaceTextInHtmlText(htmlText, originalText, newText) {
+export function replaceTextInHtmlText(htmlText, originalText, newText, options = {}) {
   const target = String(originalText ?? '');
 
   if (!target) {
@@ -107,6 +134,7 @@ export function replaceTextInHtmlText(htmlText, originalText, newText) {
   }
 
   const replacement = String(newText ?? '');
+  const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
   const parser = new DOMParser();
   const docHtml = parser.parseFromString(String(htmlText ?? ''), 'text/html');
   const textElements = Array.from(docHtml.querySelectorAll('.pdf-text'));
@@ -114,11 +142,43 @@ export function replaceTextInHtmlText(htmlText, originalText, newText) {
 
   textElements.forEach((textElement) => {
     const before = textElement.textContent ?? '';
-    const after = before.split(target).join(replacement);
+    let after = before;
+    let localCount = 0;
 
-    if (before !== after) {
-      replaceCount += 1;
-      console.log('[HtmlTextConvert] replace text:', { before, after });
+    if (matchMode === 'exact') {
+      let cursor = 0;
+      let output = '';
+
+      while (cursor <= before.length - target.length) {
+        const found = before.indexOf(target, cursor);
+        if (found === -1) break;
+
+        const beforeChar = found > 0 ? before[found - 1] : null;
+        const afterIndex = found + target.length;
+        const afterChar = afterIndex < before.length ? before[afterIndex] : null;
+        const beforeOk = beforeChar == null || beforeChar === ' ' || beforeChar === '\n' || beforeChar === '\t';
+        const afterOk = afterChar == null || afterChar === ' ' || afterChar === '\n' || afterChar === '\t';
+
+        if (beforeOk && afterOk) {
+          output += before.slice(cursor, found) + replacement;
+          cursor = afterIndex;
+          localCount += 1;
+        } else {
+          output += before.slice(cursor, found + target.length);
+          cursor = found + target.length;
+        }
+      }
+
+      output += before.slice(cursor);
+      after = output;
+    } else {
+      localCount = before.split(target).length - 1;
+      after = before.split(target).join(replacement);
+    }
+
+    if (localCount > 0) {
+      replaceCount += localCount;
+      console.log('[HtmlTextConvert] replace text:', { before, after, matchMode, count: localCount });
     }
 
     textElement.textContent = after;
@@ -142,6 +202,7 @@ export function parseHtmlTextStructure(htmlText) {
   return {
     pages: pageElements.map((pageElement, pageIndex) => {
       const lines = Array.from(pageElement.querySelectorAll('.pdf-line'));
+      const highlights = Array.from(pageElement.querySelectorAll('.pdf-highlight'));
       const texts = Array.from(pageElement.querySelectorAll('.pdf-text'));
 
       console.log('[HtmlTextConvert] page:', pageIndex + 1);
@@ -183,11 +244,14 @@ export function parseHtmlTextStructure(htmlText) {
             width: getStylePx(lineElement, 'width'),
             height: getStylePx(lineElement, 'height')
           }))
-          .filter((line) => !isPageEdgeArtifactLine(
-            line,
-            getStylePx(pageElement, 'width'),
-            getStylePx(pageElement, 'height')
-          )),
+          .filter((line) => !isPageEdgeArtifactLine(line, getStylePx(pageElement, 'width'), getStylePx(pageElement, 'height'))),
+        highlights: highlights.map((highlightElement) => ({
+          left: getStylePx(highlightElement, 'left'),
+          top: getStylePx(highlightElement, 'top'),
+          width: getStylePx(highlightElement, 'width'),
+          height: getStylePx(highlightElement, 'height'),
+          color: highlightElement.style.backgroundColor || 'rgba(255, 255, 0, 0.35)'
+        })),
         texts: parsedTexts
       };
     })
@@ -238,6 +302,17 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
 
     console.log('[HtmlTextConvert] clean lines count:', cleanLines.length);
 
+    (page.highlights || []).forEach((highlight) => {
+      const color = parseHighlightColor(highlight.color);
+      doc.setFillColor(color.red, color.green, color.blue);
+      if (typeof doc.saveGraphicsState === 'function') doc.saveGraphicsState();
+      if (typeof doc.setGState === 'function' && typeof doc.GState === 'function') {
+        doc.setGState(new doc.GState({ opacity: color.opacity }));
+      }
+      doc.rect(highlight.left, highlight.top, highlight.width, highlight.height, 'F');
+      if (typeof doc.restoreGraphicsState === 'function') doc.restoreGraphicsState();
+    });
+
     cleanLines.forEach((line) => {
       doc.setDrawColor(0, 0, 0);
       doc.setLineWidth(Math.max(line.type === 'h' ? line.height : line.width, 0.2));
@@ -253,10 +328,12 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
     page.texts.forEach((textItem, textIndex) => {
       const textValue = String(textItem.text ?? '');
       const fontSize = textItem.fontSize || 10;
-      const drawX = Number.isFinite(textItem.left) ? textItem.left : 0;
-      const drawY = (Number.isFinite(textItem.top) ? textItem.top : 0) + fontSize * TEXT_BASELINE_RATIO;
-      const requestedFont = textItem.fontFamily || 'MalgunGothic';
-      const resolvedFont = resolvePdfFontName(requestedFont, registeredFonts);
+      const drawX = textItem.left || 0;
+      const drawY = (textItem.top || 0) + fontSize * TEXT_BASELINE_RATIO;
+      const requestedFontName = normalizeHtmlFontToPdfFont(textItem.fontFamily);
+      const drawFontName = requestedFontName === selectedFontName
+        ? requestedFontName
+        : selectedFontName;
 
       console.log('[PdfText] draw:', {
         textValue,
@@ -287,6 +364,14 @@ export async function renderPdfFromHtmlText(htmlText, outputFileName) {
   downloadBlob(doc.output('blob'), outputFileName);
 }
 
+function parseHighlightColor(value) {
+  const values = String(value || '').match(/[\d.]+/g)?.map(Number) || [255, 255, 0, 0.35];
+  if (String(value).startsWith('rgba')) {
+    return { red: values[0] || 255, green: values[1] || 255, blue: values[2] || 0, opacity: values[3] ?? 0.35 };
+  }
+  return { red: values[0] || 255, green: values[1] || 255, blue: values[2] || 0, opacity: 0.35 };
+}
+
 export function downloadHtmlTextFile(htmlText, fileName = 'document.pdf') {
   const utf8Bom = '\uFEFF';
   const blob = new Blob([utf8Bom, String(htmlText ?? '')], {
@@ -300,4 +385,80 @@ export function makeHtmlConvertedFileName(fileName = 'document.pdf') {
   const baseName = fileName.replace(/\.pdf$/i, '');
 
   return `${baseName}_html_converted.pdf`;
+}
+
+async function registerPreferredKoreanFont(doc) {
+  for (const fontDefinition of FONT_DEFINITIONS) {
+    try {
+      const fontBase64 = await loadFontBase64(fontDefinition.candidates);
+
+      if (!fontBase64) {
+        console.warn('[PdfFont] font base64 missing:', fontDefinition.pdfFontName);
+        continue;
+      }
+
+      doc.addFileToVFS(fontDefinition.fileName, fontBase64);
+      doc.addFont(fontDefinition.fileName, fontDefinition.pdfFontName, 'normal');
+      const font = doc.internal.getFont(fontDefinition.pdfFontName, 'normal');
+      if (typeof font?.metadata?.characterToGlyph !== 'function') {
+        throw new Error('Font registration did not produce usable glyph data.');
+      }
+      doc.setFont(fontDefinition.pdfFontName, 'normal');
+
+      if (fontDefinition.pdfFontName === 'MalgunGothic') {
+        console.log('[PdfFont] MalgunGothic registered and selected');
+      } else {
+        console.log('[PdfFont] fallback NotoSansKR registered and selected');
+      }
+
+      return fontDefinition.pdfFontName;
+    } catch (error) {
+      console.warn(`[PdfFont] failed to register ${fontDefinition.pdfFontName}:`, error);
+    }
+  }
+
+  console.warn('[PdfFont] no Korean font registered. Use default font.');
+  return null;
+}
+
+async function loadFontBase64(candidates) {
+  if (
+    candidates?.some((candidate) => candidate.includes('Malgun')) &&
+    typeof window !== 'undefined' &&
+    typeof window.__DOC_PILOT_MALGUN_GOTHIC_BASE64__ === 'string'
+  ) {
+    return window.__DOC_PILOT_MALGUN_GOTHIC_BASE64__;
+  }
+
+  if (
+    candidates?.some((candidate) => candidate.includes('NotoSansKR')) &&
+    typeof window !== 'undefined' &&
+    typeof window.__DOC_PILOT_KOREAN_FONT_BASE64__ === 'string'
+  ) {
+    return window.__DOC_PILOT_KOREAN_FONT_BASE64__;
+  }
+
+  if (typeof fetch !== 'function') {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate);
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const base64 = (await response.text()).trim();
+
+      if (/^(AAEA|T1RU)/.test(base64) && /^[A-Za-z0-9+/=\s]+$/.test(base64)) {
+        return base64;
+      }
+    } catch (error) {
+      console.warn('[HtmlTextConvert] failed to load font candidate:', candidate, error);
+    }
+  }
+
+  return null;
 }
