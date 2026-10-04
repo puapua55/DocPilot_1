@@ -43,7 +43,7 @@ function getInitialSelectedIds(results, initialValues) {
   }).filter(Boolean);
 }
 
-function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initialValues = null, onSearch, onApply, onClose }) {
+function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initialValues = null, onSearch, onApply, onResultClick, onClose }) {
   const [searchText, setSearchText] = useState('');
   const [replacementText, setReplacementText] = useState('');
   const [matchMode, setMatchMode] = useState('contains');
@@ -52,6 +52,7 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [statusType, setStatusType] = useState('');
+  const [activeResultId, setActiveResultId] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -61,6 +62,7 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
       const initialResults = normalizeResults(initialValues?.searchResults || [], initialValues?.originalText || '', initialValues?.newText || '');
       setResults(initialResults);
       setSelectedIds(getInitialSelectedIds(initialResults, initialValues));
+      setActiveResultId(null);
       setBusy(false);
       setStatus('');
       setStatusType('');
@@ -70,6 +72,7 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
       setMatchMode('contains');
       setResults([]);
       setSelectedIds([]);
+      setActiveResultId(null);
       setBusy(false);
       setStatus('');
       setStatusType('');
@@ -103,6 +106,7 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
       const response = await onSearch?.(keyword, { matchMode });
       const nextResults = normalizeResults(response, keyword, replacementText);
       setResults(nextResults);
+      setActiveResultId(null);
       // Searching only prepares the candidate rows. The user explicitly
       // chooses which rows to change, so none are checked by default.
       setSelectedIds([]);
@@ -133,6 +137,18 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
       : [...current, id]);
   };
 
+  const navigateToResult = (result) => {
+    setActiveResultId(result.id);
+    onResultClick?.({
+      ...result.raw,
+      pageNumber: result.pageNumber,
+      lineNumber: result.lineNumber,
+      keyword: searchText.trim(),
+      matchedText: result.foundText,
+      originalText: result.foundText
+    });
+  };
+
   const applySelected = async () => {
     const selectedResults = results.filter((result) => selectedIds.includes(result.id));
     if (!searchText.trim() || !replacementText.trim()) {
@@ -157,7 +173,7 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
       const count = Number(response?.replaceCount ?? response?.count ?? selectedResults.length);
       setStatus(`${count}건을 적용했습니다.`);
       setStatusType('success');
-      onClose?.();
+      setSelectedIds([]);
     } catch (error) {
       console.error('[BatchTextReplaceModal] apply failed:', error);
       setStatus(error?.message || '텍스트 적용 중 오류가 발생했습니다.');
@@ -244,10 +260,25 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
           </div>
           <div className="batch-replace-table-wrap">
             <table className="batch-replace-table">
-              <thead><tr><th>선택</th><th>찾은 텍스트</th><th>변경할 텍스트</th></tr></thead>
+              <thead><tr><th>No.</th><th>선택</th><th>찾은 텍스트</th><th>변경할 텍스트</th></tr></thead>
               <tbody>
-                {results.map((result) => (
-                  <tr key={result.id}>
+                {results.map((result, index) => (
+                  <tr
+                    key={result.id}
+                    data-search-result-trigger="true"
+                    className={`batch-replace-result-row ${activeResultId === result.id ? 'active' : ''}`}
+                    onClick={() => navigateToResult(result)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        navigateToResult(result);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-current={activeResultId === result.id ? 'true' : undefined}
+                  >
+                    <td className="batch-replace-index-cell">{index + 1}</td>
                     <td className="batch-replace-check-cell">
                       <input type="checkbox" checked={selectedIds.includes(result.id)} onChange={() => toggleResult(result.id)} aria-label={`페이지 ${result.pageNumber || '-'} 찾은 텍스트 ${result.foundText} 선택`} disabled={busy} />
                     </td>

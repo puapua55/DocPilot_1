@@ -76,14 +76,15 @@ button:disabled {
 .app-shell {
   position: relative;
   z-index: 1;
-  max-width: 1360px;
+  width: 100%;
+  max-width: 1840px;
   margin: 0 auto;
   padding: 20px 20px 32px;
 }
 
 .main-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
+  grid-template-columns: minmax(0, 1fr) minmax(520px, 600px);
   gap: 22px;
   height: calc(100vh - 52px);
   min-height: 0;
@@ -449,12 +450,13 @@ button:disabled {
 
 .pdf-view-mode-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: auto auto minmax(0, 1fr);
   grid-template-areas:
     "view page convert"
     "history history toolbar";
   align-items: start;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 6px;
   min-height: 38px;
   flex-shrink: 0;
 }
@@ -466,6 +468,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .pdf-view-mode-toggle-group {
@@ -473,12 +476,12 @@ button:disabled {
   justify-self: start;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .pdf-view-mode-toggle,
 .pdf-edit-mode-toggle {
-  min-height: 32px;
+  min-height: 30px;
   padding: 0 3px;
   border: 1px solid #d7e2ff;
   border-radius: 9px;
@@ -488,16 +491,24 @@ button:disabled {
 .pdf-view-mode-toggle button,
 .pdf-edit-mode-toggle button,
 .pdf-page-navigation button {
-  min-height: 30px;
+  min-height: 28px;
   border: 0;
   border-radius: 7px;
-  padding: 0 9px;
+  padding: 0 8px;
   background: transparent;
   color: #657292;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  word-break: keep-all;
   cursor: pointer;
 }
+
+.pdf-view-mode-toggle button { min-width: 54px; }
+.pdf-view-mode-toggle button:nth-child(2) { min-width: 78px; }
+.pdf-edit-mode-toggle button { min-width: 44px; }
+.pdf-page-navigation button { min-width: 46px; }
 
 .pdf-view-mode-toggle button.active,
 .pdf-edit-mode-toggle button.active {
@@ -507,8 +518,8 @@ button:disabled {
 
 .pdf-page-navigation {
   grid-area: page;
-  justify-self: center;
-  min-height: 32px;
+  justify-self: start;
+  min-height: 30px;
   padding: 0 3px;
   border: 1px solid #d7e2ff;
   border-radius: 9px;
@@ -532,38 +543,45 @@ button:disabled {
 .pdf-document-history {
   grid-area: history;
   justify-self: start;
-  gap: 6px;
+  gap: 5px;
 }
 
 .pdf-document-history button {
-  min-width: 34px;
-  min-height: 32px;
+  min-width: 32px;
+  min-height: 30px;
   border: 1px solid #cbd9ff;
   border-radius: 9px;
-  padding: 0 9px;
+  padding: 0 8px;
   background: #ffffff;
   color: #315fc7;
   font-size: 1rem;
   font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  word-break: keep-all;
   cursor: pointer;
 }
 
 .pdf-document-history .pdf-reset-all-button {
   margin-left: 8px;
   border-color: #7c9eff;
-  font-size: 0.8rem;
+  font-size: 0.74rem;
 }
 
 .pdf-document-history .pdf-reset-all-button,
 .pdf-document-history .pdf-text-move-button {
   width: auto;
-  min-width: 78px;
-  height: 32px;
-  min-height: 32px;
-  padding: 0 7px;
-  font-size: 0.72rem;
+  min-width: 82px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 0.7rem;
   line-height: 1;
   white-space: nowrap;
+}
+
+.pdf-document-history .pdf-reset-all-button {
+  min-width: 84px;
 }
 
 .pdf-view-mode-controls > .document-viewer-actions {
@@ -571,7 +589,7 @@ button:disabled {
   justify-self: end;
   flex-wrap: nowrap;
   flex-shrink: 0;
-  gap: 6px;
+  gap: 5px;
 }
 
 .pdf-view-mode-controls > .viewer-download-actions {
@@ -584,29 +602,29 @@ button:disabled {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
+  gap: 5px;
+  min-height: 30px;
 }
 
 .viewer-download-label {
   color: #596784;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 800;
-  line-height: 32px;
+  line-height: 30px;
   white-space: nowrap;
 }
 
 .viewer-download-button {
-  min-width: 44px;
-  height: 32px;
-  min-height: 32px;
-  padding: 0 9px;
+  min-width: 42px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 8px;
   border: 1px solid #8aa8ff;
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.94);
   color: #3159b7;
   box-shadow: 0 6px 18px rgba(49, 89, 183, 0.16);
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 800;
   cursor: pointer;
 }
@@ -621,15 +639,15 @@ button:disabled {
 }
 
 .viewer-highlight-clear-button {
-  height: 32px;
-  min-height: 32px;
+  height: 30px;
+  min-height: 30px;
   padding: 0 10px;
   border: 1px solid #f05d68;
   border-radius: 9px;
   background: #fff1f2;
   color: #cf3441;
   box-shadow: 0 6px 18px rgba(207, 52, 65, 0.14);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-weight: 800;
   white-space: nowrap;
   cursor: pointer;
@@ -643,29 +661,32 @@ button:disabled {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
+  gap: 5px;
+  min-height: 30px;
 }
 
 .pdf-view-mode-controls > .document-viewer-actions .secondary-button {
-  height: 32px;
-  min-height: 32px;
+  height: 30px;
+  min-height: 30px;
+  min-width: 72px;
   border-color: #7c9eff;
   border-radius: 9px;
-  padding: 0 9px;
+  padding: 0 8px;
   color: #315fc7;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 800;
+  white-space: nowrap;
+  word-break: keep-all;
 }
 
 .pdf-view-mode-controls > .document-viewer-actions .zoom-controls {
-  gap: 6px;
+  gap: 5px;
 }
 
 .pdf-view-mode-controls > .document-viewer-actions .zoom-button {
-  min-width: 34px;
-  height: 32px;
-  min-height: 32px;
+  min-width: 32px;
+  height: 30px;
+  min-height: 30px;
   border-color: #cbd9ff;
   border-radius: 9px;
   padding: 0 9px;
@@ -675,9 +696,9 @@ button:disabled {
 }
 
 .pdf-view-mode-controls > .document-viewer-actions .zoom-value {
-  min-width: 48px;
+  min-width: 46px;
   color: #315fc7;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 800;
 }
 
@@ -848,7 +869,7 @@ button:disabled {
   transform: rotate(270deg) translateX(-100%);
 }
 
-.textLayer :is(span, br) {
+.textLayer span {
   position: absolute;
   white-space: pre;
   color: transparent;
@@ -867,7 +888,7 @@ button:disabled {
 /* PDF.js supplies each glyph's position and font metrics as CSS variables.
    Keep its scale pipeline intact so the selectable layer stays aligned with
    the canvas at every zoom level. */
-.textLayer :is(span, br) {
+.textLayer span {
   position: absolute;
   display: inline;
   width: auto;
@@ -902,6 +923,15 @@ button:disabled {
   display: contents;
 }
 
+/* PDF.js uses <br> only as a logical line break. Keeping it out of the
+   selectable layer prevents multi-line selections from painting a vertical
+   selection bar at the page's left edge. */
+.textLayer br {
+  display: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .textLayer span::selection {
   background: rgba(80, 120, 255, 0.35);
 }
@@ -910,8 +940,11 @@ button:disabled {
    modes a single merged selection layer is rendered instead, avoiding the
    visually stacked blue fragments of split PDF text runs. */
 .pdf-page.is-text-selection-mode .textLayer span::selection,
-.pdf-page.is-text-selection-mode .textLayer-item::selection {
+.pdf-page.is-text-selection-mode .textLayer-item::selection,
+.pdf-page.is-text-selection-mode .textLayer ::selection {
   background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 
 /* Area text replacement uses a lasso rectangle rather than the browser's
@@ -2599,9 +2632,15 @@ button:disabled {
 .batch-replace-table td { padding: 10px 12px; border-bottom: 1px solid #e2eaff; text-align: left; vertical-align: middle; overflow-wrap: anywhere; }
 .batch-replace-table th { position: sticky; top: 0; z-index: 1; background: #f3f7ff; color: #334b7a; }
 .batch-replace-table tbody tr:last-child td { border-bottom: 0; }
+.batch-replace-result-row { cursor: pointer; transition: background-color .16s ease; }
+.batch-replace-result-row:hover,
+.batch-replace-result-row:focus-visible { background: #f4f7ff; outline: none; }
+.batch-replace-result-row.active { background: #eef2ff; }
 .batch-replace-table th:first-child,
-.batch-replace-table td:first-child { width: 64px; text-align: center; }
-.batch-replace-table td:first-child input { width: 17px; height: 17px; accent-color: #4f7cff; }
+.batch-replace-table td:first-child { width: 42px; text-align: center; color: #49649f; font-weight: 700; }
+.batch-replace-table th:nth-child(2),
+.batch-replace-table td:nth-child(2) { width: 52px; text-align: center; }
+.batch-replace-table td:nth-child(2) input { width: 17px; height: 17px; accent-color: #4f7cff; }
 .batch-replace-table td small { display: block; margin-top: 3px; color: var(--muted); font-size: 0.76rem; }
 .batch-replace-value { color: #263651; font-weight: 650; }
 .batch-replace-placeholder { color: #98a4bd; }

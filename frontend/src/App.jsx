@@ -443,6 +443,7 @@ function App() {
       initialValues={batchReplaceInitialValues}
       onSearch={handleDocumentSearch}
       onApply={handleBatchReplaceApply}
+      onResultClick={handleSearchResultClick}
       onClose={() => { setIsBatchReplaceModalOpen(false); setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); }}
     />
     </div>

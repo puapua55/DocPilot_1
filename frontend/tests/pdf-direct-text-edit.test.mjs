@@ -84,6 +84,34 @@ test('save/reopen removes original text, keeps other text and background, insert
   }
 });
 
+test('saved replacement is inserted into the visual line reading order for standard PDF selection', async () => {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  // Intentionally write the right-hand word first, as commonly happens after
+  // a prior overlay save, then replace the visually preceding word.
+  page.drawText('and tail', { x: 125, y: 700, size: 20, font });
+  page.drawText('Alpha', { x: 60, y: 700, size: 20, font });
+  const sourceBytes = await doc.save();
+  const alpha = (await inspect(sourceBytes)).items.find((item) => item.str === 'Alpha');
+  const result = await buildPdfWithTextEdits({
+    sourceBytes,
+    fontBytes,
+    replacements: [{
+      id: 'replace-alpha', type: 'pdf', pageNumber: 1, sourceText: 'Alpha', originalText: 'Alpha',
+      replacementText: 'Omega', text: 'Omega', forceUnicodeFallback: true,
+      sourcePageWidth: 600, sourcePageHeight: 800,
+      coverX: alpha.transform[4], coverY: 800 - alpha.transform[5] - 20,
+      coverWidth: alpha.width, coverHeight: 24,
+      textX: alpha.transform[4], textY: 80, baseline: 100, fontSize: 20,
+      fontCandidates: []
+    }]
+  });
+  const saved = (await inspect(result.outputBytes)).items.map((item) => item.str);
+  assert.deepEqual(saved.slice(0, 2), ['Omega', 'and tail'], JSON.stringify(result.replacementResults));
+  assert.equal(saved.includes('Alpha'), false);
+});
+
 test('bold and italic Type1 resource is reused at the moved location', async () => {
   const document = await PDFDocument.create();
   const font = await document.embedFont(StandardFonts.TimesRomanBoldItalic);

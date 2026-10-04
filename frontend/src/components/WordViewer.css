@@ -12,13 +12,14 @@
 
 .docx-view-mode-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: auto auto minmax(0, 1fr);
   grid-template-areas:
     "view-toggle view-toggle download"
     "history page-nav toolbar";
   align-items: flex-start;
   justify-content: stretch;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 6px;
   min-height: 38px;
   flex-shrink: 0;
   position: relative;
@@ -31,7 +32,7 @@
   justify-self: end;
   flex-wrap: nowrap;
   flex-shrink: 0;
-  gap: 6px;
+  gap: 5px;
 }
 
 .docx-view-mode-controls > .docx-download-actions {
@@ -41,24 +42,27 @@
 }
 
 .docx-view-mode-controls > .document-viewer-actions .secondary-button {
-  height: 32px;
-  min-height: 32px;
+  height: 30px;
+  min-height: 30px;
+  min-width: 72px;
   border-color: #7c9eff;
   border-radius: 9px;
-  padding: 0 9px;
+  padding: 0 8px;
   color: #315fc7;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 800;
+  white-space: nowrap;
+  word-break: keep-all;
 }
 
 .docx-view-mode-controls > .document-viewer-actions .zoom-controls {
-  gap: 6px;
+  gap: 5px;
 }
 
 .docx-view-mode-controls > .document-viewer-actions .zoom-button {
-  min-width: 34px;
-  height: 32px;
-  min-height: 32px;
+  min-width: 32px;
+  height: 30px;
+  min-height: 30px;
   border-color: #cbd9ff;
   border-radius: 9px;
   padding: 0 9px;
@@ -68,9 +72,9 @@
 }
 
 .docx-view-mode-controls > .document-viewer-actions .zoom-value {
-  min-width: 48px;
+  min-width: 46px;
   color: #315fc7;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 800;
 }
 
@@ -83,7 +87,8 @@
 .docx-page-navigation-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  flex-shrink: 0;
 }
 
 .docx-document-history {
@@ -98,19 +103,22 @@
 
 .docx-page-navigation-wrap {
   grid-area: page-nav;
-  justify-self: center;
+  justify-self: start;
 }
 
 .docx-document-history button {
-  min-width: 34px;
-  min-height: 32px;
+  min-width: 32px;
+  min-height: 30px;
   border: 1px solid #cbd9ff;
   border-radius: 9px;
-  padding: 0 9px;
+  padding: 0 8px;
   background: #ffffff;
   color: #315fc7;
   font-size: 1rem;
   font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  word-break: keep-all;
   cursor: pointer;
 }
 
@@ -118,7 +126,7 @@
   margin-left: 8px;
   border-color: #7c9eff;
   color: #315fc7;
-  font-size: 0.8rem;
+  font-size: 0.74rem;
 }
 
 .docx-document-history button:disabled {
@@ -131,7 +139,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 32px;
+  min-height: 30px;
   padding: 0 3px;
   border: 1px solid #d7e2ff;
   border-radius: 9px;
@@ -144,16 +152,23 @@
 
 .docx-view-mode-toggle button,
 .docx-page-navigation button {
-  min-height: 30px;
+  min-height: 28px;
   border: 0;
   border-radius: 7px;
-  padding: 0 10px;
+  padding: 0 8px;
   background: transparent;
   color: #53617f;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  word-break: keep-all;
   cursor: pointer;
 }
+
+.docx-view-mode-toggle button { min-width: 54px; }
+.docx-view-mode-toggle button:nth-child(2) { min-width: 78px; }
+.docx-page-navigation button { min-width: 46px; }
 
 .docx-view-mode-toggle button.active {
   background: #eaf0ff;

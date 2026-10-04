@@ -4,6 +4,47 @@ import { loadPdfDocument } from '../services/pdfService';
 import { searchKeywordInDocument } from '../services/searchService';
 import { isPdfFile } from '../utils/fileUtils';
 import { resolveReplacementPreviewFont } from '../services/pdfReplacementFont';
+import { createHighlightBoxesFromTextLayer } from '../services/highlightService';
+
+function fitMovableTextToBox(value, settings, target) {
+  const text = String(value ?? '');
+  const sourceSize = Math.max(4, Number(settings.baseFontSize ?? settings.fontSize) || 10);
+  const sourceSpacing = Number(settings.baseLetterSpacing ?? settings.letterSpacing) || 0;
+  const boxWidth = Number(target?.fitTextWidth || target?.originalRect?.width || target?.currentRect?.width || 0);
+  if (!text || boxWidth <= 0 || typeof document === 'undefined') {
+    return { fontSize: sourceSize, letterSpacing: sourceSpacing };
+  }
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context) return { fontSize: sourceSize, letterSpacing: sourceSpacing };
+  const family = target?.renderFontFamily || settings.fontFamily || target?.fontFamily || 'Arial, sans-serif';
+  const weight = settings.fontWeight || target?.fontWeight || 'normal';
+  const style = settings.fontStyle || target?.fontStyle || 'normal';
+  const glyphGaps = Math.max(0, [...text].length - 1);
+  const minSpacing = Math.min(sourceSpacing, -sourceSize * 0.12);
+  const measure = (size) => {
+    context.font = `${style} ${weight} ${size}px ${family}`;
+    return context.measureText(text).width;
+  };
+  let fontSize = sourceSize;
+  let naturalWidth = measure(fontSize);
+  let letterSpacing = sourceSpacing;
+  if (naturalWidth + glyphGaps * letterSpacing > boxWidth) {
+    letterSpacing = glyphGaps ? Math.max(minSpacing, (boxWidth - naturalWidth) / glyphGaps) : 0;
+    if (naturalWidth + glyphGaps * letterSpacing > boxWidth && fontSize > 4) {
+      let low = 4;
+      let high = fontSize;
+      for (let i = 0; i < 18; i += 1) {
+        const mid = (low + high) / 2;
+        if (measure(mid) + glyphGaps * minSpacing <= boxWidth) low = mid;
+        else high = mid;
+      }
+      fontSize = low;
+      naturalWidth = measure(fontSize);
+      letterSpacing = glyphGaps ? Math.max(minSpacing * (fontSize / sourceSize), (boxWidth - naturalWidth) / glyphGaps) : 0;
+    }
+  }
+  return { fontSize, letterSpacing };
+}
 
 function normalizePdfLines(textItems) {
   const groupedLines = [];
@@ -74,6 +115,11 @@ function filterMovedSourceSearchResults(results, movableTexts) {
     .filter((item) => item.pageNumber > 0 && item.text);
   const consumed = new Set();
   return results.filter((result) => {
+    // The overlay result represents the visible, replacement text itself.
+    // Only suppress the stale source-PDF hit; filtering the overlay by the
+    // source text can hide a newly applied value when the selected source
+    // range also contained the searched word.
+    if (result?.type === 'pdf-replacement') return true;
     const pageNumber = Number(result.pageNumber ?? result.page);
     const fullText = normalizeMovableMatchText(result.fullText || result.lineText || result.text);
     const keyword = normalizeMovableMatchText(result.keyword);
@@ -94,10 +140,9 @@ function getReplacementSearchText(item) {
 
 function getReplacementSearchResults(keyword, options, movableTexts) {
   const candidates = (Array.isArray(movableTexts) ? movableTexts : [])
-    // Persisted replacements are already part of the reloaded PDF text layer.
-    // Non-persisted items are the live replacement layer and need a synthetic
-    // search result so search/highlight can reach them as well.
-    .filter((item) => !(item?.persistedToPdf && !item?.hasChanges))
+    // A saved overlay is not guaranteed to be exposed by PDF.js as selectable
+    // text (for example, when the PDF writer emitted positioned glyph runs).
+    // Keep every replacement item searchable from its visible text as well.
     .map((item) => ({ item, text: getReplacementSearchText(item) }))
     .filter(({ item, text }) => Number(item?.pageNumber) > 0 && text);
 
@@ -380,6 +425,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false, canReset: false });
   const [viewMode, setViewMode] = useState('scroll');
   const [currentPage, setCurrentPage] = useState(1);
+  const [pdfPageSize, setPdfPageSize] = useState({ width: 0, height: 0 });
+  const [fitScale, setFitScale] = useState(1);
   const [textMoveMode, setTextMoveMode] = useState(false);
   const [textReplaceMode, setTextReplaceMode] = useState(false);
   const [areaTextReplaceMode, setAreaTextReplaceMode] = useState(false);
@@ -398,6 +445,47 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     matchMode: 'contains'
   });
   const [userHighlights, setUserHighlights] = useState([]);
+  const effectiveScale = scale * fitScale;
+  const pageOrientation = pdfPageSize.width > pdfPageSize.height ? 'landscape' : 'portrait';
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!pdfDocument) {
+      setPdfPageSize({ width: 0, height: 0 });
+      setFitScale(1);
+      return undefined;
+    }
+
+    pdfDocument.getPage(1).then((page) => {
+      if (cancelled) return;
+      const viewport = page.getViewport({ scale: 1 });
+      setPdfPageSize({ width: viewport.width, height: viewport.height });
+    }).catch((error) => {
+      if (!cancelled) console.warn('[PdfJsViewer] page size measurement failed:', error);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfDocument]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !pdfPageSize.width) return undefined;
+
+    const updateFitScale = () => {
+      // Match the page to the usable viewer width while preserving its native
+      // aspect ratio. The cap avoids making small portrait pages oversized.
+      const availableWidth = Math.max(240, viewer.clientWidth - 38);
+      const nextFitScale = Math.min(1.2, Math.max(0.5, availableWidth / pdfPageSize.width));
+      setFitScale((current) => Math.abs(current - nextFitScale) < 0.005 ? current : nextFitScale);
+    };
+
+    updateFitScale();
+    const observer = new ResizeObserver(updateFitScale);
+    observer.observe(viewer);
+    return () => observer.disconnect();
+  }, [pdfPageSize]);
 
   useEffect(() => {
     setTextMoveMode(false);
@@ -487,37 +575,78 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   const addMovableText = (selection) => {
     const id = `movable-text-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const value = String(selection.displayText ?? selection.text ?? '');
+    const baseFontSize = Number(selection.autoFitBaseFontSize || selection.fontSize) || 10;
+    const baseLetterSpacing = Number(selection.autoFitBaseLetterSpacing ?? selection.letterSpacing) || 0;
+    const fitSettings = {
+      fontSize: baseFontSize,
+      baseFontSize,
+      letterSpacing: baseLetterSpacing,
+      baseLetterSpacing,
+      fontWeight: selection.fontWeight || 'normal',
+      fontStyle: selection.fontStyle || 'normal',
+      fontFamily: selection.selectedFontFamily || selection.previewFontFamily || ''
+    };
+    const fitted = fitMovableTextToBox(value, fitSettings, selection);
+    const fittedSelection = {
+      ...selection,
+      ...fitted,
+      autoFitBaseFontSize: baseFontSize,
+      autoFitBaseLetterSpacing: baseLetterSpacing,
+      baselineOffset: Number.isFinite(Number(selection.baselineOffset))
+        ? Number(selection.baselineOffset)
+        : getVerticalBaselineOffset({ ...selection, fontSize: fitted.fontSize }, selection.verticalAlign)
+    };
     setMovableTexts((current) => {
-      const next = [...current, { ...selection, id }];
+      const supersededIds = new Set(selection.supersedesIds || []);
+      const next = [...current.filter((item) => !supersededIds.has(item.id)), { ...fittedSelection, id }];
       commitPdfChange(userHighlight, appliedReplacePreview, next, id);
       return next;
     });
     setSelectedMovableTextId(id);
-    setEditingMovableText(selection.autoEdit ? {
+    const initial = fittedSelection.autoEdit ? {
       id,
-      value: String(selection.displayText ?? selection.text ?? ''),
-      fontWeight: selection.fontWeight || 'normal',
-      fontStyle: selection.fontStyle || 'normal',
-      textDecoration: selection.textDecoration || 'none',
-      letterSpacing: Number(selection.letterSpacing) || 0,
-      verticalAlign: selection.verticalAlign || 'middle',
-      baselineOffset: Number.isFinite(Number(selection.baselineOffset))
-        ? Number(selection.baselineOffset) : getVerticalBaselineOffset(selection, selection.verticalAlign),
-      textAlign: selection.textAlign || 'left',
-      fontSize: Number(selection.fontSize) || 10,
-      fontFamily: selection.selectedFontFamily || selection.previewFontFamily || '',
-      color: selection.color || '#111111'
-    } : null);
+      value,
+      fontWeight: fittedSelection.fontWeight || 'normal',
+      fontStyle: fittedSelection.fontStyle || 'normal',
+      textDecoration: fittedSelection.textDecoration || 'none',
+      letterSpacing: Number(fittedSelection.letterSpacing) || 0,
+      baseLetterSpacing,
+      verticalAlign: fittedSelection.verticalAlign || 'middle',
+      baselineOffset: fittedSelection.baselineOffset,
+      textAlign: fittedSelection.textAlign || 'left',
+      fontSize: Number(fittedSelection.fontSize) || 10,
+      baseFontSize,
+      fontFamily: fittedSelection.selectedFontFamily || fittedSelection.previewFontFamily || '',
+      color: fittedSelection.color || '#111111'
+    } : null;
+    setEditingMovableText(initial);
     return id;
   };
 
   const addMovableTexts = (selections = []) => {
     const normalized = (Array.isArray(selections) ? selections : []).filter(Boolean);
     if (!normalized.length) return [];
-    const entries = normalized.map((selection) => ({
-      ...selection,
-      id: `movable-text-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    }));
+    const entries = normalized.map((selection) => {
+      const baseFontSize = Number(selection.fontSize) || 10;
+      const baseLetterSpacing = Number(selection.letterSpacing) || 0;
+      const initial = {
+        fontSize: baseFontSize, baseFontSize,
+        letterSpacing: baseLetterSpacing, baseLetterSpacing,
+        fontWeight: selection.fontWeight, fontStyle: selection.fontStyle
+      };
+      const fitted = fitMovableTextToBox(String(selection.displayText ?? selection.text ?? ''), initial, selection);
+      return {
+        ...selection,
+        ...fitted,
+        autoFitBaseFontSize: baseFontSize,
+        autoFitBaseLetterSpacing: baseLetterSpacing,
+        baselineOffset: Number.isFinite(Number(selection.baselineOffset))
+          ? Number(selection.baselineOffset)
+          : getVerticalBaselineOffset({ ...selection, fontSize: fitted.fontSize }, selection.verticalAlign),
+        id: `movable-text-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      };
+    });
     const first = entries[0];
     setMovableTexts((current) => {
       const next = [...current, ...entries];
@@ -525,21 +654,24 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       return next;
     });
     setSelectedMovableTextId(first.id);
-    setEditingMovableText({
+    const initial = {
       id: first.id,
       value: String(first.displayText ?? first.text ?? ''),
       fontWeight: first.fontWeight || 'normal',
       fontStyle: first.fontStyle || 'normal',
       textDecoration: first.textDecoration || 'none',
       letterSpacing: Number(first.letterSpacing) || 0,
+      baseLetterSpacing: Number(first.autoFitBaseLetterSpacing ?? first.letterSpacing) || 0,
       verticalAlign: first.verticalAlign || 'middle',
       baselineOffset: Number.isFinite(Number(first.baselineOffset))
         ? Number(first.baselineOffset) : getVerticalBaselineOffset(first, first.verticalAlign),
       textAlign: first.textAlign || 'left',
       fontSize: Number(first.fontSize) || 10,
+      baseFontSize: Number(first.autoFitBaseFontSize || first.fontSize) || 10,
       fontFamily: first.selectedFontFamily || first.previewFontFamily || '',
       color: first.color || '#111111'
-    });
+    };
+    setEditingMovableText({ ...initial, ...fitMovableTextToBox(initial.value, initial, first) });
     return entries.map((entry) => entry.id);
   };
 
@@ -547,20 +679,62 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   // entry or modify the replacement itself; export uses fontCandidates.
   const updateMovableTextPreviewFont = (id, previewFont) => {
     if (!id || !previewFont?.fontFamily) return;
+    const hasResolvedSelection = Object.prototype.hasOwnProperty.call(previewFont, 'selectionValue');
+    const resolvedSelection = hasResolvedSelection ? String(previewFont.selectionValue || '') : null;
+    const hasResolvedOriginalFamily = Object.prototype.hasOwnProperty.call(previewFont, 'originalFamily');
+    const resolveItemPreview = (item, text = String(item.displayText ?? item.text ?? '')) => {
+      const target = { ...item, renderFontFamily: previewFont.fontFamily };
+      const baseFontSize = Number(item.autoFitBaseFontSize || item.fontSize) || 10;
+      const baseLetterSpacing = Number(item.autoFitBaseLetterSpacing ?? item.letterSpacing) || 0;
+      const settings = {
+        fontSize: baseFontSize,
+        baseFontSize,
+        letterSpacing: baseLetterSpacing,
+        baseLetterSpacing,
+        fontWeight: item.fontWeight || 'normal',
+        fontStyle: item.fontStyle || 'normal',
+        fontFamily: previewFont.selectionValue || item.selectedFontFamily || item.previewFontFamily || ''
+      };
+      const fitted = fitMovableTextToBox(text, settings, target);
+      return {
+        ...target,
+        ...fitted,
+        previewFontSource: previewFont.source || 'bundled',
+        selectedFontFamily: hasResolvedSelection ? resolvedSelection : (item.selectedFontFamily || ''),
+        previewFontFamily: hasResolvedOriginalFamily
+          ? String(previewFont.originalFamily || '') : (item.previewFontFamily || ''),
+        autoFitBaseFontSize: baseFontSize,
+        autoFitBaseLetterSpacing: baseLetterSpacing,
+        // Keep a PDF-derived baseline fixed; otherwise recalculate it from
+        // the new fitted size so the glyphs remain anchored in the source box.
+        baselineOffset: item.baselineFromPdfLine && Number.isFinite(Number(item.baselineOffset))
+          ? Number(item.baselineOffset)
+          : getVerticalBaselineOffset({ ...target, ...fitted }, item.verticalAlign)
+      };
+    };
     setMovableTexts((current) => current.map((item) => (
-      item.id === id
-        ? {
-          ...item,
-          renderFontFamily: previewFont.fontFamily,
-          previewFontSource: previewFont.source || 'bundled',
-          previewFontFamily: previewFont.originalFamily || '',
-          selectedFontFamily: previewFont.selectionValue || item.selectedFontFamily || ''
-        }
-        : item
+      item.id === id ? resolveItemPreview(item) : item
     )));
-    setEditingMovableText((current) => current?.id === id && previewFont.selectionValue
-      ? { ...current, fontFamily: previewFont.selectionValue }
-      : current);
+    setEditingMovableText((current) => {
+      if (current?.id !== id) return current;
+      const target = movableTexts.find((item) => item.id === id);
+      if (!target) return current;
+      const previewTarget = resolveItemPreview(target);
+      const baseFontSize = Number(current.baseFontSize || previewTarget.autoFitBaseFontSize) || 10;
+      const baseLetterSpacing = Number(current.baseLetterSpacing ?? previewTarget.autoFitBaseLetterSpacing) || 0;
+      const next = {
+        ...current,
+        fontFamily: hasResolvedSelection ? resolvedSelection : current.fontFamily,
+        fontSize: baseFontSize,
+        baseFontSize,
+        letterSpacing: baseLetterSpacing,
+        baseLetterSpacing
+      };
+      return {
+        ...next,
+        ...fitMovableTextToBox(next.value, next, previewTarget)
+      };
+    });
   };
 
   const moveMovableText = (id, currentRect) => {
@@ -589,25 +763,36 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const item = movableTexts.find((entry) => entry.id === id);
     if (!item) return;
     setSelectedMovableTextId(id);
-    setEditingMovableText({
+    const baseFontSize = Number(item.autoFitBaseFontSize || item.fontSize) || 10;
+    const baseLetterSpacing = Number(item.autoFitBaseLetterSpacing ?? item.letterSpacing) || 0;
+    const initial = {
       id,
       value: String(item.displayText ?? item.text ?? ''),
       fontWeight: item.fontWeight || 'normal',
       fontStyle: item.fontStyle || 'normal',
       textDecoration: item.textDecoration || 'none',
-      letterSpacing: Number(item.letterSpacing) || 0,
+      letterSpacing: baseLetterSpacing,
+      baseLetterSpacing,
       verticalAlign: item.verticalAlign || 'middle',
       baselineOffset: Number.isFinite(Number(item.baselineOffset))
         ? Number(item.baselineOffset) : getVerticalBaselineOffset(item, item.verticalAlign),
       textAlign: item.textAlign || 'left',
-      fontSize: Number(item.fontSize) || 10,
+      fontSize: baseFontSize,
+      baseFontSize,
       fontFamily: item.selectedFontFamily || item.previewFontFamily || '',
       color: item.color || '#111111'
-    });
+    };
+    const fitted = fitMovableTextToBox(initial.value, initial, item);
+    setEditingMovableText({ ...initial, ...fitted });
   };
 
   const updateEditingMovableText = (value) => {
-    setEditingMovableText((current) => current ? { ...current, value } : current);
+    setEditingMovableText((current) => {
+      if (!current) return current;
+      const target = movableTexts.find((item) => item.id === current.id);
+      const fitted = fitMovableTextToBox(value, current, target);
+      return { ...current, value, ...fitted };
+    });
   };
 
   const updateEditingMovableTextStyle = (style) => {
@@ -615,17 +800,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       if (!current) return current;
       const target = movableTexts.find((item) => item.id === current.id);
       const next = { ...current, ...style };
+      if (style.fontSize !== undefined) next.baseFontSize = Number(style.fontSize) || current.baseFontSize || current.fontSize;
+      if (style.letterSpacing !== undefined) next.baseLetterSpacing = Number(style.letterSpacing) || 0;
       if (style.verticalAlign && target) {
         next.baselineOffset = getVerticalBaselineOffset(target, style.verticalAlign);
       }
-      if (style.fontSize !== undefined && target) {
-        const fontSize = Number(style.fontSize);
-        if (Number.isFinite(fontSize) && fontSize > 0) {
-          next.fontSize = fontSize;
-          next.baselineOffset = getVerticalBaselineOffset({ ...target, fontSize }, next.verticalAlign || target.verticalAlign);
-        }
-      }
-      return next;
+      const fitted = fitMovableTextToBox(next.value, next, target);
+      return { ...next, ...fitted };
     });
   };
 
@@ -648,21 +829,18 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       fontCandidates,
       preferBoldFont
     } : item));
-    setEditingMovableText((current) => current?.id === editingId ? { ...current, fontFamily } : current);
+    setEditingMovableText((current) => {
+      if (current?.id !== editingId) return current;
+      const next = { ...current, fontFamily };
+      return { ...next, ...fitMovableTextToBox(next.value, next, target) };
+    });
     try {
       const previewFont = await resolveReplacementPreviewFont(fontCandidates, { preferBold: preferBoldFont });
-      setMovableTexts((current) => current.map((item) => item.id === editingId ? {
-        ...item,
-        selectedFontFamily: previewFont.selectionValue || fontFamily,
-        fontCandidates,
-        preferBoldFont,
-        renderFontFamily: previewFont.fontFamily,
-        previewFontSource: previewFont.source || 'bundled',
-        previewFontFamily: previewFont.originalFamily || fontFamily || item.previewFontFamily || ''
-      } : item));
-      setEditingMovableText((current) => current?.id === editingId
-        ? { ...current, fontFamily: previewFont.selectionValue || fontFamily }
-        : current);
+      updateMovableTextPreviewFont(editingId, {
+        ...previewFont,
+        selectionValue: previewFont.selectionValue || fontFamily,
+        originalFamily: previewFont.originalFamily || fontFamily || target.previewFontFamily || ''
+      });
     } catch (error) {
       console.warn('[PdfJsViewer] selected font preview unavailable:', error);
     }
@@ -713,6 +891,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             : getVerticalBaselineOffset(item, editingMovableText.verticalAlign || item.verticalAlign),
           textAlign: editingMovableText.textAlign || item.textAlign || 'left',
           fontSize: Number(editingMovableText.fontSize) || item.fontSize || 10,
+          autoFitBaseFontSize: Number(editingMovableText.baseFontSize) || item.autoFitBaseFontSize || item.fontSize || 10,
+          autoFitBaseLetterSpacing: Number(editingMovableText.baseLetterSpacing) || item.autoFitBaseLetterSpacing || 0,
           selectedFontFamily: editingMovableText.fontFamily || item.selectedFontFamily || '',
           color: editingMovableText.color || item.color || '#111111'
         }
@@ -915,7 +1095,22 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
     const viewerElement = viewerRef.current;
     if (viewerElement) {
-      const targetTop = pageElement.offsetTop - viewerElement.clientHeight / 4;
+      const keyword = String(target.keyword ?? target.matchedText ?? target.originalText ?? '').trim();
+      const targetBoxes = keyword
+        ? createHighlightBoxesFromTextLayer(pageElement, keyword, {
+          matchMode: 'contains',
+          lineNumber: Number(target.lineNumber ?? target.line),
+          matchIndex: Number(target.matchIndex),
+          lineText: target.lineText ?? target.fullText ?? target.text
+        })
+        : [];
+      const targetBox = targetBoxes[0];
+      const targetY = target.y != null && Number.isFinite(Number(target.y))
+        ? Number(target.y)
+        : targetBox
+          ? targetBox.y + targetBox.height / 2
+          : pageElement.clientHeight / 4;
+      const targetTop = pageElement.offsetTop + targetY - viewerElement.clientHeight / 3;
       viewerElement.scrollTo({
         top: Math.max(targetTop, 0),
         behavior: 'smooth'
@@ -1064,15 +1259,74 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         pageMatchOrdinals.set(pageNumber, pageMatchOrdinal + 1);
         return { ...match, pageMatchOrdinal };
       });
-      const results = Array.isArray(options.selectedTargets)
-        ? positionedMatches.filter((match) => options.selectedTargets.some((target) => {
+      const visibleSourceMatches = filterMovedSourceSearchResults(positionedMatches, movableTexts);
+      const selectedTargets = Array.isArray(options.selectedTargets) ? options.selectedTargets : null;
+      const sourceResults = selectedTargets
+        ? visibleSourceMatches.filter((match) => selectedTargets.some((target) => {
           const raw = target.raw || target;
-          return Number(raw.pageNumber ?? raw.page) === match.pageNumber
+          return raw.type !== 'pdf-replacement'
+            && Number(raw.pageNumber ?? raw.page) === match.pageNumber
             && Number(raw.lineNumber ?? raw.line) === match.lineNumber
             && Number(raw.matchIndex) === match.matchIndex;
       }))
-        : positionedMatches;
-      if (results.length) {
+        : visibleSourceMatches;
+      const replacementMatches = getReplacementSearchResults(originalText, { matchMode }, movableTexts);
+      const replacementResults = selectedTargets
+        ? replacementMatches.filter((match) => selectedTargets.some((target) => {
+          const raw = target.raw || target;
+          return raw.type === 'pdf-replacement'
+            && raw.replacementId === match.replacementId
+            && Number(raw.matchIndex) === match.matchIndex;
+        }))
+        : replacementMatches;
+
+      if (replacementResults.length) {
+        const replacementEdits = new Map();
+        replacementResults.forEach((match) => {
+          const edits = replacementEdits.get(match.replacementId) || [];
+          edits.push(match);
+          replacementEdits.set(match.replacementId, edits);
+        });
+        const next = movableTexts.map((item) => {
+          const edits = replacementEdits.get(item.id);
+          if (!edits?.length) return item;
+          let value = getReplacementSearchText(item);
+          edits.sort((a, b) => Number(b.startIndex) - Number(a.startIndex)).forEach((match) => {
+            const start = Number(match.startIndex);
+            // Search results expand matchedText to its whole word for display;
+            // replacement itself must consume only the requested keyword.
+            const end = start + String(originalText).length;
+            if (Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end <= value.length) {
+              value = `${value.slice(0, start)}${newText}${value.slice(end)}`;
+            }
+          });
+          const baseFontSize = Number(item.autoFitBaseFontSize || item.fontSize) || 10;
+          const baseLetterSpacing = Number(item.autoFitBaseLetterSpacing ?? item.letterSpacing) || 0;
+          const fitted = fitMovableTextToBox(value, {
+            fontSize: baseFontSize, baseFontSize,
+            letterSpacing: baseLetterSpacing, baseLetterSpacing,
+            fontWeight: item.fontWeight, fontStyle: item.fontStyle,
+            fontFamily: item.selectedFontFamily || item.previewFontFamily || ''
+          }, item);
+          return {
+            ...item,
+            displayText: value,
+            text: value,
+            editedText: value,
+            ...fitted,
+            autoFitBaseFontSize: baseFontSize,
+            autoFitBaseLetterSpacing: baseLetterSpacing,
+            baselineOffset: Number.isFinite(Number(item.baselineOffset))
+              ? Number(item.baselineOffset)
+              : getVerticalBaselineOffset({ ...item, fontSize: fitted.fontSize }, item.verticalAlign),
+            hasChanges: item.persistedToPdf ? true : item.hasChanges
+          };
+        });
+        setMovableTexts(next);
+        commitPdfChange(userHighlight, appliedReplacePreview, next, replacementResults[0]?.replacementId || null);
+      }
+
+      if (sourceResults.length) {
         // Resolve each hit to a browser Range in PdfPage. This reuses the
         // manual drag-selection geometry instead of the line preview path.
         setViewMode('scroll');
@@ -1083,9 +1337,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           id: requestId,
           originalText,
           newText,
-          targets: results
+          targets: sourceResults
         });
-        return { count: results.length, replaceCount: results.length, results };
+        return {
+          count: sourceResults.length + replacementResults.length,
+          replaceCount: sourceResults.length + replacementResults.length,
+          results: [...sourceResults, ...replacementResults]
+        };
 
         const nextReplace = { originalText, newText, matchMode, selectedTargets: results };
         // Search results do not carry browser Range geometry. Render the
@@ -1128,7 +1386,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         setSelectedMovableTextId(batchItems[0]?.id || null);
         setEditingMovableText(null);
       }
-      return { count: results.length, replaceCount: results.length, results };
+      return {
+        count: sourceResults.length + replacementResults.length,
+        replaceCount: sourceResults.length + replacementResults.length,
+        results: [...sourceResults, ...replacementResults]
+      };
     },
     scrollToReplaceResult(result) {
       return scrollToPdfSearchResult(result);
@@ -1331,22 +1593,6 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
     const viewerElement = viewerRef.current;
 
-    if (
-      viewerElement &&
-      Number.isFinite(result.x) &&
-      Number.isFinite(result.y)
-    ) {
-      const targetTop =
-        pageElement.offsetTop + result.y - viewerElement.clientHeight / 2;
-
-      viewerElement.scrollTo({
-        top: Math.max(targetTop, 0),
-        behavior: 'smooth'
-      });
-
-      return;
-    }
-
     scrollToPdfSearchResult(result);
   }, [selectedSearchResult, scale, pageNumbers]);
 
@@ -1359,7 +1605,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   }
 
   return (
-    <div className="pdf-viewer-shell">
+    <div
+      className={`pdf-viewer-shell pdf-viewer-${pageOrientation}`}
+      data-page-ratio={pdfPageSize.width && pdfPageSize.height ? (pdfPageSize.width / pdfPageSize.height).toFixed(4) : undefined}
+    >
       <div className="pdf-view-mode-controls document-toolbar" aria-label="PDF 보기 방식">
         <div className="pdf-view-mode-toggle-group">
           {pageNumbers.length > 1 ? (
@@ -1456,11 +1705,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       <div ref={viewerRef} className="document-body-scroll pdf-viewer pdf-viewer-scroll">
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (
-            <div key={`${pageNumber}-${scale}`} hidden={viewMode === 'page' && currentPage !== pageNumber}>
+            <div key={`${pageNumber}-${effectiveScale}`} hidden={viewMode === 'page' && currentPage !== pageNumber}>
               <PdfPage
                 pdf={pdfDocument}
                 pageNumber={pageNumber}
-                scale={scale}
+                scale={effectiveScale}
                 highlightKeyword={userHighlight.keyword}
                 highlightOptions={userHighlight}
                 highlightEntries={userHighlights}

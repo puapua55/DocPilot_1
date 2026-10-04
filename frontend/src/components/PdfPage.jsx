@@ -132,16 +132,221 @@ function measureDisplayText(text, fontSize, computedStyle) {
   return { width: Math.max(metrics.width || 0, left + right), height: Math.max(fontSize, ascent + descent) };
 }
 
-function getSelectedTextLayerSpans(textLayer, range) {
+function getPdfLineBaselineOffset(sourceInfo, textContent, viewport, scale, rect, fallbackFontSize) {
+  const sourceTransform = sourceInfo?.transform;
+  const sourceY = Number(sourceTransform?.[5]);
+  if (!Array.isArray(sourceTransform) || !Number.isFinite(sourceY) || !viewport || !rect) return null;
+
+  // A moved/replaced item can have a slightly different baseline from the
+  // other glyphs on the same visual line. Use the line's nearby PDF text
+  // transforms as a consensus baseline so a second edit does not preserve an
+  // earlier overlay's small vertical drift.
+  const tolerance = Math.max(2, (Number(fallbackFontSize) || 10) * 0.45);
+  const lineBaselines = (Array.isArray(textContent?.items) ? textContent.items : [])
+    .filter((item) => typeof item?.str === 'string' && item.str.trim())
+    .map((item) => Number(item?.transform?.[5]))
+    .filter((y) => Number.isFinite(y) && Math.abs(y - sourceY) <= tolerance)
+    .sort((a, b) => a - b);
+  const baselineY = lineBaselines.length
+    ? lineBaselines[Math.floor(lineBaselines.length / 2)]
+    : sourceY;
+  const point = viewport.convertToViewportPoint(Number(sourceTransform[4]) || 0, baselineY);
+  return Number.isFinite(point?.[1]) ? point[1] / scale - Number(rect.y) : null;
+}
+
+function getMovedSourceCoverRects(movableTexts = []) {
+  return movableTexts.flatMap((item) => {
+    // A saved item with no pending edits is already represented in the PDF.
+    // It has no live cover in MovableTextLayer, so it should not block text.
+    if (item.persistedToPdf && !item.hasChanges) return [];
+    const rects = item.persistedToPdf && item.hasChanges
+      ? [item.originalRect]
+      : (item.coverRects?.length ? item.coverRects : [item.originalRect]);
+    const padding = Number.isFinite(Number(item.coverPadding))
+      ? Number(item.coverPadding)
+      : Math.max(0, Number(item.fontSize || 10) * 0.06);
+    return rects
+      .filter((rect) => Number.isFinite(Number(rect?.x)) && Number.isFinite(Number(rect?.y))
+        && Number(rect?.width) > 0 && Number(rect?.height) > 0)
+      .map((rect) => ({
+        left: Number(rect.x) - padding,
+        top: Number(rect.y) - padding,
+        right: Number(rect.x) + Number(rect.width) + padding,
+        bottom: Number(rect.y) + Number(rect.height) + padding
+      }));
+  });
+}
+
+function isSpanCoveredByMovedText(span, pageElement, scale, movedSourceRects) {
+  if (!movedSourceRects?.length || !pageElement || !Number.isFinite(scale) || scale <= 0) return false;
+  const pageRect = pageElement.getBoundingClientRect();
+  const spanRect = span.getBoundingClientRect();
+  const sourceRects = movedSourceRects.map((rect) => ({
+    left: pageRect.left + rect.left * scale,
+    top: pageRect.top + rect.top * scale,
+    right: pageRect.left + rect.right * scale,
+    bottom: pageRect.top + rect.bottom * scale
+  }));
+  return sourceRects.some((rect) => spanRect.left < rect.right && spanRect.right > rect.left
+    && spanRect.top < rect.bottom && spanRect.bottom > rect.top);
+}
+
+function rangeIntersectsMovedTextSource(textLayer, range, pageElement, scale, movableTexts = []) {
+  if (!textLayer || !range) return false;
+  const movedSourceRects = getMovedSourceCoverRects(movableTexts);
+  if (!movedSourceRects.length) return false;
+  return Array.from(textLayer.querySelectorAll('span[data-text-item-index]')).some((span) => {
+    try {
+      return range.intersectsNode(span)
+        && isSpanCoveredByMovedText(span, pageElement, scale, movedSourceRects);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function getSelectedTextLayerSpans(textLayer, range, pageElement, scale, movableTexts = []) {
+  const movedSourceRects = getMovedSourceCoverRects(movableTexts);
   return Array.from(textLayer.querySelectorAll('span[data-text-item-index]'))
     .filter((span) => {
       try {
-        return range.intersectsNode(span);
+        return range.intersectsNode(span)
+          && !isSpanCoveredByMovedText(span, pageElement, scale, movedSourceRects);
       } catch {
         return false;
       }
     })
     .sort((a, b) => Number(a.dataset.textItemIndex) - Number(b.dataset.textItemIndex));
+}
+
+function sortByVisualTextRows(entries) {
+  const rows = [];
+  entries.forEach((entry) => {
+    const rect = entry.rect || entry.span?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    const centerY = (rect.top + rect.bottom) / 2;
+    let row = rows.find((candidate) => Math.abs(candidate.centerY - centerY)
+      <= Math.max(3, Math.min(candidate.height, rect.height) * 0.7));
+    if (!row) {
+      row = { centerY, height: rect.height, entries: [] };
+      rows.push(row);
+    }
+    row.entries.push({ ...entry, rect });
+    row.centerY = row.entries.reduce((sum, part) => sum + (part.rect.top + part.rect.bottom) / 2, 0) / row.entries.length;
+    row.height = Math.max(row.height, rect.height);
+  });
+  return rows.sort((a, b) => a.centerY - b.centerY)
+    .flatMap((row) => row.entries.sort((a, b) => a.rect.left - b.rect.left));
+}
+
+function joinVisualTextParts(parts, field) {
+  let text = '';
+  let previous = null;
+  parts.forEach((part) => {
+    const value = String(part[field] || '');
+    if (!value) return;
+    if (previous) {
+      const previousCenterY = (previous.rect.top + previous.rect.bottom) / 2;
+      const currentCenterY = (part.rect.top + part.rect.bottom) / 2;
+      const rowTolerance = Math.max(3, Math.min(previous.rect.height, part.rect.height) * 0.7);
+      if (Math.abs(currentCenterY - previousCenterY) > rowTolerance) {
+        if (!/\s$/.test(text)) text += '\n';
+      } else {
+        // PDF.js trims leading spaces from a text item. Recover word spaces
+        // from the visual advance gap between adjacent content-stream items.
+        const gap = part.rect.left - previous.rect.right;
+        const spaceThreshold = Math.max(2.5, Math.min(previous.rect.height, part.rect.height) * 0.24);
+        if (gap > spaceThreshold && !/\s$/.test(text) && !/^\s/.test(value)) text += ' ';
+      }
+    }
+    text += value;
+    previous = part;
+  });
+  return text.trim();
+}
+
+function getVisualRangeTextSpans(textLayer, range, pageElement, scale, movableTexts = [], dragPoints = null, expandToVisualLines = false) {
+  if (!range || !textLayer) return [];
+  const hasDragPoints = Number.isFinite(dragPoints?.startX) && Number.isFinite(dragPoints?.startY)
+    && Number.isFinite(dragPoints?.endX) && Number.isFinite(dragPoints?.endY);
+  const selected = getSelectedTextLayerSpans(textLayer, range, pageElement, scale, movableTexts);
+  if (!selected.length && !hasDragPoints) return selected;
+
+  // PDF.js can emit replacement text as a separate text item whose DOM order
+  // differs from its visible position. Use the browser's selected visual rows
+  // to include such items between the drag endpoints.
+  const visualRows = mergeSelectionClientRects(Array.from(range.getClientRects()));
+  if (!visualRows.length && !hasDragPoints) return selected;
+  const movedSourceRects = getMovedSourceCoverRects(movableTexts);
+  const included = new Set(selected);
+  const lowY = hasDragPoints ? Math.min(dragPoints.startY, dragPoints.endY) : null;
+  const highY = hasDragPoints ? Math.max(dragPoints.startY, dragPoints.endY) : null;
+  const dragRows = [];
+  if (hasDragPoints) {
+    Array.from(textLayer.querySelectorAll('span[data-text-item-index]')).forEach((span) => {
+      if (isSpanCoveredByMovedText(span, pageElement, scale, movedSourceRects)) return;
+      const rect = span.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const centerY = (rect.top + rect.bottom) / 2;
+      if (centerY < lowY - rect.height * 0.6 || centerY > highY + rect.height * 0.6) return;
+      // A saved replacement may have a slightly different text-matrix
+      // baseline from its neighbours. Group by the visual row with enough
+      // tolerance for that baseline drift, while keeping adjacent lines apart.
+      let row = dragRows.find((entry) => Math.abs(entry.centerY - centerY) <= Math.max(3, Math.min(entry.height, rect.height) * 0.7));
+      if (!row) {
+        row = { centerY, height: rect.height, spans: [] };
+        dragRows.push(row);
+      }
+      row.spans.push({ span, rect });
+      row.centerY = row.spans.reduce((sum, part) => sum + (part.rect.top + part.rect.bottom) / 2, 0) / row.spans.length;
+      row.height = Math.max(row.height, rect.height);
+    });
+    dragRows.sort((a, b) => a.centerY - b.centerY);
+  }
+  Array.from(textLayer.querySelectorAll('span[data-text-item-index]')).forEach((span) => {
+    if (isSpanCoveredByMovedText(span, pageElement, scale, movedSourceRects)) return;
+    const rect = span.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const centerX = (rect.left + rect.right) / 2;
+    const centerY = (rect.top + rect.bottom) / 2;
+    if (hasDragPoints) {
+      const rowIndex = dragRows.findIndex((row) => Math.abs(row.centerY - centerY) <= Math.max(3, Math.min(row.height, rect.height) * 0.7));
+      if (rowIndex < 0) return;
+      const startIndex = dragRows.reduce((best, entry, index) => (
+        Math.abs(entry.centerY - dragPoints.startY) < Math.abs(dragRows[best].centerY - dragPoints.startY) ? index : best
+      ), 0);
+      const endIndex = dragRows.reduce((best, entry, index) => (
+        Math.abs(entry.centerY - dragPoints.endY) < Math.abs(dragRows[best].centerY - dragPoints.endY) ? index : best
+      ), 0);
+      let inside = false;
+      if (expandToVisualLines) {
+        // In text-move mode a line is the movable unit. Once a drag touches
+        // that visual row, include the complete row even when PDF.js split an
+        // edited word into a separate text item or placed it elsewhere in the
+        // content stream. This also makes saved-and-reopened PDFs behave like
+        // the live replacement overlay.
+        inside = rowIndex >= Math.min(startIndex, endIndex) && rowIndex <= Math.max(startIndex, endIndex);
+      } else if (startIndex === endIndex) {
+        inside = centerX >= Math.min(dragPoints.startX, dragPoints.endX) - 2
+          && centerX <= Math.max(dragPoints.startX, dragPoints.endX) + 2;
+      } else if (rowIndex === startIndex) {
+        inside = dragPoints.endY > dragPoints.startY
+          ? centerX >= dragPoints.startX - 2
+          : centerX <= dragPoints.startX + 2;
+      } else if (rowIndex === endIndex) {
+        inside = dragPoints.endY > dragPoints.startY
+          ? centerX <= dragPoints.endX + 2
+          : centerX >= dragPoints.endX - 2;
+      } else {
+        inside = true;
+      }
+      if (inside) included.add(span);
+      return;
+    }
+    if (visualRows.some((row) => centerY >= row.top - 2 && centerY <= row.bottom + 2
+      && centerX >= row.left - 2 && centerX <= row.right + 2)) included.add(span);
+  });
+  return sortByVisualTextRows(Array.from(included).map((span) => ({ span }))).map(({ span }) => span);
 }
 
 // A partial selection (for example selecting "문서 검색" from a single
@@ -183,14 +388,14 @@ function mergeSelectionClientRects(rects = []) {
   return lines.map(({ left, top, right, bottom }) => ({ left, top, right, bottom, width: right - left, height: bottom - top }));
 }
 
-function getTextSpanSelectionClientRects(range, textLayer) {
+function getTextSpanSelectionClientRects(range, textLayer, pageElement, scale, movableTexts) {
   if (!range || !textLayer) return [];
   // PDF.js inserts <br> nodes for each hasEOL item. A browser Range includes
   // them in getClientRects() even though they contain no glyphs. On a
   // multi-column page those fragments become the blue bar at the left edge.
   // Collect only actual PDF text spans and preserve partial selection inside
   // the start/end span.
-  return getSelectedTextLayerSpans(textLayer, range).flatMap((span) => {
+  return getSelectedTextLayerSpans(textLayer, range, pageElement, scale, movableTexts).flatMap((span) => {
     const clipped = document.createRange();
     try {
       clipped.selectNodeContents(span);
@@ -200,7 +405,20 @@ function getTextSpanSelectionClientRects(range, textLayer) {
       if (span.contains(range.endContainer)) {
         clipped.setEnd(range.endContainer, range.endOffset);
       }
-      return Array.from(clipped.getClientRects());
+      // A transformed PDF.js span can expose an extra line-box rect at the
+      // text-layer origin when a selection crosses multiple lines. Keep only
+      // the part that is inside the span's actual painted bounds so that
+      // artifact cannot become a blue bar at the page's left edge.
+      const spanRect = span.getBoundingClientRect();
+      return Array.from(clipped.getClientRects()).map((rect) => {
+        const left = Math.max(rect.left, spanRect.left);
+        const top = Math.max(rect.top, spanRect.top);
+        const right = Math.min(rect.right, spanRect.right);
+        const bottom = Math.min(rect.bottom, spanRect.bottom);
+        return right > left && bottom > top
+          ? new DOMRect(left, top, right - left, bottom - top)
+          : null;
+      }).filter(Boolean);
     } catch {
       return [];
     }
@@ -245,25 +463,29 @@ function getSelectionGeometryFromClientRects(rects, pageElement, scale) {
   };
 }
 
-function getSelectionGeometry(range, pageElement, scale, textLayer) {
+function getSelectionGeometry(range, pageElement, scale, textLayer, movableTexts) {
   return getSelectionGeometryFromClientRects(
-    getTextSpanSelectionClientRects(range, textLayer), pageElement, scale
+    getTextSpanSelectionClientRects(range, textLayer, pageElement, scale, movableTexts), pageElement, scale
   );
 }
 
-function getAreaTextLineGroups(textLayer, area, pageElement, scale) {
+function getAreaTextLineGroups(
+  textLayer, area, pageElement, scale, movableTexts = [], splitOnWideGaps = false, includeVisibleEdits = false
+) {
   if (!textLayer || !area || !pageElement) return [];
+  const movedSourceRects = getMovedSourceCoverRects(movableTexts);
   const lines = [];
   Array.from(textLayer.querySelectorAll('span[data-text-item-index]')).forEach((span) => {
     const rect = span.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
+    if (isSpanCoveredByMovedText(span, pageElement, scale, movedSourceRects)) return;
     const centerX = (rect.left + rect.right) / 2;
     const centerY = (rect.top + rect.bottom) / 2;
     if (centerX < area.left || centerX > area.right || centerY < area.top || centerY > area.bottom) return;
     const text = span.dataset.unicodeText ?? span.textContent ?? '';
     if (text === '') return;
-    const line = lines.find((entry) => Math.abs(entry.centerY - centerY) <= Math.max(2, Math.min(entry.height, rect.height) * 0.45));
-    const part = { span, rect, text };
+    const line = lines.find((entry) => Math.abs(entry.centerY - centerY) <= Math.max(3, Math.min(entry.height, rect.height) * 0.7));
+    const part = { span, rect, text, sourceText: text };
     if (line) {
       line.parts.push(part);
       line.top = Math.min(line.top, rect.top);
@@ -274,12 +496,167 @@ function getAreaTextLineGroups(textLayer, area, pageElement, scale) {
       lines.push({ centerY, top: rect.top, bottom: rect.bottom, height: rect.height, parts: [part] });
     }
   });
+  if (includeVisibleEdits) {
+    const pageRect = pageElement.getBoundingClientRect();
+    movableTexts.filter((item) => (
+      Number(item.pageNumber) === Number(pageElement.dataset.pageNumber)
+      && (!item.persistedToPdf || item.hasChanges)
+      && item.type === 'replacementText'
+      && Math.abs(Number(item.currentRect?.x) - Number(item.originalRect?.x)) <= 0.5
+      && Math.abs(Number(item.currentRect?.y) - Number(item.originalRect?.y)) <= 0.5
+      && Number.isFinite(Number(item.currentRect?.x))
+      && Number.isFinite(Number(item.currentRect?.y))
+      && Number(item.currentRect?.width) > 0
+    )).forEach((item) => {
+      const text = String(item.displayText ?? item.text ?? '').trim();
+      const fontSize = Math.max(1, Number(item.fontSize) || 10);
+      const baselineOffset = Number.isFinite(Number(item.baselineOffset))
+        ? Number(item.baselineOffset) : fontSize * 0.88;
+      const x = pageRect.left + Number(item.currentRect.x) * scale;
+      const top = pageRect.top + (Number(item.currentRect.y) + baselineOffset - fontSize * 0.88) * scale;
+      const width = Number(item.currentRect.width) * scale;
+      const height = Math.max(fontSize, Math.min(Number(item.currentRect.height) || fontSize, fontSize * 1.25)) * scale;
+      const rect = { left: x, top, right: x + width, bottom: top + height, width, height };
+      const centerX = (rect.left + rect.right) / 2;
+      const centerY = (rect.top + rect.bottom) / 2;
+      if (!text || centerX < area.left || centerX > area.right || centerY < area.top || centerY > area.bottom) return;
+      const part = {
+        span: null,
+        rect,
+        text,
+        sourceText: String(item.sourceText || item.originalText || item.originalUnicodeText || text).trim(),
+        item
+      };
+      const line = lines.find((entry) => Math.abs(entry.centerY - centerY)
+        <= Math.max(3, Math.min(entry.height, rect.height) * 0.7));
+      if (line) {
+        line.parts.push(part);
+        line.top = Math.min(line.top, rect.top);
+        line.bottom = Math.max(line.bottom, rect.bottom);
+        line.centerY = (line.top + line.bottom) / 2;
+        line.height = line.bottom - line.top;
+      } else {
+        lines.push({ centerY, top: rect.top, bottom: rect.bottom, height: rect.height, parts: [part] });
+      }
+    });
+  }
   return lines.sort((first, second) => first.top - second.top).map((line) => {
-    const parts = line.parts.sort((first, second) => first.rect.left - second.rect.left);
-    const geometry = getSelectionGeometryFromClientRects(parts.map((part) => part.rect), pageElement, scale);
-    const text = parts.map((part) => part.text).join('').trim();
-    return geometry && text ? { text, geometry, sourceElement: parts[0].span } : null;
+    const sortedParts = line.parts.sort((first, second) => first.rect.left - second.rect.left);
+    const segments = [];
+    sortedParts.forEach((part) => {
+      const segment = segments[segments.length - 1];
+      const previous = segment?.parts[segment.parts.length - 1];
+      const gap = previous ? part.rect.left - previous.rect.right : 0;
+      const maxInlineGap = Math.max(24, line.height * 2.8);
+      if (!segment || (splitOnWideGaps && gap > maxInlineGap)) segments.push({ parts: [part] });
+      else segment.parts.push(part);
+    });
+    return segments.map(({ parts }) => {
+      const geometry = getSelectionGeometryFromClientRects(parts.map((part) => part.rect), pageElement, scale);
+      const text = joinVisualTextParts(parts, 'text');
+      const sourceText = joinVisualTextParts(parts.map((part) => ({ ...part, sourceText: part.sourceText || part.text })), 'sourceText');
+      const supersedesIds = parts.map((part) => part.item?.id).filter(Boolean);
+      return geometry && text
+        ? { text, sourceText, geometry, parts, supersedesIds, sourceElement: parts.find((part) => part.span)?.span || null }
+        : null;
+    }).filter(Boolean);
+  }).flat();
+}
+
+function getOverlayAwareDragLineSelection(range, dragPoints, textLayer, pageElement, scale, movableTexts = [], expandToVisualLines = false) {
+  if (!range || !textLayer || !pageElement
+    || !Number.isFinite(dragPoints?.startX) || !Number.isFinite(dragPoints?.startY)
+    || !Number.isFinite(dragPoints?.endX) || !Number.isFinite(dragPoints?.endY)) return null;
+  const left = Math.min(dragPoints.startX, dragPoints.endX);
+  const right = Math.max(dragPoints.startX, dragPoints.endX);
+  if (right - left < 3) return null;
+
+  const pageNumber = Number(pageElement.dataset.pageNumber);
+  const pageRect = pageElement.getBoundingClientRect();
+  const spans = getVisualRangeTextSpans(textLayer, range, pageElement, scale, movableTexts, dragPoints, expandToVisualLines);
+  if (!spans.length) return null;
+  const activeReplacements = movableTexts.filter((item) => (
+    Number(item.pageNumber) === pageNumber
+    && (!item.persistedToPdf || item.hasChanges)
+    && item.type === 'replacementText'
+  )).map((item) => {
+    const rect = item.currentRect || item.originalRect;
+    if (!Number.isFinite(Number(rect?.x)) || !Number.isFinite(Number(rect?.y))
+      || Number(rect?.width) <= 0 || Number(rect?.height) <= 0) return null;
+    const fontSize = Math.max(1, Number(item.fontSize) || 10);
+    const baselineOffset = Number.isFinite(Number(item.baselineOffset))
+      ? Number(item.baselineOffset) : fontSize * 0.88;
+    const visibleRect = {
+      left: pageRect.left + Number(rect.x) * scale,
+      top: pageRect.top + (Number(rect.y) + baselineOffset - fontSize * 0.88) * scale,
+      width: Number(rect.width) * scale,
+      height: Math.max(fontSize, Math.min(Number(rect.height) || fontSize, fontSize * 1.25)) * scale
+    };
+    visibleRect.right = visibleRect.left + visibleRect.width;
+    visibleRect.bottom = visibleRect.top + visibleRect.height;
+    visibleRect.centerX = (visibleRect.left + visibleRect.right) / 2;
+    visibleRect.centerY = (visibleRect.top + visibleRect.bottom) / 2;
+    return { item, rect: visibleRect };
   }).filter(Boolean);
+
+  const parts = spans.map((span) => {
+    const rect = span.getBoundingClientRect();
+    const text = span.dataset.unicodeText || span.textContent || '';
+    return text ? { span, rect, text, sourceText: text } : null;
+  }).filter(Boolean);
+  activeReplacements.forEach(({ item, rect: overlayRect }) => {
+    if (overlayRect.centerX < left - 2 || overlayRect.centerX > right + 2) return;
+    const sameLineSpans = spans.filter((span) => {
+      const rect = span.getBoundingClientRect();
+      const centerY = (rect.top + rect.bottom) / 2;
+      return Math.abs(centerY - overlayRect.centerY) <= Math.max(3, Math.min(rect.height, overlayRect.height) * 0.55)
+        && (rect.left + rect.right) / 2 >= left - 2
+        && (rect.left + rect.right) / 2 <= right + 2;
+    });
+    if (!sameLineSpans.length) return;
+
+    sameLineSpans.forEach((span) => {
+      if (parts.some((part) => part.span === span)) return;
+      const rect = span.getBoundingClientRect();
+      const text = span.dataset.unicodeText || span.textContent || '';
+      if (text) parts.push({ span, rect, text, sourceText: text });
+    });
+    const text = String(item.displayText ?? item.text ?? '').trim();
+    if (text) parts.push({
+      span: null,
+      rect: overlayRect,
+      text,
+      sourceText: String(item.sourceText || item.originalText || item.originalUnicodeText || text).trim(),
+      item
+    });
+  });
+  // When the PDF was saved and reopened, edited words are plain PDF text
+  // spans rather than live overlay objects. Keep a multi-span visual drag as
+  // one selection even if the browser's native Range follows content-stream
+  // order and would otherwise return only the edited word (or wrong text).
+  if (!parts.some((part) => part.item) && parts.filter((part) => part.span).length < 2 && !expandToVisualLines) return null;
+  if (parts.some((part) => part.item) && !parts.some((part) => part.span)) return null;
+
+  parts.splice(0, parts.length, ...sortByVisualTextRows(parts));
+  const geometry = getSelectionGeometryFromClientRects(parts.map((part) => part.rect), pageElement, scale);
+  if (!geometry) return null;
+  // The replaced PDF glyph is still hidden by the old overlay's cover. Keep
+  // that source cover when the old replacement object is superseded by this
+  // combined line object, or the original word would reappear underneath.
+  const inheritedCovers = parts.flatMap((part) => part.item
+    ? (part.item.coverRects?.length ? part.item.coverRects : [part.item.originalRect])
+    : []);
+  const coverRects = [...geometry.coverRects, ...inheritedCovers]
+    .filter((rect) => Number.isFinite(Number(rect?.x)) && Number.isFinite(Number(rect?.y))
+      && Number(rect.width) > 0 && Number(rect.height) > 0);
+  return {
+    text: joinVisualTextParts(parts, 'text'),
+    sourceText: joinVisualTextParts(parts.map((part) => ({ ...part, sourceText: part.sourceText || part.text })), 'sourceText'),
+    geometry: { ...geometry, coverRects },
+    parts,
+    supersedesIds: [...new Set(parts.map((part) => part.item?.id).filter(Boolean))],
+    range
+  };
 }
 
 function collectFontCandidates(...fonts) {
@@ -367,30 +744,48 @@ function PdfPage({
   const [textContent, setTextContent] = useState(null);
   const [textLayerVersion, setTextLayerVersion] = useState(0);
   const [areaSelectionBox, setAreaSelectionBox] = useState(null);
+  const [hoveredReplacementLine, setHoveredReplacementLine] = useState(null);
   const moveRef = useRef(null);
   const areaSelectionRef = useRef(null);
+  const hoveredReplacementLineKeyRef = useRef('');
   const imageMoveRef = useRef(null);
+  const textDragRef = useRef(null);
   const handledBatchRequestRef = useRef('');
   const batchSelectionActiveRef = useRef(false);
   const handleTextLayerRendered = useCallback(() => {
     setTextLayerVersion((version) => version + 1);
   }, []);
 
-  const handleTextSelection = useCallback(() => {
+  const handleTextSelection = useCallback((lineSelection = null) => {
     const isBatchSelection = batchSelectionActiveRef.current;
-    if ((!textMoveMode && !textReplaceMode && !isBatchSelection) || !pageRef.current) return;
+    // Text Move only repositions an existing movable object. Selecting source
+    // PDF text in that mode must never create a new editor/movable object.
+    if ((!textReplaceMode && !isBatchSelection) || !pageRef.current) return;
 
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
+    if (!selection || (!lineSelection && selection.rangeCount === 0)) return;
 
-    const range = selection.getRangeAt(0);
+    const range = lineSelection
+      ? (lineSelection.range || null)
+      : (selection.rangeCount ? selection.getRangeAt(0) : null);
+    if (!range && !lineSelection) return;
     const textLayer = pageRef.current.querySelector('.textLayer');
-    const commonNode = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+    const commonNode = range && (range.commonAncestorContainer.nodeType === Node.TEXT_NODE
       ? range.commonAncestorContainer.parentElement
-      : range.commonAncestorContainer;
-    if (!textLayer?.contains(commonNode)) return;
-    const selectedSpans = getSelectedTextLayerSpans(textLayer, range);
-    const selectionText = selection.toString().trim();
+      : range.commonAncestorContainer);
+    if (!textLayer || (commonNode && !textLayer.contains(commonNode))) return;
+    if (!lineSelection && rangeIntersectsMovedTextSource(textLayer, range, pageRef.current, scale, movableTexts)) {
+      selection.removeAllRanges();
+      setSelectionBoxes([]);
+      return;
+    }
+    const rangeSpans = !lineSelection
+      ? getSelectedTextLayerSpans(textLayer, range, pageRef.current, scale, movableTexts)
+      : [];
+    const selectedSpans = lineSelection
+      ? lineSelection.parts.map((part) => part.span).filter(Boolean)
+      : getVisualRangeTextSpans(textLayer, range, pageRef.current, scale, movableTexts, textDragRef.current);
+    const selectionText = lineSelection?.text || selection.toString().trim();
     const spanText = selectedSpans.map((span) => span.dataset.unicodeText || span.textContent || '').join('').trim();
     const wholeSpanRange = selectedSpans.length === 1 ? document.createRange() : null;
     if (wholeSpanRange) wholeSpanRange.selectNodeContents(selectedSpans[0]);
@@ -398,7 +793,11 @@ function PdfPage({
       && wholeSpanRange.toString().trim() === selectionText;
     // PDF.js item.str is the authoritative Unicode value for a complete item.
     // For partial/multi-item selections, retain the browser's selected range.
-    const selectedText = (wholeSpan ? spanText : selectionText) || spanText;
+    const selectedText = lineSelection
+      ? lineSelection.text
+      : (selectedSpans.length > rangeSpans.length
+        ? spanText
+        : (wholeSpan ? spanText : selectionText)) || spanText;
     const displayText = String(isBatchSelection ? batchReplaceRequest?.newText : selectedText);
     const batchTarget = isBatchSelection
       ? (batchReplaceRequest?.targets || []).find((target) => Number(target?.pageNumber ?? target?.page) === pageNumber) || null
@@ -408,26 +807,35 @@ function PdfPage({
     // fallback based on whether the source can be safely identified.
     if (!String(selectedText || '').length) return;
 
-    const geometry = getSelectionGeometry(range, pageRef.current, scale, textLayer);
-    // Selection is always accepted in text-move mode. Multi-line and partial
-    // selections may not be removable directly from the PDF stream later,
-    // but they must still become movable items and can safely use overlay
-    // fallback during save.
+    const geometry = lineSelection?.geometry
+      || (selectedSpans.length > rangeSpans.length ? getSelectionGeometryFromClientRects(
+        selectedSpans.flatMap((span) => {
+          const rect = span.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 ? [rect] : [];
+        }), pageRef.current, scale
+      ) : getSelectionGeometry(range, pageRef.current, scale, textLayer, movableTexts));
+    // Text-move mode does not create selections; it only moves an existing
+    // editable object. Replacement selections may use overlay fallback when
+    // their source cannot be removed directly from the PDF stream.
     if (!geometry) {
       return;
     }
     const { currentRect, coverRects } = geometry;
     if (currentRect.width < 2 || currentRect.height < 2) return;
 
-    const startElement = range.startContainer.nodeType === Node.TEXT_NODE
-      ? range.startContainer.parentElement : range.startContainer;
+    const lineSourceItem = lineSelection?.parts.find((part) => part.item)?.item || null;
+    const startElement = lineSelection?.parts.find((part) => part.span)?.span || (range
+      ? (range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer.parentElement : range.startContainer)
+      : null);
     const sourceElement = startElement?.closest('.textLayer span') || startElement;
     const computedStyle = sourceElement ? window.getComputedStyle(sourceElement) : null;
     // Only a complete PDF.js text item provides evidence for the first direct
     // removal implementation. Partial/multi-span selections still use overlay.
     let sourceSelection = null;
     const sourceInfo = sourceElement?.dataset.pdfSource ? JSON.parse(sourceElement.dataset.pdfSource) : null;
-    if (sourceElement?.dataset.pdfSource && sourceElement.contains(range.endContainer)) {
+    if (sourceElement?.dataset.pdfSource && (lineSelection
+      ? selectedSpans.length === 1 && !lineSelection.supersedesIds?.length && Boolean(range)
+      : sourceElement.contains(range.endContainer))) {
       const before = range.cloneRange();
       before.selectNodeContents(sourceElement);
       before.setEnd(range.startContainer, range.startOffset);
@@ -453,8 +861,12 @@ function PdfPage({
       1,
       (Number.isFinite(computedFontSize) && computedFontSize > 1
         ? computedFontSize
-        : currentRect.height * scale * 0.82) / scale
+        : Number(lineSourceItem?.fontSize) * scale || currentRect.height * scale * 0.82) / scale
     );
+    const sourceBaselineOffset = lineSourceItem?.baselineOffset != null
+      && Number.isFinite(Number(lineSourceItem.baselineOffset))
+      ? Number(lineSourceItem.baselineOffset)
+      : getPdfLineBaselineOffset(sourceInfo, textContent, viewport, scale, currentRect, fontSize);
     const computedColor = computedStyle?.color || '';
     const color = computedColor && !/rgba?\(\s*0\s*,\s*0\s*,\s*0\s*(?:,\s*0)?\s*\)/i.test(computedColor)
       ? computedColor
@@ -477,7 +889,8 @@ function PdfPage({
       width: cover.width * scale,
       height: cover.height * scale
     });
-    const resolvedSourceFont = getSelectionSourceFont(sourceInfo, textContent, selectedText);
+    const resolvedSourceFont = getSelectionSourceFont(sourceInfo, textContent, selectedText)
+      || lineSourceItem?.sourceFont || null;
     if (sourceSelection && resolvedSourceFont) {
       sourceSelection = { ...sourceSelection, sourceFont: resolvedSourceFont };
     }
@@ -489,7 +902,10 @@ function PdfPage({
     );
     const sourceFontWeight = sourceFont?.fontWeight || computedStyle?.fontWeight || 'normal';
     const preferBoldFont = sourceFont?.preferBoldFont === true || sourceFontWeight === 'bold' || Number(sourceFontWeight) >= 600;
-    const measuredText = measureDisplayText(displayText, fontSize, {
+    // Batch replacements use the source selection width just like a manual
+    // text replacement. Measuring the replacement value here made the batch
+    // editor grow to the right before the user edited it.
+    const measuredText = measureDisplayText(isBatchSelection ? selectedText : displayText, fontSize, {
       ...computedStyle,
       fontWeight: sourceFontWeight
     });
@@ -523,9 +939,11 @@ function PdfPage({
       // Keep layout/source text separately, but use the actual selected word
       // for deletion matching. This prevents a leading space in the PDF text
       // item from turning a text-only selection into a mismatched range.
-      sourceText: sourceSelection?.selectedText || selectedText,
-      originalText: sourceSelection?.selectedText || selectedText,
+      sourceText: lineSelection?.sourceText || sourceSelection?.selectedText || selectedText,
+      originalText: lineSelection?.sourceText || sourceSelection?.selectedText || selectedText,
+      supersedesIds: lineSelection?.supersedesIds || [],
       originalRect: currentRect,
+      fitTextWidth: currentRect.width,
       displayRect,
       movedRect: displayRect,
       currentRect: displayRect,
@@ -556,9 +974,8 @@ function PdfPage({
       // Batch replacement differs only in how this Range was obtained.
       // From here onward it follows the same replacement object contract as
       // a user-dragged "텍스트 교체" selection.
-      // Text Move creates movable objects. Text Replace and Batch Replace are
-      // anchored edits and must remain locked even if Text Move is enabled
-      // later.
+      // Replacement selections and batch replacements are anchored edits.
+      // Text Move can reposition the resulting editable object later.
       allowMove: textMoveMode && !textReplaceMode && !isBatchSelection,
       autoEdit: textReplaceMode && !isBatchSelection,
       // A browser selection is represented by PDF.js Unicode text. Preserve
@@ -578,17 +995,15 @@ function PdfPage({
       originalUnicodeText: selectedText,
       fontAnalysis: sourceInfo?.sourceFont || null,
       glyphScaleX,
-      // Browser range rectangles and PDF text transforms do not always share
-      // a baseline for split text spans. Replacement input uses the same
-      // top-aligned geometry as its cover so it cannot overlap a neighbour.
-      baselineOffset: (textReplaceMode || isBatchSelection)
-        // Centre the editor line box vertically in the selected glyph area.
-        // This is stable for pages whose PDF source baseline differs from the
-        // browser range rectangle.
-        ? Math.max(0, (currentRect.height - fontSize) / 2) + fontSize * 0.88
-        : sourceSelection && viewport
-        ? (viewport.convertToViewportPoint(sourceSelection.transform[4], sourceSelection.transform[5])[1] / scale) - currentRect.y
-        : null,
+      // Preserve a baseline derived from this source PDF text line. The line
+      // consensus also corrects small baseline drift in previously replaced
+      // glyphs when they are edited again.
+      baselineOffset: Number.isFinite(sourceBaselineOffset)
+        ? sourceBaselineOffset
+        : (textReplaceMode || isBatchSelection)
+          ? Math.max(0, (currentRect.height - fontSize) / 2) + fontSize * 0.88
+          : null,
+      baselineFromPdfLine: Number.isFinite(sourceBaselineOffset),
       canDirectEdit: false,
       fallbackReason: '저장 시 원본 텍스트 직접 제거 가능 여부를 확인합니다.'
     });
@@ -601,13 +1016,94 @@ function PdfPage({
     }
     setSelectionBoxes([]);
     selection.removeAllRanges();
+    return createdTextId || null;
   }, [batchReplaceRequest, onCreateMovableText, onUpdateMovableTextPreviewFont, pageNumber, pageSize, scale, textContent, textMoveMode, textReplaceMode, viewport]);
+
+  const getReplacementLineAtTarget = useCallback((target) => {
+    if ((!textReplaceMode && !textMoveMode) || !pageRef.current || !target?.closest) return null;
+    const span = target.closest('.textLayer span[data-text-item-index]');
+    const movableTextId = target.closest('.movable-text-object[data-movable-text-id]')?.dataset.movableTextId;
+    const movableItem = movableTextId ? movableTexts.find((item) => item.id === movableTextId) : null;
+    if (!span && !movableItem) return null;
+    const textLayer = pageRef.current.querySelector('.textLayer');
+    const pageRect = pageRef.current.getBoundingClientRect();
+    if (!textLayer) return null;
+    const spanRect = span?.getBoundingClientRect();
+    const itemFontSize = Math.max(1, Number(movableItem?.fontSize) || 10);
+    const itemBaselineOffset = Number.isFinite(Number(movableItem?.baselineOffset))
+      ? Number(movableItem.baselineOffset) : itemFontSize * 0.88;
+    const itemTop = pageRect.top + (Number(movableItem?.currentRect?.y || 0)
+      + itemBaselineOffset - itemFontSize * 0.88) * scale;
+    const itemHeight = itemFontSize * 1.25 * scale;
+    const centerY = spanRect
+      ? (spanRect.top + spanRect.bottom) / 2
+      : itemTop + itemHeight / 2;
+    if (spanRect && (spanRect.width <= 0 || spanRect.height <= 0)) return null;
+    const targetHeight = spanRect?.height || itemHeight;
+    const verticalTolerance = Math.max(2, targetHeight * 0.45);
+    const groups = getAreaTextLineGroups(textLayer, {
+      left: pageRect.left,
+      right: pageRect.right,
+      top: centerY - verticalTolerance,
+      bottom: centerY + verticalTolerance
+    }, pageRef.current, scale, movableTexts, true, true);
+    return groups.find((line) => (span && line.parts.some((part) => part.span === span))
+      || (movableItem && line.parts.some((part) => part.item?.id === movableItem.id))) || null;
+  }, [movableTexts, scale, textMoveMode, textReplaceMode]);
+
+  const handleReplacementLineHover = useCallback((event) => {
+    if (!textReplaceMode) {
+      hoveredReplacementLineKeyRef.current = '';
+      setHoveredReplacementLine(null);
+      return;
+    }
+    const line = getReplacementLineAtTarget(event.target);
+    if (!line) {
+      hoveredReplacementLineKeyRef.current = '';
+      setHoveredReplacementLine(null);
+      return;
+    }
+    const bounds = line.geometry.currentRect;
+    const key = `${line.text}:${Math.round(bounds.x)}:${Math.round(bounds.y)}:${Math.round(bounds.width)}`;
+    if (key === hoveredReplacementLineKeyRef.current) return;
+    hoveredReplacementLineKeyRef.current = key;
+    setHoveredReplacementLine(line);
+  }, [getReplacementLineAtTarget, textReplaceMode]);
+
+  const clearHoveredReplacementLine = useCallback(() => {
+    hoveredReplacementLineKeyRef.current = '';
+    setHoveredReplacementLine(null);
+  }, []);
+
+  const handleReplacementLineClick = useCallback((event) => {
+    if (!textReplaceMode) return;
+    if (event.target.closest?.('.movable-text-edit-input, .movable-text-format-toolbar, button')) return;
+    const line = getReplacementLineAtTarget(event.target);
+    if (!line) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const spans = line.parts.map((part) => part.span).filter(Boolean);
+    if (!spans.length && !line.parts.some((part) => part.item)) return;
+    const orderedSpans = [...spans].sort((first, second) => {
+      const relation = first.compareDocumentPosition(second);
+      return relation & Node.DOCUMENT_POSITION_FOLLOWING ? -1
+        : relation & Node.DOCUMENT_POSITION_PRECEDING ? 1 : 0;
+    });
+    const range = orderedSpans.length ? document.createRange() : null;
+    if (orderedSpans.length === 1) range.selectNodeContents(orderedSpans[0]);
+    else if (orderedSpans.length > 1) {
+      range.setStartBefore(orderedSpans[0]);
+      range.setEndAfter(orderedSpans[orderedSpans.length - 1]);
+    }
+    clearHoveredReplacementLine();
+    handleTextSelection({ ...line, range });
+  }, [clearHoveredReplacementLine, getReplacementLineAtTarget, handleTextSelection, textReplaceMode]);
 
   const createAreaReplacementItems = useCallback((area) => {
     const pageElement = pageRef.current;
     const textLayer = pageElement?.querySelector('.textLayer');
     if (!pageElement || !textLayer || !textContent) return;
-    const groups = getAreaTextLineGroups(textLayer, area, pageElement, scale);
+    const groups = getAreaTextLineGroups(textLayer, area, pageElement, scale, movableTexts);
     if (!groups.length) return;
 
     const selections = groups.map((group, index) => {
@@ -619,6 +1115,7 @@ function PdfPage({
       const computedFontSize = Number.parseFloat(computedStyle?.fontSize);
       const fontSize = Math.max(1, (Number.isFinite(computedFontSize) && computedFontSize > 1
         ? computedFontSize : currentRect.height * scale * 0.82) / scale);
+      const sourceBaselineOffset = getPdfLineBaselineOffset(sourceInfo, textContent, viewport, scale, currentRect, fontSize);
       const sourceFont = getSelectionSourceFont(sourceInfo, textContent, text);
       const fontCandidates = collectFontCandidates(sourceFont, sourceInfo?.sourceFont,
         textContent?.fontPreviews?.[Number(sourceInfo?.textItemIndex)]);
@@ -641,7 +1138,7 @@ function PdfPage({
       return {
         type: 'replacementText', pageNumber, displayText: text, text,
         sourceText: text, originalText: text, originalUnicodeText: text,
-        originalRect: currentRect, displayRect, movedRect: displayRect, currentRect: displayRect, coverRects,
+        originalRect: currentRect, fitTextWidth: currentRect.width, displayRect, movedRect: displayRect, currentRect: displayRect, coverRects,
         sourcePageWidth: pageSize.width / scale, sourcePageHeight: pageSize.height / scale,
         backgroundColor, coverPadding: Math.max(1 / scale, fontSize * 0.06), color, renderFontFamily: 'DocPilotReplacement', fontSize,
         fontFamily: computedStyle?.fontFamily || 'Helvetica, Arial, sans-serif', fontWeight: 'normal',
@@ -651,7 +1148,9 @@ function PdfPage({
         fontCandidates, originalFontCandidates: fontCandidates, originalPreferBoldFont: preferBoldFont,
         originalGlyphText: sourceFont?.glyphText || null, originalEncodedText: sourceInfo?.encodedText || null,
         fontAnalysis: sourceInfo?.sourceFont || null,
-        baselineOffset: Math.max(0, (currentRect.height - fontSize) / 2) + fontSize * 0.88,
+        baselineOffset: Number.isFinite(sourceBaselineOffset)
+          ? sourceBaselineOffset : Math.max(0, (currentRect.height - fontSize) / 2) + fontSize * 0.88,
+        baselineFromPdfLine: Number.isFinite(sourceBaselineOffset),
         canDirectEdit: false, fallbackReason: '영역 선택으로 만든 줄별 텍스트 교체 항목입니다.'
       };
     });
@@ -718,7 +1217,11 @@ function PdfPage({
         setSelectionBoxes([]);
         return;
       }
-      const geometry = getSelectionGeometry(range, pageRef.current, scale, textLayer);
+      if (rangeIntersectsMovedTextSource(textLayer, range, pageRef.current, scale, movableTexts)) {
+        setSelectionBoxes([]);
+        return;
+      }
+      const geometry = getSelectionGeometry(range, pageRef.current, scale, textLayer, movableTexts);
       setSelectionBoxes((geometry?.previewBoxes || []).map((box) => ({ ...box, page: pageNumber })));
     };
     document.addEventListener('selectionchange', updateSelectionPreview);
@@ -863,7 +1366,7 @@ function PdfPage({
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onDeleteImage, onDeleteMovableText, onMoveImage, onMoveImageEnd, onMoveMovableText, onMoveMovableTextEnd, onSelectImage, onSelectMovableText, pageSize, scale, selectedImageId, selectedMovableTextId]);
+  }, [handleTextSelection, onDeleteImage, onDeleteMovableText, onMoveImage, onMoveImageEnd, onMoveMovableText, onMoveMovableTextEnd, onSelectImage, onSelectMovableText, pageSize, scale, selectedImageId, selectedMovableTextId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1220,6 +1723,29 @@ function PdfPage({
     };
   }, [pageNumber, pageSize, replacePreview, textLayerVersion]);
 
+  const handleTextMouseDown = useCallback((event) => {
+    setSelectionBoxes([]);
+    textDragRef.current = { startX: event.clientX, startY: event.clientY };
+  }, []);
+
+  const handleTextMouseUp = useCallback((event) => {
+    textDragRef.current = textDragRef.current
+      ? { ...textDragRef.current, endX: event.clientX, endY: event.clientY }
+      : null;
+    let combinedLine = null;
+    if ((textReplaceMode || batchSelectionActiveRef.current) && textDragRef.current) {
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      const textLayer = pageRef.current?.querySelector('.textLayer');
+      combinedLine = getOverlayAwareDragLineSelection(
+        range, textDragRef.current, textLayer, pageRef.current, scale, movableTexts,
+        textReplaceMode || batchSelectionActiveRef.current
+      );
+    }
+    if (textReplaceMode || batchSelectionActiveRef.current) handleTextSelection(combinedLine);
+    textDragRef.current = null;
+  }, [handleTextSelection, movableTexts, scale, textReplaceMode]);
+
   useEffect(() => {
     if (!onPageReady) {
       return undefined;
@@ -1237,8 +1763,11 @@ function PdfPage({
       ref={pageRef}
       className={`pdf-page${textMoveMode || textReplaceMode ? ' is-text-selection-mode' : ''}${areaTextReplaceMode ? ' is-area-text-selection-mode' : ''}`}
       data-page-number={pageNumber}
-      onMouseDown={() => setSelectionBoxes([])}
-      onMouseUp={handleTextSelection}
+      onMouseDown={handleTextMouseDown}
+      onMouseUp={handleTextMouseUp}
+      onMouseMove={handleReplacementLineHover}
+      onMouseLeave={clearHoveredReplacementLine}
+      onClick={handleReplacementLineClick}
       onPointerDown={handleAreaSelectionPointerDown}
       style={{
         width: pageSize.width ? `${pageSize.width}px` : undefined,
@@ -1259,6 +1788,9 @@ function PdfPage({
       />
       {areaSelectionBox ? <div className="pdf-area-text-selection-box" style={{ left: `${areaSelectionBox.x}px`, top: `${areaSelectionBox.y}px`, width: `${areaSelectionBox.width}px`, height: `${areaSelectionBox.height}px` }} /> : null}
       <HighlightLayer boxes={selectionBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
+      {textReplaceMode && hoveredReplacementLine ? (
+        <HighlightLayer boxes={hoveredReplacementLine.geometry.previewBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
+      ) : null}
       <ReplacementPreviewLayer items={replacementPreviewItems} width={pageSize.width} height={pageSize.height} />
       <MovableTextLayer
         items={movableTexts}
@@ -1331,22 +1863,16 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, onPoin
           ))}
           <div
             className={`movable-text-object ${selectedId === item.id ? 'is-selected' : ''} ${item.persistedToPdf && !item.hasChanges ? 'is-review-selection' : ''}`}
+            data-movable-text-id={item.id}
             style={{
               left: `${item.currentRect.x * scale}px`,
-              // Replacement selections already use the text-layer's top
-              // coordinate. Applying the movable-text baseline correction to
-              // them a second time makes the edit box drift downward. Keep
-              // replacements anchored to the original selection rectangle;
-              // only ordinary text-move objects need baseline correction.
               top: `${(
-                item.type === 'replacementText' || item.autoEdit || item.isReplacement
-                  ? item.currentRect.y
-                  : item.currentRect.y + (
-                    Number.isFinite(Number(editingMovableText?.id === item.id ? editingMovableText.baselineOffset : item.baselineOffset))
-                      ? Number(editingMovableText?.id === item.id ? editingMovableText.baselineOffset : item.baselineOffset)
-                        - Number(editingMovableText?.id === item.id ? editingMovableText.fontSize : item.fontSize) * 0.88
-                      : Number(editingMovableText?.id === item.id ? editingMovableText.fontSize : item.fontSize) * 0.02
-                  )
+                item.currentRect.y + (
+                  Number.isFinite(Number(editingMovableText?.id === item.id ? editingMovableText.baselineOffset : item.baselineOffset))
+                    ? Number(editingMovableText?.id === item.id ? editingMovableText.baselineOffset : item.baselineOffset)
+                      - Number(editingMovableText?.id === item.id ? editingMovableText.fontSize : item.fontSize) * 0.88
+                    : Number(editingMovableText?.id === item.id ? editingMovableText.fontSize : item.fontSize) * 0.02
+                )
               ) * scale}px`,
               width: `${item.currentRect.width * scale}px`,
               minHeight: `${item.currentRect.height * scale}px`,

@@ -1,6 +1,11 @@
 import fontkit from '@pdf-lib/fontkit';
-import { PDFDocument, degrees, rgb } from 'pdf-lib';
-import { moveTextWithOriginalFont, removeSimpleMovedText, replacePdfTextInContentStream } from './pdfDirectTextEdit.js';
+// Keep these classes from the same public module instance as PDFDocument;
+// importing internal CommonJS classes makes PDFPage reject them at save time.
+import { PDFDocument, PDFOperator, PDFOperatorNames, PDFNumber, degrees, rgb } from 'pdf-lib';
+import {
+  capturePageDrawingStream, insertDrawingCommandsAtContentAnchors,
+  moveTextWithOriginalFont, removeSimpleMovedText, replacePdfTextInContentStream, resetPageDrawingStream
+} from './pdfDirectTextEdit.js';
 import { loadPdfDocument } from './pdfService.js';
 import { describePdfTextFonts } from './pdfFontPreview.js';
 
@@ -45,36 +50,48 @@ function measurePdfText(font, text, size) {
   }
 }
 
-function drawPdfTextWithLetterSpacing(page, text, options, letterSpacing = 0) {
+function drawPdfTextWithLetterSpacing(page, text, options, letterSpacing = 0, horizontalScale = 1) {
   const spacing = Number(letterSpacing) || 0;
+  const squeeze = Math.min(1, Math.max(0.01, Number(horizontalScale) || 1));
+  if (squeeze < 0.9999) {
+    page.pushOperators(
+      PDFOperator.of(PDFOperatorNames.PushGraphicsState),
+      PDFOperator.of(PDFOperatorNames.BeginText),
+      PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(squeeze * 100)]),
+      PDFOperator.of(PDFOperatorNames.EndText)
+    );
+  }
   // pdf-lib's drawText API has no character-spacing option. For horizontal
   // text, draw each Unicode character at its measured advance so the saved
   // PDF matches the editor's CSS letter-spacing setting.
   if (!spacing || options.rotate?.angle) {
     page.drawText(text, options);
+    if (squeeze < 0.9999) page.pushOperators(PDFOperator.of(PDFOperatorNames.PopGraphicsState));
     return;
   }
   let cursorX = options.x;
   const characters = Array.from(String(text || ''));
   characters.forEach((character, index) => {
     page.drawText(character, { ...options, x: cursorX });
-    cursorX += options.font.widthOfTextAtSize(character, options.size);
-    if (index < characters.length - 1) cursorX += spacing;
+    cursorX += options.font.widthOfTextAtSize(character, options.size) * squeeze;
+    if (index < characters.length - 1) cursorX += spacing * squeeze;
   });
+  if (squeeze < 0.9999) page.pushOperators(PDFOperator.of(PDFOperatorNames.PopGraphicsState));
 }
 
-function glyphPathToSvg(path) {
+function glyphPathToSvg(path, horizontalScale = 1) {
   const number = (value) => Number(value.toFixed(3));
   return path.commands.map(({ command, args }) => {
-    if (command === 'moveTo') return `M ${number(args[0])} ${number(-args[1])}`;
-    if (command === 'lineTo') return `L ${number(args[0])} ${number(-args[1])}`;
-    if (command === 'quadraticCurveTo') return `Q ${number(args[0])} ${number(-args[1])} ${number(args[2])} ${number(-args[3])}`;
-    if (command === 'bezierCurveTo') return `C ${number(args[0])} ${number(-args[1])} ${number(args[2])} ${number(-args[3])} ${number(args[4])} ${number(-args[5])}`;
+    const x = (value) => number(value * horizontalScale);
+    if (command === 'moveTo') return `M ${x(args[0])} ${number(-args[1])}`;
+    if (command === 'lineTo') return `L ${x(args[0])} ${number(-args[1])}`;
+    if (command === 'quadraticCurveTo') return `Q ${x(args[0])} ${number(-args[1])} ${x(args[2])} ${number(-args[3])}`;
+    if (command === 'bezierCurveTo') return `C ${x(args[0])} ${number(-args[1])} ${x(args[2])} ${number(-args[3])} ${x(args[4])} ${number(-args[5])}`;
     return command === 'closePath' ? 'Z' : '';
   }).join(' ');
 }
 
-function drawFallbackTextOutlines(page, font, text, mapped, color, bold = false, letterSpacing = 0) {
+function drawFallbackTextOutlines(page, font, text, mapped, color, bold = false, letterSpacing = 0, horizontalScale = 1) {
   if (!font || !text) return;
   const scale = mapped.fontSize / font.unitsPerEm;
   if (!Number.isFinite(scale) || scale <= 0) return;
@@ -83,13 +100,13 @@ function drawFallbackTextOutlines(page, font, text, mapped, color, bold = false,
   let cursorY = mapped.textY;
   layout.glyphs.forEach((glyph, index) => {
     const position = layout.positions[index];
-    const path = glyphPathToSvg(glyph.path);
+    const path = glyphPathToSvg(glyph.path, horizontalScale);
     if (path) {
       // A shifted second glyph pass looks like a duplicate character when
       // zoomed in. Use a same-color outline stroke instead so bold grows
       // evenly around the original glyph without changing its position.
       page.drawSvgPath(path, {
-        x: cursorX + position.xOffset * scale,
+        x: cursorX + position.xOffset * scale * horizontalScale,
         y: cursorY + position.yOffset * scale,
         scale,
         color,
@@ -98,11 +115,11 @@ function drawFallbackTextOutlines(page, font, text, mapped, color, bold = false,
         rotate: getTextRotation(mapped.rotation)
       });
     }
-    cursorX += position.xAdvance * scale;
+    cursorX += position.xAdvance * scale * horizontalScale;
     // The selectable text is drawn one character at a time when a user sets
     // letter spacing. The bold outline pass must advance by the same amount;
     // otherwise both passes begin at different positions and overlap.
-    if (index < layout.glyphs.length - 1) cursorX += Number(letterSpacing) || 0;
+    if (index < layout.glyphs.length - 1) cursorX += (Number(letterSpacing) || 0) * horizontalScale;
     cursorY += position.yAdvance * scale;
   });
 }
@@ -184,7 +201,7 @@ function collectMovableTextReplacements(movableTexts = []) {
       textDecoration: item.textDecoration || 'none',
       letterSpacing: Number(item.letterSpacing) || 0,
       textAlign: item.textAlign || 'left',
-      textBoxWidth: Number(item.currentRect?.width || item.originalRect?.width || 0),
+      textBoxWidth: Number(item.fitTextWidth || item.originalRect?.width || item.currentRect?.width || 0),
       backgroundColor: parseCssColor(item.backgroundColor, [255, 255, 255]),
       textColor: parseCssColor(item.color, [17, 17, 17]),
       type: 'movable-text',
@@ -467,6 +484,7 @@ function mapReplacementToPage(replacement, page) {
     rectY: round(rectY),
     rectWidth: round(Math.max(...corners.map((point) => point.x)) - rectX),
     rectHeight: round(Math.max(...corners.map((point) => point.y)) - rectY),
+    textBoxWidth: round(Number(replacement.textBoxWidth || replacement.coverWidth) * scaleX),
     textX: round(baseline.x),
     textY: round(baseline.y),
     fontSize: round(replacement.fontSize * scaleY)
@@ -853,6 +871,8 @@ export async function buildPdfWithTextEdits({
     replacement.fontPreserved = outcome.fontPreserved === true;
     replacement.canReuseOriginalFont = outcome.canReuseOriginalFont === true;
     replacement.drawingCommands = outcome.drawingCommands;
+    replacement.contentOrderAnchor = outcome.contentOrderAnchor || null;
+    if (replacement.contentOrderAnchor && replacement.drawingCommands) replacement.anchoredDrawingCommands = replacement.drawingCommands;
     if (Array.isArray(outcome.textColor) && outcome.textColor.length >= 3) replacement.textColor = outcome.textColor;
     replacement.sourceFullText = outcome.sourceFullText || replacement.sourceFullText;
     replacement.newFullText = outcome.newFullText || null;
@@ -931,15 +951,22 @@ export async function buildPdfWithTextEdits({
     const baseMeasuredWidth = measurePdfText(itemReplacementFont, replacement.text, mapped.fontSize);
     const measuredWidth = baseMeasuredWidth == null ? null
       : baseMeasuredWidth + pdfLetterSpacing * Math.max(0, Array.from(String(replacement.text || '')).length - 1);
-    applyTextAlignment(mapped, replacement, measuredWidth);
+    // Canvas metrics used by the editor can differ from the embedded PDF font
+    // metrics. Fit the final PDF glyph advances to the selected source box at
+    // export time, preserving vertical size and baseline.
+    const horizontalScale = measuredWidth > mapped.textBoxWidth && mapped.textBoxWidth > 0
+      ? mapped.textBoxWidth / measuredWidth : 1;
+    const fittedWidth = measuredWidth == null ? null : measuredWidth * horizontalScale;
+    applyTextAlignment(mapped, replacement, fittedWidth);
     const textColor = toPdfColor(replacement.textColor);
     replacement.renderBounds = {
       x: mapped.textX,
       y: mapped.textY,
-      width: Math.max(measuredWidth || 0, mapped.fontSize * Math.max(1, Array.from(String(replacement.text || '')).length) * 0.25),
+      width: Math.max(fittedWidth || 0, mapped.fontSize * Math.max(1, Array.from(String(replacement.text || '')).length) * 0.25 * horizontalScale),
       fontSize: mapped.fontSize
     };
     const isItalic = replacement.fontStyle === 'italic';
+    if (replacement.contentOrderAnchor) resetPageDrawingStream(page);
     drawPdfTextWithLetterSpacing(page, replacement.text, {
       x: mapped.textX,
       y: mapped.textY,
@@ -951,10 +978,10 @@ export async function buildPdfWithTextEdits({
       // which makes successive glyphs climb or fall over one another.
       // Italic needs a Y-axis skew so only the glyph outline leans right.
       ySkew: isItalic ? degrees(12) : degrees(0)
-    }, pdfLetterSpacing);
+    }, pdfLetterSpacing, horizontalScale);
     if (itemFontSource.source !== 'local' || replacement.fontWeight === 'bold') {
       drawFallbackTextOutlines(page, itemReplacementOutlineFont, replacement.text, mapped, textColor,
-        replacement.fontWeight === 'bold', pdfLetterSpacing);
+        replacement.fontWeight === 'bold', pdfLetterSpacing, horizontalScale);
     }
     if (replacement.textDecoration === 'underline' || replacement.textDecoration === 'line-through') {
       const lineWidth = Math.max(1, mapped.fontSize * 0.06);
@@ -971,16 +998,19 @@ export async function buildPdfWithTextEdits({
     }
     replacement.measuredWidth = measuredWidth;
     replacement.usedMaxWidth = false;
+    if (replacement.contentOrderAnchor) replacement.anchoredDrawingCommands = capturePageDrawingStream(page);
   });
 
   // Replay the original font and encoded glyphs after all fallback covers.
   // Normalization isolates the original page graphics state with q/Q.
-  replacements.filter((item) => item.fontPreserved && item.drawingCommands).forEach((item) => {
+  replacements.filter((item) => item.fontPreserved && item.drawingCommands && !item.contentOrderAnchor).forEach((item) => {
     const page = pages[item.pageNumber - 1];
     page.node.normalize();
     const stream = pdfDocument.context.flateStream(Uint8Array.from(item.drawingCommands, (char) => char.charCodeAt(0)));
     page.node.addContentStream(pdfDocument.context.register(stream));
   });
+
+  insertDrawingCommandsAtContentAnchors(pdfDocument, replacements);
 
   const outputBytes = await pdfDocument.save({ useObjectStreams: true });
   const localFontRenderFallbackIds = skipRenderValidation

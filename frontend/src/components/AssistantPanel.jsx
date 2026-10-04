@@ -157,7 +157,6 @@ function AssistantPanel({
             <h2>DocPilot AI</h2>
             <button className="gemini-settings-button" type="button" onClick={() => setSettingsOpen(true)}>Gemini 설정</button>
           </div>
-          <p>{documentName ? `${documentName} 문서가 열려 있습니다. 문서 작업 요청만 입력할 수 있습니다.` : '문서를 선택한 뒤 문서 작업 요청을 입력하세요.'}</p>
         </div>
         {settingsApi && geminiStatus && !geminiStatus.hasApiKey ? (
           <div className="gemini-missing-banner" role="status">

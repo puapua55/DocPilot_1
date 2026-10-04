@@ -21,6 +21,59 @@ const binaryString = (bytes) => {
   return result;
 };
 const normalizeForDeleteMatch = (value) => String(value || '').replace(/\s+/g, '').trim();
+let nextContentOrderAnchor = 1;
+
+function createContentOrderAnchor() {
+  return `%DOCPILOT_TEXT_ORDER_${nextContentOrderAnchor++}%\n`;
+}
+
+export function resetPageDrawingStream(page) {
+  page.contentStream = undefined;
+  page.contentStreamRef = undefined;
+}
+
+export function capturePageDrawingStream(page) {
+  const contentStream = page.contentStream;
+  const contentStreamRef = page.contentStreamRef;
+  if (!contentStream || !contentStreamRef) return '';
+  const commands = contentStream.getContentsString();
+  const context = page.doc.context;
+  const contentsObject = context.lookup(page.node.get(name('Contents')));
+  const refs = contentsObject instanceof PDFArray ? contentsObject.asArray() : [page.node.get(name('Contents'))];
+  const capturedRef = String(contentStreamRef);
+  page.node.set(name('Contents'), context.obj(refs.filter((ref) => String(ref) !== capturedRef)));
+  resetPageDrawingStream(page);
+  return commands;
+}
+
+export function insertDrawingCommandsAtContentAnchors(pdfDocument, replacements) {
+  for (const [pageIndex, page] of pdfDocument.getPages().entries()) {
+    const anchored = replacements.filter((item) => item.pageNumber === pageIndex + 1
+      && item.contentOrderAnchor && item.anchoredDrawingCommands);
+    if (!anchored.length) continue;
+    const context = pdfDocument.context;
+    const contentObject = context.lookup(page.node.get(name('Contents')));
+    const refs = contentObject instanceof PDFArray
+      ? [...contentObject.asArray()] : [page.node.get(name('Contents'))];
+    if (!refs.length) continue;
+    for (let refIndex = 0; refIndex < refs.length; refIndex += 1) {
+      const baseStream = context.lookup(refs[refIndex]);
+      if (!(baseStream instanceof PDFRawStream)) continue;
+      let source = binaryString(decodePDFRawStream(baseStream).decode());
+      let inserted = false;
+      anchored.forEach((item) => {
+        const index = source.indexOf(item.contentOrderAnchor);
+        if (index < 0) return;
+        source = source.slice(0, index) + `\n${item.anchoredDrawingCommands}\n` + source.slice(index + item.contentOrderAnchor.length);
+        inserted = true;
+      });
+      if (!inserted) continue;
+      refs[refIndex] = context.register(context.flateStream(Uint8Array.from(source, (character) => character.charCodeAt(0))));
+      page.node.set(name('Contents'), context.obj(refs));
+      break;
+    }
+  }
+}
 function glyphPathToSvg(path) {
   const number = (value) => Number(value.toFixed(3));
   return path.commands.map(({ command, args }) => {
@@ -508,16 +561,46 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
           replacementFont: itemReplacementFont, replacementOutlineFont: itemReplacementOutlineFont });
       });
       if (!edits.length) continue;
+      edits.forEach((edit) => {
+        edit.contentOrderAnchor = createContentOrderAnchor();
+        const sameLine = analysis.candidates.filter((entry) => !edit.candidates.includes(entry)
+          && Math.abs(entry.transform[5] - edit.candidate.transform[5]) <= Math.max(3, edit.candidate.fontSize * 0.3));
+        // Preserve the source stream position when it already follows the
+        // visual line order. If an earlier export appended the target after
+        // its right-hand neighbors, move the insertion point before the first
+        // such neighbor so standard PDF text selection sees the line in order.
+        const nextVisual = sameLine.filter((entry) => entry.transform[4] > edit.candidate.transform[4] + 0.5)
+          .sort((a, b) => a.transform[4] - b.transform[4])[0] || null;
+        edit.anchorCandidate = nextVisual && nextVisual.objectStart < edit.candidate.objectStart ? nextVisual : null;
+      });
       let rewritten = analysis.source;
-      edits.sort((a, b) => b.candidate.objectStart - a.candidate.objectStart).forEach(({ candidates: matchedCandidates }) => {
-        matchedCandidates.slice().sort((a, b) => b.objectStart - a.objectStart).forEach((candidate) => {
-          rewritten = rewritten.slice(0, candidate.objectStart) + rewritten.slice(candidate.objectEnd);
-        });
+      const anchorStartOffsets = new Map();
+      const anchorEndOffsets = new Map();
+      edits.forEach(({ candidates: matchedCandidates, anchorCandidate, contentOrderAnchor }) => {
+        const anchor = anchorCandidate || matchedCandidates.reduce((first, entry) => entry.objectStart < first.objectStart ? entry : first);
+        anchorStartOffsets.set(anchor.objectStart, `${anchorStartOffsets.get(anchor.objectStart) || ''}${contentOrderAnchor}`);
+      });
+      const removals = edits.flatMap(({ candidates: matchedCandidates }) => matchedCandidates.map((candidate) => candidate));
+      const removed = new Set(removals);
+      const pointMarkers = new Map();
+      anchorStartOffsets.forEach((marker, offset) => {
+        if (![...removed].some((candidate) => candidate.objectStart === offset)) pointMarkers.set(offset, marker);
+      });
+      anchorEndOffsets.forEach((marker, offset) => {
+        if (![...removed].some((candidate) => candidate.objectEnd === offset)) pointMarkers.set(offset, `${pointMarkers.get(offset) || ''}${marker}`);
+      });
+      [...removed].sort((a, b) => b.objectStart - a.objectStart).forEach((candidate) => {
+        const prefix = anchorStartOffsets.get(candidate.objectStart) || '';
+        const suffix = anchorEndOffsets.get(candidate.objectEnd) || '';
+        rewritten = rewritten.slice(0, candidate.objectStart) + prefix + suffix + rewritten.slice(candidate.objectEnd);
+      });
+      [...pointMarkers.entries()].sort((a, b) => b[0] - a[0]).forEach(([offset, marker]) => {
+        rewritten = rewritten.slice(0, offset) + marker + rewritten.slice(offset);
       });
       const stream = pdfDocument.context.flateStream(Uint8Array.from(rewritten, (char) => char.charCodeAt(0)));
       page.node.set(name('Contents'), pdfDocument.context.register(stream));
       retired.push(...analysis.retired);
-      edits.forEach(({ item, candidate, candidates: matchedCandidates, nextText, mode, originalEncodedText, originalFontReusable, replacementFont: itemReplacementFont, replacementOutlineFont: itemReplacementOutlineFont }) => {
+      edits.forEach(({ item, candidate, candidates: matchedCandidates, nextText, mode, originalEncodedText, originalFontReusable, replacementFont: itemReplacementFont, replacementOutlineFont: itemReplacementOutlineFont, contentOrderAnchor }) => {
         const commandRange = {
           start: Math.min(...matchedCandidates.map((entry) => entry.objectStart)),
           end: Math.max(...matchedCandidates.map((entry) => entry.objectEnd))
@@ -527,7 +610,7 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
             sourceFullText: matchedCandidates.map((entry) => entry.text).join(''), newFullText: nextText,
             commandRange, deletedCommandCount: matchedCandidates.length,
             fontPreserved: true, canReuseOriginalFont: true,
-            drawingCommands: makeOriginalFontCommand(candidate, originalEncodedText), reason: null });
+            drawingCommands: makeOriginalFontCommand(candidate, originalEncodedText), contentOrderAnchor, reason: null });
           return;
         }
         // DOM font metrics can be reduced by PDF.js's text-layer width
@@ -549,6 +632,7 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
           : undefined;
         const textColor = sourceFillColor(candidate.fill, sampledColor);
         const italic = item.fontStyle === 'italic';
+        resetPageDrawingStream(page);
         page.drawText(nextText, {
           x, y, size: fontSize, font: itemReplacementFont, color: textColor,
           // Keep the text baseline horizontal. PDF xSkew tilts the baseline
@@ -569,10 +653,11 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
             color: textColor
           });
         }
+        const drawingCommands = capturePageDrawingStream(page);
         outcomes.set(item, { direct: true, directReplacement: true, replaceMode: mode,
           sourceFullText: matchedCandidates.map((entry) => entry.text).join(''), newFullText: nextText,
           commandRange, deletedCommandCount: matchedCandidates.length,
-          fontPreserved: false, canReuseOriginalFont: false, reason: null });
+          fontPreserved: false, canReuseOriginalFont: false, drawingCommands, contentOrderAnchor, reason: null });
       });
     } catch (error) {
       items.forEach((item) => outcomes.set(item, { direct: false,

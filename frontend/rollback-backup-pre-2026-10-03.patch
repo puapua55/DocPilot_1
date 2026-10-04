@@ -1,0 +1,699 @@
+diff --git a/DocPilot_1 b/DocPilot_1
+--- a/DocPilot_1
++++ b/DocPilot_1
+@@ -1 +1 @@
+-Subproject commit a6cd9d2c0430ccb55064a80345dcf277d47cb570
++Subproject commit a6cd9d2c0430ccb55064a80345dcf277d47cb570-dirty
+diff --git a/frontend/src/App.css b/frontend/src/App.css
+index cc0a1cb..918f702 100644
+--- a/frontend/src/App.css
++++ b/frontend/src/App.css
+@@ -76,14 +76,15 @@ button:disabled {
+ .app-shell {
+   position: relative;
+   z-index: 1;
+-  max-width: 1360px;
++  width: 100%;
++  max-width: 1840px;
+   margin: 0 auto;
+   padding: 20px 20px 32px;
+ }
+ 
+ .main-layout {
+   display: grid;
+-  grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
++  grid-template-columns: minmax(0, 1fr) minmax(520px, 600px);
+   gap: 22px;
+   height: calc(100vh - 52px);
+   min-height: 0;
+@@ -449,12 +450,13 @@ button:disabled {
+ 
+ .pdf-view-mode-controls {
+   display: grid;
+-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
++  grid-template-columns: auto auto minmax(0, 1fr);
+   grid-template-areas:
+     "view page convert"
+     "history history toolbar";
+   align-items: start;
+-  gap: 8px;
++  column-gap: 8px;
++  row-gap: 6px;
+   min-height: 38px;
+   flex-shrink: 0;
+ }
+@@ -466,6 +468,7 @@ button:disabled {
+   display: inline-flex;
+   align-items: center;
+   gap: 4px;
++  flex-shrink: 0;
+ }
+ 
+ .pdf-view-mode-toggle-group {
+@@ -473,12 +476,12 @@ button:disabled {
+   justify-self: start;
+   display: inline-flex;
+   align-items: center;
+-  gap: 6px;
++  gap: 4px;
+ }
+ 
+ .pdf-view-mode-toggle,
+ .pdf-edit-mode-toggle {
+-  min-height: 32px;
++  min-height: 30px;
+   padding: 0 3px;
+   border: 1px solid #d7e2ff;
+   border-radius: 9px;
+@@ -488,17 +491,25 @@ button:disabled {
+ .pdf-view-mode-toggle button,
+ .pdf-edit-mode-toggle button,
+ .pdf-page-navigation button {
+-  min-height: 30px;
++  min-height: 28px;
+   border: 0;
+   border-radius: 7px;
+-  padding: 0 9px;
++  padding: 0 8px;
+   background: transparent;
+   color: #657292;
+-  font-size: 0.8rem;
++  font-size: 0.76rem;
+   font-weight: 800;
++  line-height: 1;
++  white-space: nowrap;
++  word-break: keep-all;
+   cursor: pointer;
+ }
+ 
++.pdf-view-mode-toggle button { min-width: 54px; }
++.pdf-view-mode-toggle button:nth-child(2) { min-width: 78px; }
++.pdf-edit-mode-toggle button { min-width: 44px; }
++.pdf-page-navigation button { min-width: 46px; }
++
+ .pdf-view-mode-toggle button.active,
+ .pdf-edit-mode-toggle button.active {
+   background: #edf3ff;
+@@ -507,8 +518,8 @@ button:disabled {
+ 
+ .pdf-page-navigation {
+   grid-area: page;
+-  justify-self: center;
+-  min-height: 32px;
++  justify-self: start;
++  min-height: 30px;
+   padding: 0 3px;
+   border: 1px solid #d7e2ff;
+   border-radius: 9px;
+@@ -532,46 +543,53 @@ button:disabled {
+ .pdf-document-history {
+   grid-area: history;
+   justify-self: start;
+-  gap: 6px;
++  gap: 5px;
+ }
+ 
+ .pdf-document-history button {
+-  min-width: 34px;
+-  min-height: 32px;
++  min-width: 32px;
++  min-height: 30px;
+   border: 1px solid #cbd9ff;
+   border-radius: 9px;
+-  padding: 0 9px;
++  padding: 0 8px;
+   background: #ffffff;
+   color: #315fc7;
+   font-size: 1rem;
+   font-weight: 800;
++  line-height: 1;
++  white-space: nowrap;
++  word-break: keep-all;
+   cursor: pointer;
+ }
+ 
+ .pdf-document-history .pdf-reset-all-button {
+   margin-left: 8px;
+   border-color: #7c9eff;
+-  font-size: 0.8rem;
++  font-size: 0.74rem;
+ }
+ 
+ .pdf-document-history .pdf-reset-all-button,
+ .pdf-document-history .pdf-text-move-button {
+   width: auto;
+-  min-width: 78px;
+-  height: 32px;
+-  min-height: 32px;
+-  padding: 0 7px;
+-  font-size: 0.72rem;
++  min-width: 82px;
++  height: 30px;
++  min-height: 30px;
++  padding: 0 9px;
++  font-size: 0.7rem;
+   line-height: 1;
+   white-space: nowrap;
+ }
+ 
++.pdf-document-history .pdf-reset-all-button {
++  min-width: 84px;
++}
++
+ .pdf-view-mode-controls > .document-viewer-actions {
+   grid-area: toolbar;
+   justify-self: end;
+   flex-wrap: nowrap;
+   flex-shrink: 0;
+-  gap: 6px;
++  gap: 5px;
+ }
+ 
+ .pdf-view-mode-controls > .viewer-download-actions {
+@@ -584,29 +602,29 @@ button:disabled {
+   display: inline-flex;
+   flex-direction: row;
+   align-items: center;
+-  gap: 6px;
+-  min-height: 32px;
++  gap: 5px;
++  min-height: 30px;
+ }
+ 
+ .viewer-download-label {
+   color: #596784;
+-  font-size: 0.8rem;
++  font-size: 0.76rem;
+   font-weight: 800;
+-  line-height: 32px;
++  line-height: 30px;
+   white-space: nowrap;
+ }
+ 
+ .viewer-download-button {
+-  min-width: 44px;
+-  height: 32px;
+-  min-height: 32px;
+-  padding: 0 9px;
++  min-width: 42px;
++  height: 30px;
++  min-height: 30px;
++  padding: 0 8px;
+   border: 1px solid #8aa8ff;
+   border-radius: 9px;
+   background: rgba(255, 255, 255, 0.94);
+   color: #3159b7;
+   box-shadow: 0 6px 18px rgba(49, 89, 183, 0.16);
+-  font-size: 0.8rem;
++  font-size: 0.76rem;
+   font-weight: 800;
+   cursor: pointer;
+ }
+@@ -621,15 +639,15 @@ button:disabled {
+ }
+ 
+ .viewer-highlight-clear-button {
+-  height: 32px;
+-  min-height: 32px;
++  height: 30px;
++  min-height: 30px;
+   padding: 0 10px;
+   border: 1px solid #f05d68;
+   border-radius: 9px;
+   background: #fff1f2;
+   color: #cf3441;
+   box-shadow: 0 6px 18px rgba(207, 52, 65, 0.14);
+-  font-size: 0.78rem;
++  font-size: 0.74rem;
+   font-weight: 800;
+   white-space: nowrap;
+   cursor: pointer;
+@@ -643,29 +661,32 @@ button:disabled {
+   display: inline-flex;
+   flex-direction: row;
+   align-items: center;
+-  gap: 6px;
+-  min-height: 32px;
++  gap: 5px;
++  min-height: 30px;
+ }
+ 
+ .pdf-view-mode-controls > .document-viewer-actions .secondary-button {
+-  height: 32px;
+-  min-height: 32px;
++  height: 30px;
++  min-height: 30px;
++  min-width: 72px;
+   border-color: #7c9eff;
+   border-radius: 9px;
+-  padding: 0 9px;
++  padding: 0 8px;
+   color: #315fc7;
+-  font-size: 0.8rem;
++  font-size: 0.76rem;
+   font-weight: 800;
++  white-space: nowrap;
++  word-break: keep-all;
+ }
+ 
+ .pdf-view-mode-controls > .document-viewer-actions .zoom-controls {
+-  gap: 6px;
++  gap: 5px;
+ }
+ 
+ .pdf-view-mode-controls > .document-viewer-actions .zoom-button {
+-  min-width: 34px;
+-  height: 32px;
+-  min-height: 32px;
++  min-width: 32px;
++  height: 30px;
++  min-height: 30px;
+   border-color: #cbd9ff;
+   border-radius: 9px;
+   padding: 0 9px;
+@@ -675,9 +696,9 @@ button:disabled {
+ }
+ 
+ .pdf-view-mode-controls > .document-viewer-actions .zoom-value {
+-  min-width: 48px;
++  min-width: 46px;
+   color: #315fc7;
+-  font-size: 0.8rem;
++  font-size: 0.76rem;
+   font-weight: 800;
+ }
+ 
+@@ -848,7 +869,7 @@ button:disabled {
+   transform: rotate(270deg) translateX(-100%);
+ }
+ 
+-.textLayer :is(span, br) {
++.textLayer span {
+   position: absolute;
+   white-space: pre;
+   color: transparent;
+@@ -867,7 +888,7 @@ button:disabled {
+ /* PDF.js supplies each glyph's position and font metrics as CSS variables.
+    Keep its scale pipeline intact so the selectable layer stays aligned with
+    the canvas at every zoom level. */
+-.textLayer :is(span, br) {
++.textLayer span {
+   position: absolute;
+   display: inline;
+   width: auto;
+@@ -902,6 +923,15 @@ button:disabled {
+   display: contents;
+ }
+ 
++/* PDF.js uses <br> only as a logical line break. Keeping it out of the
++   selectable layer prevents multi-line selections from painting a vertical
++   selection bar at the page's left edge. */
++.textLayer br {
++  display: none;
++  user-select: none;
++  -webkit-user-select: none;
++}
++
+ .textLayer span::selection {
+   background: rgba(80, 120, 255, 0.35);
+ }
+@@ -910,8 +940,11 @@ button:disabled {
+    modes a single merged selection layer is rendered instead, avoiding the
+    visually stacked blue fragments of split PDF text runs. */
+ .pdf-page.is-text-selection-mode .textLayer span::selection,
+-.pdf-page.is-text-selection-mode .textLayer-item::selection {
++.pdf-page.is-text-selection-mode .textLayer-item::selection,
++.pdf-page.is-text-selection-mode .textLayer ::selection {
+   background: transparent;
++  color: transparent;
++  -webkit-text-fill-color: transparent;
+ }
+ 
+ /* Area text replacement uses a lasso rectangle rather than the browser's
+diff --git a/frontend/src/App.jsx b/frontend/src/App.jsx
+index 0ec868c..451f453 100644
+--- a/frontend/src/App.jsx
++++ b/frontend/src/App.jsx
+@@ -92,6 +92,11 @@ function App() {
+   const { selectedDocument, previewModel, documentText, errorMessage, handleDocumentSelect, clearSelectedDocument } = useDocument();
+   const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument, previewModel, documentViewerRef, isEditMode);
+ 
++  const handleWorkspaceDocumentSelect = async (file) => {
++    const opened = await handleDocumentSelect(file);
++    if (opened) setIsEditMode(true);
++  };
++
+   useEffect(() => { console.log('[App] highlightKeyword:', highlightKeyword); }, [highlightKeyword]);
+   useEffect(() => { console.log('[App] selectedFile:', selectedDocument?.file ?? null); }, [selectedDocument]);
+   useEffect(() => { console.log('[App] selectedSearchResult:', selectedSearchResult); }, [selectedSearchResult]);
+@@ -422,7 +427,7 @@ function App() {
+ 
+   const appContent = (
+     <div className="app-page" onPointerDown={handleTemporarySearchDismiss}><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
+-      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} isEditMode={isEditMode} onEditModeChange={setIsEditMode} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
++      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} isEditMode={isEditMode} onEditModeChange={setIsEditMode} onDocumentSelect={handleWorkspaceDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
+       <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} isEditMode={isEditMode} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onBatchReplaceCardClick={() => { if (!isEditMode) { appendAssistantMessage('편집모드를 활성화 해주세요'); return; } setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); setIsBatchReplaceModalOpen(true); }} onSearchResultClick={handleSearchResultClick} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteBatchReplaceAction={executeBatchReplaceAction} />
+     </main></div>
+     {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
+diff --git a/frontend/src/components/AssistantPanel.jsx b/frontend/src/components/AssistantPanel.jsx
+index 32a7a13..0defa45 100644
+--- a/frontend/src/components/AssistantPanel.jsx
++++ b/frontend/src/components/AssistantPanel.jsx
+@@ -157,7 +157,6 @@ function AssistantPanel({
+             <h2>DocPilot AI</h2>
+             <button className="gemini-settings-button" type="button" onClick={() => setSettingsOpen(true)}>Gemini 설정</button>
+           </div>
+-          <p>{documentName ? `${documentName} 문서가 열려 있습니다. 문서 작업 요청만 입력할 수 있습니다.` : '문서를 선택한 뒤 문서 작업 요청을 입력하세요.'}</p>
+         </div>
+         {settingsApi && geminiStatus && !geminiStatus.hasApiKey ? (
+           <div className="gemini-missing-banner" role="status">
+diff --git a/frontend/src/components/PdfPage.jsx b/frontend/src/components/PdfPage.jsx
+index 6e4f22c..489a5bd 100644
+--- a/frontend/src/components/PdfPage.jsx
++++ b/frontend/src/components/PdfPage.jsx
+@@ -200,7 +200,20 @@ function getTextSpanSelectionClientRects(range, textLayer) {
+       if (span.contains(range.endContainer)) {
+         clipped.setEnd(range.endContainer, range.endOffset);
+       }
+-      return Array.from(clipped.getClientRects());
++      // A transformed PDF.js span can expose an extra line-box rect at the
++      // text-layer origin when a selection crosses multiple lines. Keep only
++      // the part that is inside the span's actual painted bounds so that
++      // artifact cannot become a blue bar at the page's left edge.
++      const spanRect = span.getBoundingClientRect();
++      return Array.from(clipped.getClientRects()).map((rect) => {
++        const left = Math.max(rect.left, spanRect.left);
++        const top = Math.max(rect.top, spanRect.top);
++        const right = Math.min(rect.right, spanRect.right);
++        const bottom = Math.min(rect.bottom, spanRect.bottom);
++        return right > left && bottom > top
++          ? new DOMRect(left, top, right - left, bottom - top)
++          : null;
++      }).filter(Boolean);
+     } catch {
+       return [];
+     }
+diff --git a/frontend/src/components/WordViewer.css b/frontend/src/components/WordViewer.css
+index c046523..24ee3c2 100644
+--- a/frontend/src/components/WordViewer.css
++++ b/frontend/src/components/WordViewer.css
+@@ -12,13 +12,14 @@
+ 
+ .docx-view-mode-controls {
+   display: grid;
+-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
++  grid-template-columns: auto auto minmax(0, 1fr);
+   grid-template-areas:
+     "view-toggle view-toggle download"
+     "history page-nav toolbar";
+   align-items: flex-start;
+   justify-content: stretch;
+-  gap: 8px;
++  column-gap: 8px;
++  row-gap: 6px;
+   min-height: 38px;
+   flex-shrink: 0;
+   position: relative;
+@@ -31,7 +32,7 @@
+   justify-self: end;
+   flex-wrap: nowrap;
+   flex-shrink: 0;
+-  gap: 6px;
++  gap: 5px;
+ }
+ 
+ .docx-view-mode-controls > .docx-download-actions {
+@@ -41,24 +42,27 @@
+ }
+ 
+ .docx-view-mode-controls > .document-viewer-actions .secondary-button {
+-  height: 32px;
+-  min-height: 32px;
++  height: 30px;
++  min-height: 30px;
++  min-width: 72px;
+   border-color: #7c9eff;
+   border-radius: 9px;
+-  padding: 0 9px;
++  padding: 0 8px;
+   color: #315fc7;
+-  font-size: 0.8rem;
++  font-size: 0.76rem;
+   font-weight: 800;
++  white-space: nowrap;
++  word-break: keep-all;
+ }
+ 
+ .docx-view-mode-controls > .document-viewer-actions .zoom-controls {
+-  gap: 6px;
++  gap: 5px;
+ }
+ 
+ .docx-view-mode-controls > .document-viewer-actions .zoom-button {
+-  min-width: 34px;
+-  height: 32px;
+-  min-height: 32px;
++  min-width: 32px;
++  height: 30px;
++  min-height: 30px;
+   border-color: #cbd9ff;
+   border-radius: 9px;
+   padding: 0 9px;
+@@ -68,9 +72,9 @@
+ }
+ 
+ .docx-view-mode-controls > .document-viewer-actions .zoom-value {
+-  min-width: 48px;
++  min-width: 46px;
+   color: #315fc7;
+-  font-size: 0.8rem;
++  font-size: 0.76rem;
+   font-weight: 800;
+ }
+ 
+@@ -83,7 +87,8 @@
+ .docx-page-navigation-wrap {
+   display: inline-flex;
+   align-items: center;
+-  gap: 6px;
++  gap: 5px;
++  flex-shrink: 0;
+ }
+ 
+ .docx-document-history {
+@@ -98,19 +103,22 @@
+ 
+ .docx-page-navigation-wrap {
+   grid-area: page-nav;
+-  justify-self: center;
++  justify-self: start;
+ }
+ 
+ .docx-document-history button {
+-  min-width: 34px;
+-  min-height: 32px;
++  min-width: 32px;
++  min-height: 30px;
+   border: 1px solid #cbd9ff;
+   border-radius: 9px;
+-  padding: 0 9px;
++  padding: 0 8px;
+   background: #ffffff;
+   color: #315fc7;
+   font-size: 1rem;
+   font-weight: 800;
++  line-height: 1;
++  white-space: nowrap;
++  word-break: keep-all;
+   cursor: pointer;
+ }
+ 
+@@ -118,7 +126,7 @@
+   margin-left: 8px;
+   border-color: #7c9eff;
+   color: #315fc7;
+-  font-size: 0.8rem;
++  font-size: 0.74rem;
+ }
+ 
+ .docx-document-history button:disabled {
+@@ -131,7 +139,7 @@
+   display: inline-flex;
+   align-items: center;
+   gap: 4px;
+-  min-height: 32px;
++  min-height: 30px;
+   padding: 0 3px;
+   border: 1px solid #d7e2ff;
+   border-radius: 9px;
+@@ -144,17 +152,24 @@
+ 
+ .docx-view-mode-toggle button,
+ .docx-page-navigation button {
+-  min-height: 30px;
++  min-height: 28px;
+   border: 0;
+   border-radius: 7px;
+-  padding: 0 10px;
++  padding: 0 8px;
+   background: transparent;
+   color: #53617f;
+-  font-size: 0.82rem;
++  font-size: 0.76rem;
+   font-weight: 700;
++  line-height: 1;
++  white-space: nowrap;
++  word-break: keep-all;
+   cursor: pointer;
+ }
+ 
++.docx-view-mode-toggle button { min-width: 54px; }
++.docx-view-mode-toggle button:nth-child(2) { min-width: 78px; }
++.docx-page-navigation button { min-width: 46px; }
++
+ .docx-view-mode-toggle button.active {
+   background: #eaf0ff;
+   color: #315fc7;
+diff --git a/frontend/src/hooks/useDocument.js b/frontend/src/hooks/useDocument.js
+index cfe3c0c..7b3489d 100644
+--- a/frontend/src/hooks/useDocument.js
++++ b/frontend/src/hooks/useDocument.js
+@@ -11,7 +11,7 @@ export function useDocument() {
+ 
+   const handleDocumentSelect = async (file) => {
+     if (!file) {
+-      return;
++      return false;
+     }
+ 
+     const result = await openDocument(file);
+@@ -21,7 +21,7 @@ export function useDocument() {
+       setPreviewModel(null);
+       setDocumentText([]);
+       setErrorMessage(result.errorMessage);
+-      return;
++      return false;
+     }
+ 
+     setSelectedDocument(result.documentFile);
+@@ -29,6 +29,7 @@ export function useDocument() {
+     setDocumentText(result.documentText || []);
+     setErrorMessage('');
+     setStatusMessage('');
++    return true;
+   };
+ 
+   const handleFeatureClick = (featureKey) => {
+diff --git a/frontend/src/services/pdfOverlayConvertService.js b/frontend/src/services/pdfOverlayConvertService.js
+index 84552cc..3e792c9 100644
+--- a/frontend/src/services/pdfOverlayConvertService.js
++++ b/frontend/src/services/pdfOverlayConvertService.js
+@@ -903,7 +903,8 @@ export async function buildPdfWithTextEdits({
+     // command matching fails, do not paint a background rectangle. The new
+     // text is still inserted below; the report exposes unresolved items so
+     // callers can detect that the original may remain in the PDF.
+-    if (!replacement.canDirectEdit && replacement.type !== 'movable-text'
++    const shouldCoverSource = replacement.type === 'movable-text' || !replacement.canDirectEdit;
++    if (shouldCoverSource
+       && Number(replacement.coverWidth) > 0 && Number(replacement.coverHeight) > 0) page.drawRectangle({
+       x: mapped.rectX,
+       y: mapped.rectY,
+@@ -918,7 +919,6 @@ export async function buildPdfWithTextEdits({
+   replacements.forEach((replacement) => {
+     const page = pages[replacement.pageNumber - 1];
+     if (!page) return;
+-    if (replacement.fontPreserved || replacement.directReplacement || replacement.replaceMode === 'full-object-rewrite') return;
+     const mapped = mapReplacementToPage(replacement, page);
+     if (![mapped.textX, mapped.textY, mapped.fontSize].every(Number.isFinite)) return;
+     const itemReplacementFont = replacement.replacementFont || replacementFont;
+diff --git a/frontend/test-results/.last-run.json b/frontend/test-results/.last-run.json
+index 16dde8a..cbcc1fb 100644
+--- a/frontend/test-results/.last-run.json
++++ b/frontend/test-results/.last-run.json
+@@ -1,6 +1,4 @@
+ {
+-  "status": "failed",
+-  "failedTests": [
+-    "ed456ddae992ca204c70-47ae23aa6064ed7e719d"
+-  ]
++  "status": "passed",
++  "failedTests": []
+ }
+\ No newline at end of file
+diff --git "a/frontend/test-results/pdf-viewer-PDF-\353\241\234\353\224\251-\354\213\244\355\214\250\353\245\274-\355\221\234\354\213\234\355\225\230\352\263\240-\353\213\244\353\245\270-PDF\353\245\274-\353\213\244\354\213\234-\354\227\264-\354\210\230-\354\236\210\353\213\244/error-context.md" "b/frontend/test-results/pdf-viewer-PDF-\353\241\234\353\224\251-\354\213\244\355\214\250\353\245\274-\355\221\234\354\213\234\355\225\230\352\263\240-\353\213\244\353\245\270-PDF\353\245\274-\353\213\244\354\213\234-\354\227\264-\354\210\230-\354\236\210\353\213\244/error-context.md"
+deleted file mode 100644
+index 4692a13..0000000
+--- "a/frontend/test-results/pdf-viewer-PDF-\353\241\234\353\224\251-\354\213\244\355\214\250\353\245\274-\355\221\234\354\213\234\355\225\230\352\263\240-\353\213\244\353\245\270-PDF\353\245\274-\353\213\244\354\213\234-\354\227\264-\354\210\230-\354\236\210\353\213\244/error-context.md"
++++ /dev/null
+@@ -1,24 +0,0 @@
+-# Instructions
+-
+-- Following Playwright test failed.
+-- Explain why, be concise, respect Playwright best practices.
+-- Provide a snippet of code with the fix, if possible.
+-
+-# Test info
+-
+-- Name: pdf-viewer.spec.js >> PDF 로딩 실패를 표시하고 다른 PDF를 다시 열 수 있다
+-- Location: tests\pdf-viewer.spec.js:4:1
+-
+-# Error details
+-
+-```
+-Error: browserType.launch: Executable doesn't exist at C:\Users\Qaz\AppData\Local\ms-playwright\chromium_headless_shell-1243\chrome-headless-shell-win64\chrome-headless-shell.exe
+-╔════════════════════════════════════════════════════════════╗
+-║ Looks like Playwright was just installed or updated.       ║
+-║ Please run the following command to download new browsers: ║
+-║                                                            ║
+-║     npx playwright install                                 ║
+-║                                                            ║
+-║ <3 Playwright Team                                         ║
+-╚════════════════════════════════════════════════════════════╝
+-```
+\ No newline at end of file
+diff --git "a/frontend/test-results/pdf-viewer-PDF-\353\241\234\353\224\251-\354\213\244\355\214\250\353\245\274-\355\221\234\354\213\234\355\225\230\352\263\240-\353\213\244\353\245\270-PDF\353\245\274-\353\213\244\354\213\234-\354\227\264-\354\210\230-\354\236\210\353\213\244/trace.zip" "b/frontend/test-results/pdf-viewer-PDF-\353\241\234\353\224\251-\354\213\244\355\214\250\353\245\274-\355\221\234\354\213\234\355\225\230\352\263\240-\353\213\244\353\245\270-PDF\353\245\274-\353\213\244\354\213\234-\354\227\264-\354\210\230-\354\236\210\353\213\244/trace.zip"
+deleted file mode 100644
+index 13a4a1922cd63834bee5aaadc2fcefff5d6813f9..0000000000000000000000000000000000000000
+GIT binary patch
+literal 0
+HcmV?d00001
+
+literal 1982
+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
+
