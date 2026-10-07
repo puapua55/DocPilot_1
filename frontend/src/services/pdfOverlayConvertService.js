@@ -8,6 +8,7 @@ import {
 } from './pdfDirectTextEdit.js';
 import { loadPdfDocument } from './pdfService.js';
 import { describePdfTextFonts } from './pdfFontPreview.js';
+import { writePdfTables } from './pdfTableService.js';
 
 const FONT_URL = '/fonts/NotoSansKR-Regular.base64.txt';
 const TEXT_BASELINE_RATIO = 0.84;
@@ -79,19 +80,154 @@ function drawPdfTextWithLetterSpacing(page, text, options, letterSpacing = 0, ho
   if (squeeze < 0.9999) page.pushOperators(PDFOperator.of(PDFOperatorNames.PopGraphicsState));
 }
 
-function glyphPathToSvg(path, horizontalScale = 1) {
+function getRichRunLines(fontRuns = []) {
+  const lines = [[]];
+  fontRuns.forEach((run) => {
+    String(run.text || '').split('\n').forEach((part, index, parts) => {
+      if (part) lines[lines.length - 1].push({ ...run, text: part });
+      if (index < parts.length - 1) lines.push([]);
+    });
+  });
+  return lines;
+}
+
+function wrapAddedTextLines(lines, maxWidth, measureRun) {
+  if (!Number.isFinite(maxWidth) || maxWidth <= 0) return lines;
+  return lines.flatMap((line) => {
+    const wrapped = [[]];
+    let lineWidth = 0;
+    line.forEach((run) => {
+      Array.from(run.text || '').forEach((character) => {
+        const currentLine = wrapped[wrapped.length - 1];
+        const last = currentLine[currentLine.length - 1];
+        const metrics = measureRun({ ...run, text: character });
+        const advance = metrics.width + (last?._sourceRun === run ? metrics.spacing : 0);
+        if (lineWidth > 0 && lineWidth + advance > maxWidth) {
+          wrapped.push([]);
+          lineWidth = 0;
+        }
+        const destination = wrapped[wrapped.length - 1];
+        const previous = destination[destination.length - 1];
+        if (previous?._sourceRun === run) previous.text += character;
+        else destination.push({ ...run, text: character, _sourceRun: run });
+        lineWidth += metrics.width + (previous?._sourceRun === run ? metrics.spacing : 0);
+      });
+    });
+    return wrapped;
+  });
+}
+
+function getTextAdvanceVector(rotation, distance) {
+  if (rotation === 90) return { x: 0, y: distance };
+  if (rotation === 180) return { x: -distance, y: 0 };
+  if (rotation === 270) return { x: 0, y: -distance };
+  return { x: distance, y: 0 };
+}
+
+function getNextLineVector(rotation, distance) {
+  if (rotation === 90) return { x: distance, y: 0 };
+  if (rotation === 180) return { x: 0, y: distance };
+  if (rotation === 270) return { x: -distance, y: 0 };
+  return { x: 0, y: -distance };
+}
+
+function drawPdfFontRuns(page, replacement, mapped) {
+  const measureRun = (run) => {
+    const size = mapped.fontSize * (Number(run.fontSize) || replacement.fontSize) / Math.max(1, Number(replacement.fontSize) || 1);
+    const spacing = (Number(run.letterSpacing) || 0) * mapped.fontSize / Math.max(1, Number(replacement.fontSize) || 1);
+    const width = measurePdfText(run.replacementFont, run.text, size);
+    return { size, spacing, width: width == null ? 0 : width + spacing * Math.max(0, [...run.text].length - 1) };
+  };
+  const sourceLines = getRichRunLines(replacement.fontRuns || []);
+  const lines = replacement.type === 'added-text'
+    ? wrapAddedTextLines(sourceLines, mapped.textBoxWidth, measureRun)
+    : sourceLines;
+  const nonEmptyLines = replacement.type === 'added-text'
+    ? lines : lines.filter((line) => line.some((run) => run.text));
+  if (!nonEmptyLines.some((line) => line.some((run) => run.text))) return null;
+  const lineWidths = nonEmptyLines.map((line) => line.reduce((sum, run) => sum + measureRun(run).width, 0));
+  const lineHeights = nonEmptyLines.map((line) => Math.max(
+    mapped.fontSize,
+    ...line.map((run) => measureRun(run).size)
+  ) * 1.2);
+  const lineOffsets = [];
+  lineHeights.forEach((height, index) => {
+    lineOffsets[index] = lineHeights.slice(0, index).reduce((sum, lineHeight) => sum + lineHeight, 0);
+  });
+  const maxLineWidth = Math.max(0, ...lineWidths);
+  const horizontalScale = !replacement.preserveFontSize && maxLineWidth > mapped.textBoxWidth && mapped.textBoxWidth > 0
+    ? mapped.textBoxWidth / maxLineWidth : 1;
+  const fittedWidth = maxLineWidth * horizontalScale;
+  replacement.renderBounds = {
+    x: mapped.textX,
+    y: mapped.textY,
+    width: Math.max(fittedWidth, mapped.fontSize * 0.25),
+    height: lineHeights.reduce((sum, lineHeight) => sum + lineHeight, 0),
+    fontSize: mapped.fontSize
+  };
+
+  nonEmptyLines.forEach((line, lineIndex) => {
+    const lineWidth = line.reduce((sum, run) => sum + measureRun(run).width, 0) * horizontalScale;
+    const lineOffset = getNextLineVector(mapped.rotation, lineOffsets[lineIndex] || 0);
+    const aligned = applyTextAlignment({
+      ...mapped,
+      textX: mapped.textX + lineOffset.x,
+      textY: mapped.textY + lineOffset.y,
+      rectX: mapped.rectX,
+      rectY: mapped.rectY
+    }, replacement, lineWidth);
+    let cursorX = aligned.textX;
+    let cursorY = aligned.textY;
+    line.forEach((run) => {
+      const metrics = measureRun(run);
+      const runColor = toPdfColor(parseCssColor(run.color, replacement.textColor));
+      const runMapped = { ...mapped, textX: cursorX, textY: cursorY, fontSize: metrics.size };
+      drawPdfTextWithLetterSpacing(page, run.text, {
+        x: cursorX,
+        y: cursorY,
+        size: metrics.size,
+        font: run.replacementFont,
+        color: runColor,
+        rotate: getTextRotation(mapped.rotation),
+        ySkew: run.fontStyle === 'italic' ? degrees(12) : degrees(0)
+      }, metrics.spacing, horizontalScale);
+      if (run.fontSource?.source !== 'local') {
+        drawFallbackTextOutlines(page, run.replacementOutlineFont, run.text, runMapped, runColor,
+          metrics.spacing, horizontalScale, run.fontStyle === 'italic');
+      }
+      const decoration = run.textDecoration || replacement.textDecoration || 'none';
+      if (decoration === 'underline' || decoration === 'line-through') {
+        const distance = decoration === 'underline' ? metrics.size * 0.12 : -metrics.size * 0.32;
+        const offset = getNextLineVector(mapped.rotation, distance);
+        const decoratedAdvance = getTextAdvanceVector(mapped.rotation, metrics.width * horizontalScale);
+        page.drawLine({
+          start: { x: cursorX + offset.x, y: cursorY + offset.y },
+          end: { x: cursorX + offset.x + decoratedAdvance.x, y: cursorY + offset.y + decoratedAdvance.y },
+          thickness: Math.max(0.5, metrics.size * 0.055),
+          color: runColor
+        });
+      }
+      const advance = getTextAdvanceVector(mapped.rotation, metrics.width * horizontalScale);
+      cursorX += advance.x;
+      cursorY += advance.y;
+    });
+  });
+  return { width: fittedWidth, horizontalScale };
+}
+
+function glyphPathToSvg(path, horizontalScale = 1, italic = false) {
   const number = (value) => Number(value.toFixed(3));
   return path.commands.map(({ command, args }) => {
-    const x = (value) => number(value * horizontalScale);
-    if (command === 'moveTo') return `M ${x(args[0])} ${number(-args[1])}`;
-    if (command === 'lineTo') return `L ${x(args[0])} ${number(-args[1])}`;
-    if (command === 'quadraticCurveTo') return `Q ${x(args[0])} ${number(-args[1])} ${x(args[2])} ${number(-args[3])}`;
-    if (command === 'bezierCurveTo') return `C ${x(args[0])} ${number(-args[1])} ${x(args[2])} ${number(-args[3])} ${x(args[4])} ${number(-args[5])}`;
+    const x = (value, y) => number((value + (italic ? Math.tan(Math.PI / 15) * y : 0)) * horizontalScale);
+    if (command === 'moveTo') return `M ${x(args[0], args[1])} ${number(-args[1])}`;
+    if (command === 'lineTo') return `L ${x(args[0], args[1])} ${number(-args[1])}`;
+    if (command === 'quadraticCurveTo') return `Q ${x(args[0], args[1])} ${number(-args[1])} ${x(args[2], args[3])} ${number(-args[3])}`;
+    if (command === 'bezierCurveTo') return `C ${x(args[0], args[1])} ${number(-args[1])} ${x(args[2], args[3])} ${number(-args[3])} ${x(args[4], args[5])} ${number(-args[5])}`;
     return command === 'closePath' ? 'Z' : '';
   }).join(' ');
 }
 
-function drawFallbackTextOutlines(page, font, text, mapped, color, bold = false, letterSpacing = 0, horizontalScale = 1) {
+function drawFallbackTextOutlines(page, font, text, mapped, color, letterSpacing = 0, horizontalScale = 1, italic = false) {
   if (!font || !text) return;
   const scale = mapped.fontSize / font.unitsPerEm;
   if (!Number.isFinite(scale) || scale <= 0) return;
@@ -100,18 +236,13 @@ function drawFallbackTextOutlines(page, font, text, mapped, color, bold = false,
   let cursorY = mapped.textY;
   layout.glyphs.forEach((glyph, index) => {
     const position = layout.positions[index];
-    const path = glyphPathToSvg(glyph.path, horizontalScale);
+    const path = glyphPathToSvg(glyph.path, horizontalScale, italic);
     if (path) {
-      // A shifted second glyph pass looks like a duplicate character when
-      // zoomed in. Use a same-color outline stroke instead so bold grows
-      // evenly around the original glyph without changing its position.
       page.drawSvgPath(path, {
         x: cursorX + position.xOffset * scale * horizontalScale,
         y: cursorY + position.yOffset * scale,
         scale,
         color,
-        borderColor: bold ? color : undefined,
-        borderWidth: bold ? Math.max(0.25, mapped.fontSize * 0.018) : 0,
         rotate: getTextRotation(mapped.rotation)
       });
     }
@@ -152,8 +283,10 @@ function collectMovableTextReplacements(movableTexts = []) {
       return {
       id: item.id,
       sourceSelection: item.sourceSelection,
-      sourceText: String(item.sourceSelection?.selectedText || item.sourceText || item.originalText || item.originalUnicodeText || text).trim(),
-      originalText: String(item.sourceSelection?.selectedText || item.originalText || item.sourceText || item.originalUnicodeText || text).trim(),
+      sourceText: item.type === 'addedText' ? ''
+        : String(item.sourceSelection?.selectedText || item.sourceText || item.originalText || item.originalUnicodeText || text).trim(),
+      originalText: item.type === 'addedText' ? ''
+        : String(item.sourceSelection?.selectedText || item.originalText || item.sourceText || item.originalUnicodeText || text).trim(),
       // All UI movable objects originate in PDF.js Unicode selection text.
       // Keep direct source-font replay out of the deletion plan even for
       // objects created before the explicit flag was introduced.
@@ -173,6 +306,23 @@ function collectMovableTextReplacements(movableTexts = []) {
           ...(Array.isArray(item.sourceSelection?.sourceFont?.fontCandidates)
             ? item.sourceSelection.sourceFont.fontCandidates : [])
         ].filter((candidate) => typeof candidate === 'string' && candidate.trim()))],
+      fontRuns: Array.isArray(item.fontRuns) && item.fontRuns.length > 0
+        ? item.fontRuns.map((run) => ({
+          ...run,
+          text: String(run.text || ''),
+          fontSize: (Number(run.fontSize) || Number(item.autoFitBaseFontSize || item.fontSize))
+            * (Number(item.fontSize) || 1) / Math.max(1, Number(item.autoFitBaseFontSize || item.fontSize) || 1),
+          letterSpacing: Number.isFinite(Number(run.letterSpacing))
+            ? Number(run.letterSpacing) : (Number(item.letterSpacing) || 0),
+          fontCandidates: typeof item.selectedFontFamily === 'string' && item.selectedFontFamily.trim()
+            ? [item.selectedFontFamily.trim()]
+            : [...new Set((Array.isArray(run.fontCandidates) ? run.fontCandidates : [])
+              .filter((candidate) => typeof candidate === 'string' && candidate.trim()))],
+          preferBoldFont: typeof item.selectedFontFamily === 'string' && item.selectedFontFamily.trim()
+            ? item.preferBoldFont === true
+            : run.preferBoldFont === true || run.fontWeight === 'bold' || Number(run.fontWeight) >= 600
+        }))
+        : [],
       originalGlyphText: item.originalGlyphText || item.sourceFont?.glyphText || null,
       originalEncodedText: item.originalEncodedText || null,
       fontAnalysis: item.fontAnalysis || null,
@@ -193,6 +343,7 @@ function collectMovableTextReplacements(movableTexts = []) {
       baselineOffset: Number.isFinite(Number(item.baselineOffset))
         ? Number(item.baselineOffset) : Number(item.fontSize) * TEXT_BASELINE_RATIO,
       fontSize: Number(item.fontSize),
+      preserveFontSize: item.manualFontSize === true,
       displayText: text,
       text,
       fontWeight: item.fontWeight || 'normal',
@@ -204,7 +355,7 @@ function collectMovableTextReplacements(movableTexts = []) {
       textBoxWidth: Number(item.fitTextWidth || item.originalRect?.width || item.currentRect?.width || 0),
       backgroundColor: parseCssColor(item.backgroundColor, [255, 255, 255]),
       textColor: parseCssColor(item.color, [17, 17, 17]),
-      type: 'movable-text',
+      type: item.type === 'addedText' ? 'added-text' : 'movable-text',
       canDirectEdit: false,
       fallbackReason: '저장 시 원본 content stream을 확인합니다.'
     };
@@ -741,7 +892,7 @@ export function makeOverlayConvertedFileName(fileName = 'document.pdf') {
   return `${fileName.replace(/\.pdf$/i, '')}_overlay_converted.pdf`;
 }
 
-export async function convertPdfWithOriginalOverlay({ file, replacement = {}, movableTexts = [], highlights = [], images = [], download = true }) {
+export async function convertPdfWithOriginalOverlay({ file, replacement = {}, movableTexts = [], highlights = [], images = [], tables, tablesChanged = false, download = true }) {
   const { isPdfFile } = await import('../utils/fileUtils.js');
   if (!file || !isPdfFile(file)) throw new Error('먼저 PDF 파일을 선택해주세요.');
 
@@ -751,10 +902,10 @@ export async function convertPdfWithOriginalOverlay({ file, replacement = {}, mo
     ...collectMovableTextReplacements(movableTexts)
   ];
   if (!replacements.length) replacements = collectReplacementPlanFallback(replacement);
-  if (!replacements.length && !highlights.length && !images.length) throw new Error('먼저 텍스트, 이미지 또는 하이라이트를 화면에 적용해주세요.');
+  if (!replacements.length && !highlights.length && !images.length && !tables?.length && !tablesChanged) throw new Error('먼저 텍스트, 이미지, 표 또는 하이라이트를 화면에 적용해주세요.');
 
   const sourceBytes = await file.arrayBuffer();
-  const { outputBytes, ...report } = await buildPdfWithTextEdits({ sourceBytes, replacements, highlights, images });
+  const { outputBytes, ...report } = await buildPdfWithTextEdits({ sourceBytes, replacements, highlights, images, tables });
   const outputFileName = makeOverlayConvertedFileName(file.name);
   if (download) downloadPdf(outputBytes, outputFileName);
   return { ...report, outputFileName, fileName: outputFileName, outputBytes: download ? undefined : outputBytes };
@@ -763,7 +914,7 @@ export async function convertPdfWithOriginalOverlay({ file, replacement = {}, mo
 // Keep byte generation separate from browser download so saved content can be
 // reopened and verified independently of the editor DOM.
 export async function buildPdfWithTextEdits({
-  sourceBytes, fontBytes, replacements: input = [], highlights: inputHighlights = [], images: inputImages = [],
+  sourceBytes, fontBytes, replacements: input = [], highlights: inputHighlights = [], images: inputImages = [], tables: inputTables,
   forceBundledFontIds = [], skipRenderValidation = false
 }) {
   const sourceFontRepairs = await collectInvisibleSourceTextRepairs(sourceBytes, input);
@@ -848,8 +999,18 @@ export async function buildPdfWithTextEdits({
       target.fontSource = asset.source;
     };
     for (const item of replacements.filter((entry) => entry.type === 'pdf' || !entry.fontPreserved)) {
-      const candidates = [...new Set((item.fontCandidates || []).filter((candidate) => typeof candidate === 'string' && candidate.trim()))];
-      await assignFontAsset(item, candidates, item.preferBoldFont === true, item.text);
+      if (item.type !== 'pdf' && item.fontRuns?.length > 0) {
+        for (const run of item.fontRuns) {
+          const candidates = [...new Set((run.fontCandidates || []).filter((candidate) => typeof candidate === 'string' && candidate.trim()))];
+          await assignFontAsset(run, candidates, run.preferBoldFont === true, run.text);
+        }
+        item.replacementFont = item.fontRuns[0].replacementFont;
+        item.replacementOutlineFont = item.fontRuns[0].replacementOutlineFont;
+        item.fontSource = item.fontRuns[0].fontSource;
+      } else {
+        const candidates = [...new Set((item.fontCandidates || []).filter((candidate) => typeof candidate === 'string' && candidate.trim()))];
+        await assignFontAsset(item, candidates, item.preferBoldFont === true, item.text);
+      }
     }
     const firstAsset = replacementFontAssets.values().next().value;
     replacementFont = firstAsset?.font;
@@ -883,7 +1044,7 @@ export async function buildPdfWithTextEdits({
   // white cover rectangle at the source position whenever evidence is exact.
   const unicodeMoves = replacements.filter((item) => item.type === 'movable-text' && item.forceUnicodeFallback === true);
   const unicodeRemovalResults = removeSimpleMovedText(pdfDocument, unicodeMoves);
-  const reusableMoves = replacements.filter((item) => !unicodeMoves.includes(item));
+  const reusableMoves = replacements.filter((item) => item.type !== 'added-text' && !unicodeMoves.includes(item));
   const reuseResults = moveTextWithOriginalFont(pdfDocument, reusableMoves);
   const removalResults = new Map([...unicodeRemovalResults, ...reuseResults]);
   removalResults.forEach((outcome, replacement) => {
@@ -923,7 +1084,7 @@ export async function buildPdfWithTextEdits({
     // command matching fails, do not paint a background rectangle. The new
     // text is still inserted below; the report exposes unresolved items so
     // callers can detect that the original may remain in the PDF.
-    if (!replacement.canDirectEdit && replacement.type !== 'movable-text'
+    if (!replacement.canDirectEdit && replacement.type !== 'movable-text' && replacement.type !== 'added-text'
       && Number(replacement.coverWidth) > 0 && Number(replacement.coverHeight) > 0) page.drawRectangle({
       x: mapped.rectX,
       y: mapped.rectY,
@@ -945,6 +1106,11 @@ export async function buildPdfWithTextEdits({
     const itemReplacementOutlineFont = replacement.replacementOutlineFont || replacementOutlineFont;
     const itemFontSource = replacement.fontSource || fontSource;
     if (!itemReplacementFont) return;
+    if (replacement.fontRuns?.length > 0) {
+      drawPdfFontRuns(page, replacement, mapped);
+      if (replacement.contentOrderAnchor) replacement.anchoredDrawingCommands = capturePageDrawingStream(page);
+      return;
+    }
     const pdfLetterSpacing = Number(replacement.letterSpacing) && Number(replacement.fontSize)
       ? Number(replacement.letterSpacing) * mapped.fontSize / Number(replacement.fontSize)
       : 0;
@@ -954,7 +1120,7 @@ export async function buildPdfWithTextEdits({
     // Canvas metrics used by the editor can differ from the embedded PDF font
     // metrics. Fit the final PDF glyph advances to the selected source box at
     // export time, preserving vertical size and baseline.
-    const horizontalScale = measuredWidth > mapped.textBoxWidth && mapped.textBoxWidth > 0
+    const horizontalScale = !replacement.preserveFontSize && measuredWidth > mapped.textBoxWidth && mapped.textBoxWidth > 0
       ? mapped.textBoxWidth / measuredWidth : 1;
     const fittedWidth = measuredWidth == null ? null : measuredWidth * horizontalScale;
     applyTextAlignment(mapped, replacement, fittedWidth);
@@ -979,9 +1145,9 @@ export async function buildPdfWithTextEdits({
       // Italic needs a Y-axis skew so only the glyph outline leans right.
       ySkew: isItalic ? degrees(12) : degrees(0)
     }, pdfLetterSpacing, horizontalScale);
-    if (itemFontSource.source !== 'local' || replacement.fontWeight === 'bold') {
+    if (itemFontSource.source !== 'local') {
       drawFallbackTextOutlines(page, itemReplacementOutlineFont, replacement.text, mapped, textColor,
-        replacement.fontWeight === 'bold', pdfLetterSpacing, horizontalScale);
+        pdfLetterSpacing, horizontalScale, isItalic);
     }
     if (replacement.textDecoration === 'underline' || replacement.textDecoration === 'line-through') {
       const lineWidth = Math.max(1, mapped.fontSize * 0.06);
@@ -1012,6 +1178,7 @@ export async function buildPdfWithTextEdits({
 
   insertDrawingCommandsAtContentAnchors(pdfDocument, replacements);
 
+  const tableCount = inputTables ? await writePdfTables(pdfDocument, inputTables) : 0;
   const outputBytes = await pdfDocument.save({ useObjectStreams: true });
   const localFontRenderFallbackIds = skipRenderValidation
     ? [] : await findNonRenderingLocalReplacementIds(outputBytes, replacements);
@@ -1022,6 +1189,7 @@ export async function buildPdfWithTextEdits({
       replacements: input,
       highlights: inputHighlights,
       images: inputImages,
+      tables: inputTables,
       forceBundledFontIds: [...new Set([...forcedBundledFontIds, ...localFontRenderFallbackIds])],
       skipRenderValidation: true
     });
@@ -1049,6 +1217,7 @@ export async function buildPdfWithTextEdits({
     movableTextCount: movableResults.length,
     highlightCount: highlights.length,
     imageCount: images.length,
+    tableCount,
     pagePlanCount: new Set(movableResults.map((item) => item.pageNumber)).size,
     directEditCount: replacements.filter((item) => item.canDirectEdit === true).length,
     pdfDirectReplaceCount: pdfReplacementResults.filter((item) => item.replaceMode === 'direct-replace').length,

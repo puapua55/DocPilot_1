@@ -56,6 +56,13 @@ export async function convertDocxFileWithHighlights(file, highlights = []) {
     return { outputFileName: file.name, highlightCount: 0 };
   }
 
+  const blob = await makeDocxFileWithHighlights(file, highlights);
+  const outputFileName = makeOutputName(file.name);
+  downloadBlob(blob, outputFileName);
+  return { outputFileName, highlightCount: highlights.length };
+}
+
+export async function makeDocxFileWithHighlights(file, highlights = []) {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const targets = [...new Map(highlights
     .map((item) => ({ text: String(item?.text || '').trim(), color: String(item?.color || 'yellow') }))
@@ -76,8 +83,5 @@ export async function convertDocxFileWithHighlights(file, highlights = []) {
     }
   }
 
-  const blob = await zip.generateAsync({ type: 'blob', mimeType: DOCX_MIME_TYPE });
-  const outputFileName = makeOutputName(file.name);
-  downloadBlob(blob, outputFileName);
-  return { outputFileName, highlightCount: targets.length, changedEntryCount };
+  return zip.generateAsync({ type: 'blob', mimeType: DOCX_MIME_TYPE });
 }

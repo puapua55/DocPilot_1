@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, net, protocol } from 'electron';
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -59,6 +59,7 @@ function getGeminiStatus() {
   const resolvedModel = process.env.GEMINI_MODEL || settings.geminiModel || defaultGeminiModel;
   return {
     hasApiKey: Boolean(resolvedApiKey),
+    apiKeyLength: resolvedApiKey.length,
     maskedApiKey: maskApiKey(resolvedApiKey),
     model: resolvedModel
   };
@@ -303,6 +304,10 @@ app.whenReady().then(() => {
   registerSettingsIpc();
   registerAiIpc();
   registerFontIpc();
+  ipcMain.handle('docpilot-clipboard:write-text', (_event, value) => {
+    clipboard.writeText(String(value || '').slice(0, 2_000_000));
+    return true;
+  });
   createMainWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();

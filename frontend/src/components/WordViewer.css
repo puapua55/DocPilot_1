@@ -1,5 +1,6 @@
 .word-viewer-shell {
   width: 100%;
+  container-type: inline-size;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -12,10 +13,10 @@
 
 .docx-view-mode-controls {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas:
-    "view-toggle view-toggle download"
-    "history page-nav toolbar";
+    "view page-nav download"
+    "history tools toolbar";
   align-items: flex-start;
   justify-content: stretch;
   column-gap: 8px;
@@ -26,6 +27,182 @@
   z-index: 5;
   background: var(--panel-solid, #ffffff);
 }
+
+.docx-view-mode-controls.is-single-page {
+  grid-template-areas:
+    "view page-nav download"
+    "history tools toolbar";
+}
+.docx-view-mode-controls.is-table-picker-open { z-index: 20; }
+
+.docx-view-mode-toggle-group {
+  grid-area: view;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: start;
+}
+
+.docx-edit-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 3px;
+  border: 1px solid #d7e2ff;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.docx-edit-toggle button {
+  min-height: 28px;
+  min-width: 44px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 8px;
+  background: transparent;
+  color: #657292;
+  font-size: .76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.docx-format-toolbar button {
+  min-height: 28px;
+  border: 1px solid #cbd9ff;
+  border-radius: 8px;
+  padding: 0 5px;
+  background: #fff;
+  color: #315fc7;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.docx-edit-toggle button.active {
+  background: #edf3ff;
+  color: #315fc7;
+}
+
+.docx-edit-toggle button:disabled { opacity: .45; cursor: not-allowed; }
+
+.docx-document-tools {
+  grid-area: tools;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  justify-self: start;
+}
+
+.docx-document-tools > button,
+.docx-document-tools > .docx-table-picker > button {
+  min-height: 30px;
+  border: 1px solid #cbd9ff;
+  border-radius: 9px;
+  padding: 0 9px;
+  background: #fff;
+  color: #315fc7;
+  font-size: .76rem;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.docx-document-tools button:disabled { opacity: .45; cursor: not-allowed; }
+
+.docx-table-picker { position: relative; }
+.docx-table-picker-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 224px;
+  padding: 10px;
+  border: 1px solid #bdc8df;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(32, 53, 100, .22);
+  color: #26395e;
+}
+.docx-table-picker-panel > strong { display: block; margin-bottom: 7px; text-align: center; font-size: .8rem; }
+.docx-table-picker-grid { display: grid; grid-template-columns: repeat(10, 17px); gap: 3px; justify-content: center; }
+.docx-table-picker-grid button {
+  width: 17px;
+  min-width: 17px;
+  height: 17px;
+  min-height: 17px;
+  padding: 0;
+  border: 1px solid #c8cfdb;
+  border-radius: 0;
+  background: #fff;
+}
+.docx-table-picker-grid button.is-active { border-color: #7894d4; background: #dce8ff; }
+.docx-table-picker-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 10px; padding-top: 8px; border-top: 1px solid #e0e6f1; font-size: .73rem; }
+.docx-table-picker-custom > span { width: 100%; font-weight: 700; }
+.docx-table-picker-custom label { display: inline-flex; align-items: center; gap: 3px; }
+.docx-table-picker-custom input { width: 39px; height: 27px; border: 1px solid #cbd9ff; border-radius: 5px; }
+.docx-table-picker-custom button { min-height: 27px; margin-left: auto; }
+
+.docx-format-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  flex: none;
+  padding: 4px 6px;
+  border: 1px solid #d7e2ff;
+  border-radius: 9px;
+  background: #f9fbff;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.docx-format-toolbar label { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 3px; white-space: nowrap; font-size: .73rem; color: #364b78; }
+.docx-format-toolbar select { width: 140px; }
+.docx-format-toolbar input[type="number"] { width: 50px; }
+.docx-format-toolbar input[type="color"] { width: 28px; height: 26px; padding: 1px; }
+.docx-format-toolbar select, .docx-format-toolbar input[type="number"] { height: 28px; border: 1px solid #cbd9ff; border-radius: 5px; background: #fff; }
+.docx-format-toolbar > button { flex: 0 0 28px; width: 28px; }
+.docx-text-align-group { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 2px; padding-left: 4px; border-left: 1px solid #d7e1fa; }
+.docx-text-align-group button { display: inline-flex; align-items: center; justify-content: center; width: 28px; padding: 0; }
+
+.docx-content [data-docx-paragraph-index][contenteditable="true"],
+.docx-content [data-docx-added-paragraph][contenteditable="true"] {
+  outline: 1px solid #6991ff;
+  outline-offset: 2px;
+  cursor: text;
+}
+
+.docx-content .docx-added-image img { display: block; max-width: 100%; }
+.docx-content .docx-added-image { position: relative; display: table; max-width: 100%; }
+.docx-content .docx-added-image.is-selected { outline: 2px solid #4e7cff; outline-offset: 3px; }
+.docx-image-resize-handle { display: none; position: absolute; right: -8px; bottom: -8px; width: 15px; height: 15px; border: 2px solid #fff; border-radius: 3px; background: #4e7cff; cursor: nwse-resize; }
+.docx-added-image.is-selected .docx-image-resize-handle { display: block; }
+.docx-exporting .docx-added-image.is-selected { outline: 0; }
+.docx-exporting .docx-image-resize-handle { display: none !important; }
+.docx-image-toolbar { display: flex; align-items: center; gap: 8px; flex: none; padding: 5px 8px; border: 1px solid #d7e2ff; border-radius: 9px; background: #f9fbff; color: #364b78; font-size: .76rem; }
+.docx-image-toolbar label { display: inline-flex; align-items: center; gap: 4px; }
+.docx-image-toolbar input { width: 68px; height: 29px; border: 1px solid #cbd9ff; border-radius: 5px; }
+.docx-image-toolbar button { min-height: 29px; padding: 0 9px; border: 1px solid #eccdd2; border-radius: 6px; background: #fff; color: #a33d49; cursor: pointer; }
+.docx-table-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; flex: none; padding: 5px 8px; border: 1px solid #d7e2ff; border-radius: 9px; background: #f9fbff; color: #364b78; font-size: .76rem; }
+.docx-table-toolbar.is-inactive { visibility: hidden; pointer-events: none; }
+.docx-table-toolbar > span { min-width: 145px; white-space: nowrap; }
+.docx-table-toolbar strong { color: #213d73; }
+.docx-table-toolbar button { min-height: 28px; padding: 2px 7px; border: 1px solid #cbd9ff; border-radius: 6px; background: #fff; color: #315fc7; cursor: pointer; }
+.docx-table-toolbar button:disabled { opacity: .45; cursor: default; }
+.docx-table-toolbar label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.docx-table-toolbar input[type="color"] { width: 29px; height: 27px; padding: 1px; }
+.docx-table-toolbar input[type="number"] { width: 52px; height: 27px; border: 1px solid #cbd9ff; border-radius: 5px; }
+.docx-table-toolbar .docx-border-panel-toggle[aria-expanded="true"] { background: #dce7ff; border-color: #6e93ee; }
+.docx-border-panel { position: absolute; z-index: 30; top: calc(100% + 5px); left: 0; width: min(620px, 100%); box-shadow: 0 12px 28px rgba(32, 53, 100, .2); }
+.docx-content td:has(> .docx-diagonal-border-overlay), .docx-content th:has(> .docx-diagonal-border-overlay) { position: relative; }
+.docx-diagonal-border-overlay { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.docx-exporting .docx-diagonal-border-overlay { pointer-events: none; }
+.docx-content .docx-table-cell-selected { outline: 2px solid #4e7cff; outline-offset: -2px; }
+.docx-content .docx-added-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 8px 0; }
+.docx-content .docx-added-table td { min-width: 36px; min-height: 24px; padding: 4px; vertical-align: top; }
+.docx-content .docx-added-table p { margin: 0; min-height: 1.2em; }
+.docx-content .docx-added-paragraph { min-height: 1.4em; margin: 0 0 4px; }
+.docx-exporting .docx-table-cell-selected { outline: 0; }
 
 .docx-view-mode-controls > .document-viewer-actions {
   grid-area: toolbar;
@@ -78,8 +255,18 @@
   font-weight: 800;
 }
 
-.docx-view-mode-options {
-  display: contents;
+@container (max-width: 590px) {
+  .docx-view-mode-controls {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "view page-nav download"
+      "history tools tools"
+      "toolbar toolbar toolbar";
+  }
+
+  .docx-view-mode-controls > .document-viewer-actions {
+    justify-self: end;
+  }
 }
 
 .docx-document-history,
@@ -97,8 +284,15 @@
 }
 
 .docx-view-mode-toggle {
-  grid-area: view-toggle;
   justify-self: start;
+}
+
+.docx-page-count {
+  padding: 0 7px;
+  color: #315fc7;
+  font-size: .76rem;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .docx-page-navigation-wrap {
@@ -424,8 +618,29 @@
 
 .docx-fidelity-content section.docx {
   box-sizing: border-box;
+  position: relative;
   margin: 0 0 18px;
   box-shadow: 0 16px 36px rgba(51, 71, 132, 0.12);
+}
+
+.docx-fidelity-content section.docx[data-docx-page-number]::before {
+  content: 'page ' attr(data-docx-page-number);
+  position: absolute;
+  top: 8px;
+  left: 9px;
+  z-index: 2;
+  padding: 2px 7px;
+  border-radius: 9px;
+  background: #31558f;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  pointer-events: none;
+}
+
+.docx-exporting .docx-fidelity-content section.docx[data-docx-page-number]::before {
+  content: none;
 }
 
 /* The application uses border-box globally, while docx-preview calculates

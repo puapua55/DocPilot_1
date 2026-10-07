@@ -1,6 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import HighlightLayer from './HighlightLayer';
 import PdfTextLayer from './PdfTextLayer';
+import { tableBorderDashArray, tableBorderSegments, tableCellAt, tablePaste, tableResizeBoundary, tableSizes, tableStyle, tableVisibleCells } from '../services/pdfTableModel.js';
 import { ensureReplacementFont, resolveReplacementPreviewFont } from '../services/pdfReplacementFont';
 import { describePdfTextFonts } from '../services/pdfFontPreview';
 import {
@@ -154,8 +156,135 @@ function getPdfLineBaselineOffset(sourceInfo, textContent, viewport, scale, rect
   return Number.isFinite(point?.[1]) ? point[1] / scale - Number(rect.y) : null;
 }
 
+function getNearbyLineBaselines(textContent, viewport, scale, movableTexts, pageNumber, movingId) {
+  // The text layer is zoomed; movement and PDF export both use unscaled page coordinates.
+  const sourceBaselines = (textContent?.items || []).flatMap((item) => {
+    if (!String(item?.str || '').trim() || !Number.isFinite(Number(item?.transform?.[4]))
+      || !Number.isFinite(Number(item?.transform?.[5]))) return [];
+    const point = viewport?.convertToViewportPoint(item.transform[4], item.transform[5]);
+    return Number.isFinite(point?.[1]) ? [point[1] / scale] : [];
+  });
+  const editedBaselines = movableTexts.flatMap((item) => {
+    if (item.id === movingId || Number(item.pageNumber) !== Number(pageNumber)) return [];
+    const y = Number(item.currentRect?.y);
+    const offset = Number(item.baselineOffset);
+    return Number.isFinite(y) && Number.isFinite(offset) ? [y + offset] : [];
+  });
+  const sorted = [...sourceBaselines, ...editedBaselines].filter(Number.isFinite).sort((a, b) => a - b);
+  const groups = [];
+  sorted.forEach((baseline) => {
+    const last = groups[groups.length - 1];
+    if (last && Math.abs(baseline - last[last.length - 1]) <= 1.5) last.push(baseline);
+    else groups.push([baseline]);
+  });
+  return groups.map((group) => group[Math.floor(group.length / 2)]);
+}
+
+function snapMovedTextToLine(rect, baselineOffset, baselines, maxDistance, pageHeight) {
+  const baseline = rect.y + baselineOffset;
+  const nearest = baselines.reduce((best, candidate) => (
+    Math.abs(candidate - baseline) < Math.abs(best - baseline) ? candidate : best
+  ), Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(nearest) || Math.abs(nearest - baseline) > maxDistance) return rect;
+  return { ...rect, y: Math.min(Math.max(0, nearest - baselineOffset), Math.max(0, pageHeight - rect.height)) };
+}
+
+function getHorizontalTextGuides(textContent, viewport, scale, movableTexts, pageNumber, movingId) {
+  const rows = [];
+  (textContent?.items || []).forEach((item) => {
+    const transform = item?.transform;
+    const width = Number(item?.width);
+    if (!String(item?.str || '').trim() || !Array.isArray(transform) || !Number.isFinite(width) || width <= 0) return;
+    const directionLength = Math.hypot(Number(transform[0]) || 0, Number(transform[1]) || 0);
+    if (directionLength <= 0) return;
+    const start = viewport?.convertToViewportPoint(transform[4], transform[5]);
+    const end = viewport?.convertToViewportPoint(
+      transform[4] + (transform[0] / directionLength) * width,
+      transform[5] + (transform[1] / directionLength) * width
+    );
+    if (!Number.isFinite(start?.[0]) || !Number.isFinite(start?.[1]) || !Number.isFinite(end?.[0])) return;
+    const left = Math.min(start[0], end[0]) / scale;
+    const right = Math.max(start[0], end[0]) / scale;
+    if (right - left < 1) return;
+    const baseline = start[1] / scale;
+    let row = rows.find((entry) => Math.abs(entry.baseline - baseline) <= 1.5);
+    if (!row) {
+      row = { baseline, parts: [] };
+      rows.push(row);
+    }
+    row.parts.push({ left, right, fontSize: directionLength });
+  });
+  const guides = [];
+  rows.forEach((row) => {
+    let segment = null;
+    row.parts.sort((a, b) => a.left - b.left).forEach((part) => {
+      if (segment && part.left - segment.right <= Math.max(6, part.fontSize * 1.5)) {
+        segment.right = Math.max(segment.right, part.right);
+      } else {
+        segment = { left: part.left, right: part.right };
+        guides.push(segment);
+      }
+    });
+  });
+  movableTexts.forEach((item) => {
+    if (item.id === movingId || Number(item.pageNumber) !== Number(pageNumber)) return;
+    const rect = item.currentRect;
+    if (Number.isFinite(Number(rect?.x)) && Number(rect?.width) > 0) {
+      guides.push({ left: Number(rect.x), right: Number(rect.x) + Number(rect.width) });
+    }
+  });
+  return guides.map(({ left, right }) => ({ left, center: (left + right) / 2, right }));
+}
+
+function snapMovedTextHorizontally(rect, guides, maxDistance, pageWidth) {
+  const anchors = { left: rect.x, center: rect.x + rect.width / 2, right: rect.x + rect.width };
+  let correction = 0;
+  let distance = maxDistance + 1;
+  guides.forEach((guide) => {
+    for (const kind of ['left', 'center', 'right']) {
+      const delta = guide[kind] - anchors[kind];
+      if (Math.abs(delta) < distance) {
+        distance = Math.abs(delta);
+        correction = delta;
+      }
+    }
+  });
+  if (distance > maxDistance) return rect;
+  return { ...rect, x: Math.min(Math.max(0, rect.x + correction), Math.max(0, pageWidth - rect.width)) };
+}
+
+function snapRectAxis(rect, axis, guides, maxDistance, pageLimit, resize = false) {
+  const start = axis === 'x' ? rect.x : rect.y;
+  const size = axis === 'x' ? rect.width : rect.height;
+  const anchors = resize ? [start + size] : [start, start + size, start + size / 2];
+  let correction = 0;
+  let nearest = maxDistance + 1;
+  guides.forEach((guide) => anchors.forEach((anchor) => {
+    const delta = guide - anchor;
+    if (Math.abs(delta) < nearest) { nearest = Math.abs(delta); correction = delta; }
+  }));
+  if (nearest > maxDistance) return rect;
+  if (resize) return { ...rect, [axis === 'x' ? 'width' : 'height']: Math.max(24, Math.min(pageLimit - start, size + correction)) };
+  return { ...rect, [axis]: Math.max(0, Math.min(pageLimit - size, start + correction)) };
+}
+
+function tableAlignmentGuides(textContent, viewport, scale, movableTexts, tables, pageNumber, activeId, pageWidth, pageHeight) {
+  const x = [0, pageWidth, pageWidth / 2];
+  const y = [0, pageHeight, pageHeight / 2, ...getNearbyLineBaselines(textContent, viewport, scale, movableTexts, pageNumber, null)];
+  getHorizontalTextGuides(textContent, viewport, scale, movableTexts, pageNumber, null).forEach((guide) => x.push(guide.left, guide.center, guide.right));
+  [...movableTexts, ...tables].forEach((item) => {
+    if (item.id === activeId || Number(item.pageNumber) !== Number(pageNumber)) return;
+    const rect = item.currentRect;
+    if (!rect) return;
+    x.push(rect.x, rect.x + rect.width / 2, rect.x + rect.width);
+    y.push(rect.y, rect.y + rect.height / 2, rect.y + rect.height);
+  });
+  return { x: x.filter(Number.isFinite), y: y.filter(Number.isFinite) };
+}
+
 function getMovedSourceCoverRects(movableTexts = []) {
   return movableTexts.flatMap((item) => {
+    if (item.type === 'addedText') return [];
     // A saved item with no pending edits is already represented in the PDF.
     // It has no live cover in MovableTextLayer, so it should not block text.
     if (item.persistedToPdf && !item.hasChanges) return [];
@@ -364,6 +493,86 @@ function getSelectionSourceFont(sourceInfo, textContent, selectedText) {
     typeof item?.str === 'string' && item.str.includes(selectedText)
   ));
   return matchedIndex >= 0 ? textContent?.fontPreviews?.[matchedIndex] || null : null;
+}
+
+function buildSelectionFontRuns(parts, range, textContent, scale, useWholeSpans = false) {
+  const orderedParts = sortByVisualTextRows(parts.filter((part) => part.span));
+  const runs = [];
+  let previous = null;
+  orderedParts.forEach((part) => {
+    const span = part.span;
+    const rect = part.rect || span.getBoundingClientRect();
+    let text = String(part.text || span.dataset.unicodeText || span.textContent || '');
+    if (range && !useWholeSpans) {
+      try {
+        const clipped = document.createRange();
+        clipped.selectNodeContents(span);
+        if (span.contains(range.startContainer)) clipped.setStart(range.startContainer, range.startOffset);
+        if (span.contains(range.endContainer)) clipped.setEnd(range.endContainer, range.endOffset);
+        text = clipped.toString();
+      } catch {
+        return;
+      }
+    }
+    if (!text) return;
+
+    let separator = '';
+    if (previous) {
+      const previousRect = previous.rect;
+      const previousCenterY = (previousRect.top + previousRect.bottom) / 2;
+      const currentCenterY = (rect.top + rect.bottom) / 2;
+      const rowTolerance = Math.max(3, Math.min(previousRect.height, rect.height) * 0.7);
+      if (Math.abs(currentCenterY - previousCenterY) > rowTolerance) {
+        if (!/\s$/.test(previous.text)) separator = '\n';
+      } else {
+        const gap = rect.left - previousRect.right;
+        const spaceThreshold = Math.max(2.5, Math.min(previousRect.height, rect.height) * 0.24);
+        if (gap > spaceThreshold && !/\s$/.test(previous.text) && !/^\s/.test(text)) separator = ' ';
+      }
+    }
+
+    let sourceInfo = null;
+    try { sourceInfo = JSON.parse(span.dataset.pdfSource || '{}'); } catch { sourceInfo = null; }
+    const index = Number(sourceInfo?.textItemIndex ?? span.dataset.textItemIndex);
+    const sourceFont = sourceInfo?.sourceFont || textContent?.fontPreviews?.[index] || {};
+    const computedStyle = window.getComputedStyle(span);
+    const fontSize = Math.max(1, Number(sourceFont.fontSize)
+      || (Number.parseFloat(computedStyle.fontSize) / Math.max(scale, 0.01)) || 10);
+    const fontCandidates = collectFontCandidates(sourceFont);
+    const run = {
+      text: `${separator}${text}`,
+      fontCandidates,
+      originalFontCandidates: fontCandidates,
+      fontFamily: computedStyle.fontFamily || sourceFont.fontFamily || 'DocPilotReplacement',
+      originalFontFamily: computedStyle.fontFamily || sourceFont.fontFamily || 'DocPilotReplacement',
+      fontSize,
+      fontWeight: sourceFont.fontWeight || computedStyle.fontWeight || 'normal',
+      fontStyle: sourceFont.fontStyle || computedStyle.fontStyle || 'normal',
+      textDecoration: computedStyle.textDecorationLine || 'none',
+      color: sourceFont.textColor || computedStyle.color || '#111111',
+      preferBoldFont: sourceFont.preferBoldFont === true,
+      originalPreferBoldFont: sourceFont.preferBoldFont === true
+    };
+    const key = JSON.stringify([
+      run.fontCandidates,
+      run.fontFamily,
+      run.fontSize,
+      run.fontWeight,
+      run.fontStyle,
+      run.textDecoration,
+      run.color
+    ]);
+    const last = runs[runs.length - 1];
+    if (last?.key === key) last.text += run.text;
+    else runs.push({ ...run, key });
+    previous = { rect, text };
+  });
+
+  const cleanRuns = runs.map(({ key, ...run }) => run);
+  const joinedText = cleanRuns.map((run) => run.text).join('').trim();
+  return joinedText && cleanRuns.length > 0
+    ? { runs: cleanRuns, text: joinedText }
+    : null;
 }
 
 function mergeSelectionClientRects(rects = []) {
@@ -704,11 +913,23 @@ function PdfPage({
   batchReplaceRequest,
   onBatchReplaceHandled,
   textMoveMode = false,
+  textAddMode = false,
+  tableAddMode = false,
   textReplaceMode = false,
   areaTextReplaceMode = false,
   editingEnabled = false,
   movableTexts = [],
   imageAttachments = [],
+  tables = [],
+  removedTables = [],
+  selectedTableId = null,
+  selectedTableCell = null,
+  onCreateTable,
+  onSelectTable,
+  onSelectTableCell,
+  onUpdateTable,
+  onDeleteTable,
+  onCopyTable,
   selectedMovableTextId = null,
   editingMovableText = null,
   onCreateMovableText,
@@ -716,10 +937,13 @@ function PdfPage({
   onUpdateMovableTextPreviewFont,
   onMoveMovableText,
   onMoveMovableTextEnd,
+  onResizeMovableText,
+  onResizeMovableTextEnd,
   onSelectMovableText,
   onBeginEditMovableText,
   onChangeEditMovableText,
   onChangeEditMovableTextStyle,
+  onEditSelectionChange,
   onCommitEditMovableText,
   onCancelEditMovableText,
   onDeleteMovableText,
@@ -746,10 +970,13 @@ function PdfPage({
   const [areaSelectionBox, setAreaSelectionBox] = useState(null);
   const [hoveredReplacementLine, setHoveredReplacementLine] = useState(null);
   const moveRef = useRef(null);
+  const resizeRef = useRef(null);
   const areaSelectionRef = useRef(null);
   const hoveredReplacementLineKeyRef = useRef('');
   const imageMoveRef = useRef(null);
+  const tableMoveRef = useRef(null);
   const textDragRef = useRef(null);
+  const suppressReplacementClickRef = useRef(false);
   const handledBatchRequestRef = useRef('');
   const batchSelectionActiveRef = useRef(false);
   const handleTextLayerRendered = useCallback(() => {
@@ -758,9 +985,10 @@ function PdfPage({
 
   const handleTextSelection = useCallback((lineSelection = null) => {
     const isBatchSelection = batchSelectionActiveRef.current;
+    const paragraphEditMode = editingEnabled && !textMoveMode;
     // Text Move only repositions an existing movable object. Selecting source
     // PDF text in that mode must never create a new editor/movable object.
-    if ((!textReplaceMode && !isBatchSelection) || !pageRef.current) return;
+    if ((!paragraphEditMode && !textReplaceMode && !isBatchSelection) || !pageRef.current) return;
 
     const selection = window.getSelection();
     if (!selection || (!lineSelection && selection.rangeCount === 0)) return;
@@ -798,6 +1026,20 @@ function PdfPage({
       : (selectedSpans.length > rangeSpans.length
         ? spanText
         : (wholeSpan ? spanText : selectionText)) || spanText;
+    const fontRunSelection = buildSelectionFontRuns(
+      lineSelection?.parts || selectedSpans.map((span) => ({ span, rect: span.getBoundingClientRect(), text: span.dataset.unicodeText || span.textContent || '' })),
+      range,
+      textContent,
+      scale,
+      Boolean(lineSelection || selectedSpans.length > rangeSpans.length)
+    );
+    // The browser-selected string and the visually reconstructed line can
+    // differ only in spaces/newlines. Keep the per-span source font runs in
+    // that case; PdfJsViewer reconciles their text to selectedText while
+    // retaining each run's font metadata. Falling back to sourceFont here
+    // made every mixed-font line inherit the first span's font.
+    let fontRuns = !isBatchSelection && fontRunSelection?.runs?.length
+      ? fontRunSelection.runs : [];
     const displayText = String(isBatchSelection ? batchReplaceRequest?.newText : selectedText);
     const batchTarget = isBatchSelection
       ? (batchReplaceRequest?.targets || []).find((target) => Number(target?.pageNumber ?? target?.page) === pageNumber) || null
@@ -902,6 +1144,22 @@ function PdfPage({
     );
     const sourceFontWeight = sourceFont?.fontWeight || computedStyle?.fontWeight || 'normal';
     const preferBoldFont = sourceFont?.preferBoldFont === true || sourceFontWeight === 'bold' || Number(sourceFontWeight) >= 600;
+    if (!isBatchSelection && !fontRuns.length) {
+      fontRuns = [{
+        text: String(selectedText),
+        fontCandidates,
+        originalFontCandidates: fontCandidates,
+        fontFamily: computedStyle?.fontFamily || sourceFont?.fontFamily || 'DocPilotReplacement',
+        originalFontFamily: computedStyle?.fontFamily || sourceFont?.fontFamily || 'DocPilotReplacement',
+        fontSize: Number(sourceFont?.fontSize) || fontSize,
+        fontWeight: sourceFontWeight,
+        fontStyle: sourceFont?.fontStyle || computedStyle?.fontStyle || 'normal',
+        textDecoration: computedStyle?.textDecorationLine || 'none',
+        color: sourceFont?.textColor || color,
+        preferBoldFont: sourceFont?.preferBoldFont === true,
+        originalPreferBoldFont: sourceFont?.preferBoldFont === true
+      }];
+    }
     // Batch replacements use the source selection width just like a manual
     // text replacement. Measuring the replacement value here made the batch
     // editor grow to the right before the user edited it.
@@ -929,7 +1187,7 @@ function PdfPage({
       if (naturalWidth > 0) glyphScaleX = currentRect.width / naturalWidth;
     }
     const createdTextId = onCreateMovableText?.({
-      type: (textReplaceMode || isBatchSelection) ? 'replacementText' : 'movableText',
+      type: (paragraphEditMode || textReplaceMode || isBatchSelection) ? 'replacementText' : 'movableText',
       pageNumber,
       searchLineNumber: batchTarget?.lineNumber ?? batchTarget?.line ?? null,
       displayText,
@@ -977,7 +1235,7 @@ function PdfPage({
       // Replacement selections and batch replacements are anchored edits.
       // Text Move can reposition the resulting editable object later.
       allowMove: textMoveMode && !textReplaceMode && !isBatchSelection,
-      autoEdit: textReplaceMode && !isBatchSelection,
+      autoEdit: (paragraphEditMode || textReplaceMode) && !isBatchSelection,
       // A browser selection is represented by PDF.js Unicode text. Preserve
       // that exact text for export rather than replaying the source glyph run.
       forceUnicodeFallback: true,
@@ -988,6 +1246,7 @@ function PdfPage({
       // local Windows-font resolver during PDF export.
       fontCandidates,
       originalFontCandidates: fontCandidates,
+      fontRuns,
       originalPreferBoldFont: preferBoldFont,
       glyphText: sourceFont?.glyphText || null,
       originalGlyphText: sourceFont?.glyphText || null,
@@ -1017,10 +1276,10 @@ function PdfPage({
     setSelectionBoxes([]);
     selection.removeAllRanges();
     return createdTextId || null;
-  }, [batchReplaceRequest, onCreateMovableText, onUpdateMovableTextPreviewFont, pageNumber, pageSize, scale, textContent, textMoveMode, textReplaceMode, viewport]);
+  }, [batchReplaceRequest, editingEnabled, onCreateMovableText, onUpdateMovableTextPreviewFont, pageNumber, pageSize, scale, textContent, textMoveMode, textReplaceMode, viewport]);
 
   const getReplacementLineAtTarget = useCallback((target) => {
-    if ((!textReplaceMode && !textMoveMode) || !pageRef.current || !target?.closest) return null;
+    if ((!editingEnabled && !textReplaceMode && !textMoveMode) || !pageRef.current || !target?.closest) return null;
     const span = target.closest('.textLayer span[data-text-item-index]');
     const movableTextId = target.closest('.movable-text-object[data-movable-text-id]')?.dataset.movableTextId;
     const movableItem = movableTextId ? movableTexts.find((item) => item.id === movableTextId) : null;
@@ -1049,10 +1308,10 @@ function PdfPage({
     }, pageRef.current, scale, movableTexts, true, true);
     return groups.find((line) => (span && line.parts.some((part) => part.span === span))
       || (movableItem && line.parts.some((part) => part.item?.id === movableItem.id))) || null;
-  }, [movableTexts, scale, textMoveMode, textReplaceMode]);
+  }, [editingEnabled, movableTexts, scale, textMoveMode, textReplaceMode]);
 
   const handleReplacementLineHover = useCallback((event) => {
-    if (!textReplaceMode) {
+    if (textAddMode || tableAddMode || ((!editingEnabled || textMoveMode) && !textReplaceMode)) {
       hoveredReplacementLineKeyRef.current = '';
       setHoveredReplacementLine(null);
       return;
@@ -1068,7 +1327,7 @@ function PdfPage({
     if (key === hoveredReplacementLineKeyRef.current) return;
     hoveredReplacementLineKeyRef.current = key;
     setHoveredReplacementLine(line);
-  }, [getReplacementLineAtTarget, textReplaceMode]);
+  }, [editingEnabled, getReplacementLineAtTarget, tableAddMode, textAddMode, textMoveMode, textReplaceMode]);
 
   const clearHoveredReplacementLine = useCallback(() => {
     hoveredReplacementLineKeyRef.current = '';
@@ -1076,8 +1335,27 @@ function PdfPage({
   }, []);
 
   const handleReplacementLineClick = useCallback((event) => {
-    if (!textReplaceMode) return;
-    if (event.target.closest?.('.movable-text-edit-input, .movable-text-format-toolbar, button')) return;
+    if (textAddMode || tableAddMode || ((!editingEnabled || textMoveMode) && !textReplaceMode)) return;
+    if (suppressReplacementClickRef.current) {
+      const suppressedClick = suppressReplacementClickRef.current;
+      suppressReplacementClickRef.current = false;
+      const isPostDragClick = Date.now() <= suppressedClick.expiresAt
+        && Math.hypot(event.clientX - suppressedClick.x, event.clientY - suppressedClick.y) <= 12;
+      if (isPostDragClick) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
+    if (event.target.closest?.('.movable-text-edit-input, .movable-text-format-toolbar, .movable-text-resize-handle, button')) return;
+    const existingTextId = event.target.closest?.('.movable-text-object[data-movable-text-id]')?.dataset.movableTextId;
+    if (existingTextId) {
+      event.preventDefault();
+      event.stopPropagation();
+      clearHoveredReplacementLine();
+      onBeginEditMovableText?.(existingTextId);
+      return;
+    }
     const line = getReplacementLineAtTarget(event.target);
     if (!line) return;
     event.preventDefault();
@@ -1097,7 +1375,7 @@ function PdfPage({
     }
     clearHoveredReplacementLine();
     handleTextSelection({ ...line, range });
-  }, [clearHoveredReplacementLine, getReplacementLineAtTarget, handleTextSelection, textReplaceMode]);
+  }, [clearHoveredReplacementLine, editingEnabled, getReplacementLineAtTarget, handleTextSelection, onBeginEditMovableText, tableAddMode, textAddMode, textMoveMode, textReplaceMode]);
 
   const createAreaReplacementItems = useCallback((area) => {
     const pageElement = pageRef.current;
@@ -1109,6 +1387,7 @@ function PdfPage({
     const selections = groups.map((group, index) => {
       const { text, geometry, sourceElement } = group;
       const { currentRect, coverRects } = geometry;
+      const fontRuns = buildSelectionFontRuns(group.parts, null, textContent, scale, true)?.runs || [];
       let sourceInfo = null;
       try { sourceInfo = sourceElement?.dataset.pdfSource ? JSON.parse(sourceElement.dataset.pdfSource) : null; } catch { sourceInfo = null; }
       const computedStyle = sourceElement ? window.getComputedStyle(sourceElement) : null;
@@ -1145,7 +1424,7 @@ function PdfPage({
         preferBoldFont, fontStyle: computedStyle?.fontStyle || 'normal', letterSpacing: 0,
         verticalAlign: 'middle', textAlign: 'left', allowMove: false, autoEdit: index === 0,
         forceUnicodeFallback: true, sourceSelection: null, sourceFont: sourceFont || null,
-        fontCandidates, originalFontCandidates: fontCandidates, originalPreferBoldFont: preferBoldFont,
+        fontCandidates, originalFontCandidates: fontCandidates, fontRuns, originalPreferBoldFont: preferBoldFont,
         originalGlyphText: sourceFont?.glyphText || null, originalEncodedText: sourceInfo?.encodedText || null,
         fontAnalysis: sourceInfo?.sourceFont || null,
         baselineOffset: Number.isFinite(sourceBaselineOffset)
@@ -1163,8 +1442,58 @@ function PdfPage({
     });
   }, [onCreateMovableTexts, onUpdateMovableTextPreviewFont, pageNumber, pageSize, scale, textContent]);
 
+  const createAddedTextItem = useCallback((area) => {
+    const pageElement = pageRef.current;
+    if (!pageElement || !pageSize.width || !pageSize.height) return;
+    const pageRect = pageElement.getBoundingClientRect();
+    const currentRect = {
+      x: Math.max(0, (area.left - pageRect.left) / scale),
+      y: Math.max(0, (area.top - pageRect.top) / scale),
+      width: Math.max(24, (area.right - area.left) / scale),
+      height: Math.max(16, (area.bottom - area.top) / scale)
+    };
+    const fontSize = 12;
+    onCreateMovableText?.({
+      type: 'addedText',
+      pageNumber,
+      displayText: '',
+      text: '',
+      sourceText: '',
+      originalText: '',
+      originalUnicodeText: '',
+      originalRect: currentRect,
+      displayRect: currentRect,
+      movedRect: currentRect,
+      currentRect,
+      fitTextWidth: currentRect.width,
+      coverRects: [],
+      sourcePageWidth: pageSize.width / scale,
+      sourcePageHeight: pageSize.height / scale,
+      backgroundColor: '#ffffff',
+      color: '#111111',
+      renderFontFamily: 'Arial, sans-serif',
+      fontFamily: 'Arial, sans-serif',
+      fontCandidates: [],
+      fontRuns: [],
+      fontSize,
+      fontWeight: 'normal',
+      fontStyle: 'normal',
+      letterSpacing: 0,
+      verticalAlign: 'top',
+      baselineOffset: fontSize * 0.88,
+      textAlign: 'left',
+      allowMove: true,
+      autoEdit: true,
+      forceUnicodeFallback: true,
+      sourceSelection: null,
+      coverPadding: 0
+    });
+  }, [onCreateMovableText, pageNumber, pageSize, scale]);
+
   const handleAreaSelectionPointerDown = useCallback((event) => {
-    if (!areaTextReplaceMode || event.button !== 0 || !pageRef.current) return;
+    if ((!areaTextReplaceMode && !textAddMode && !tableAddMode) || event.button !== 0 || !pageRef.current) return;
+    if (event.target.closest?.('.movable-text-object, .movable-text-edit-input, .movable-text-format-toolbar, .pdf-image-attachment, .pdf-table-object, button')) return;
+    if (!textAddMode && !tableAddMode && event.target.closest?.('.textLayer span[data-text-item-index]')) return;
     event.preventDefault();
     const pageRect = pageRef.current.getBoundingClientRect();
     const startX = Math.max(0, Math.min(pageRect.width, event.clientX - pageRect.left));
@@ -1188,14 +1517,22 @@ function PdfPage({
       window.removeEventListener('pointerup', finish);
       setAreaSelectionBox(null);
       if (!box || box.width < 6 || box.height < 6 || !active) return;
-      createAreaReplacementItems({
+      const selectedArea = {
         left: active.pageRect.left + box.x, top: active.pageRect.top + box.y,
         right: active.pageRect.left + box.x + box.width, bottom: active.pageRect.top + box.y + box.height
+      };
+      if (tableAddMode) onCreateTable?.({
+        pageNumber,
+        sourcePageWidth: pageSize.width / scale,
+        sourcePageHeight: pageSize.height / scale,
+        currentRect: { x: box.x / scale, y: box.y / scale, width: box.width / scale, height: box.height / scale }
       });
+      else if (textAddMode) createAddedTextItem(selectedArea);
+      else createAreaReplacementItems(selectedArea);
     };
     window.addEventListener('pointermove', update);
     window.addEventListener('pointerup', finish, { once: true });
-  }, [areaTextReplaceMode, createAreaReplacementItems]);
+  }, [areaTextReplaceMode, createAddedTextItem, createAreaReplacementItems, onCreateTable, pageNumber, pageSize, scale, tableAddMode, textAddMode]);
 
   useEffect(() => {
     if (!textMoveMode && !textReplaceMode) {
@@ -1292,7 +1629,28 @@ function PdfPage({
       id: item.id,
       startX: event.clientX,
       startY: event.clientY,
-      startRect: item.currentRect
+      startRect: item.currentRect,
+      baselineOffset: Number.isFinite(Number(item.baselineOffset))
+        ? Number(item.baselineOffset) : Number(item.fontSize || 10) * 0.88,
+      lineBaselines: getNearbyLineBaselines(textContent, viewport, scale, movableTexts, pageNumber, item.id),
+      horizontalGuides: getHorizontalTextGuides(textContent, viewport, scale, movableTexts, pageNumber, item.id),
+      snapDistance: Math.max(3, Math.min(8, Number(item.fontSize || 10) * 0.55))
+    };
+  };
+
+  const handleResizeMovableTextPointerDown = (event, item, direction) => {
+    if (!editingEnabled || textMoveMode || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectMovableText?.(item.id);
+    resizeRef.current = {
+      id: item.id,
+      direction,
+      startX: event.clientX,
+      startY: event.clientY,
+      startRect: item.currentRect,
+      minWidth: Math.max(24, Number(item.fontSize || 10) * 2),
+      minHeight: Math.max(16, Number(item.fontSize || 10) * 1.2)
     };
   };
 
@@ -1305,19 +1663,66 @@ function PdfPage({
     imageMoveRef.current = { id: item.id, action, startX: event.clientX, startY: event.clientY, startRect: item.currentRect, aspectRatio: item.aspectRatio || (item.currentRect.width / Math.max(item.currentRect.height, 1)) };
   };
 
+  const handleTablePointerDown = (event, item, action = 'select') => {
+    if (!editingEnabled || event.button !== 0) return;
+    event.stopPropagation();
+    if (action === 'select') return;
+    event.preventDefault();
+    event.currentTarget.closest('.pdf-table-object')?.focus();
+    onSelectTable?.(item.id);
+    tableMoveRef.current = {
+      id: item.id, action, startX: event.clientX, startY: event.clientY, startRect: item.currentRect,
+      guides: tableAlignmentGuides(textContent, viewport, scale, movableTexts, tables, pageNumber, item.id, pageSize.width / scale, pageSize.height / scale),
+      snapDistance: 5 / scale
+    };
+  };
+
   useEffect(() => {
     const handlePointerMove = (event) => {
       if (moveRef.current) {
-        const { id, startX, startY, startRect } = moveRef.current;
+        const { id, startX, startY, startRect, baselineOffset, lineBaselines, horizontalGuides, snapDistance } = moveRef.current;
         const pageWidth = pageSize.width / scale;
         const pageHeight = pageSize.height / scale;
-        const currentRect = {
+        const draggedRect = {
           ...startRect,
           x: Math.min(Math.max(0, startRect.x + (event.clientX - startX) / scale), Math.max(0, pageWidth - startRect.width)),
           y: Math.min(Math.max(0, startRect.y + (event.clientY - startY) / scale), Math.max(0, pageHeight - startRect.height))
         };
+        // Keep the snapped page rect as the preview and the value committed on pointerup.
+        const verticallySnapped = snapMovedTextToLine(
+          draggedRect, baselineOffset, lineBaselines, snapDistance, pageHeight
+        );
+        const currentRect = snapMovedTextHorizontally(
+          verticallySnapped, horizontalGuides, snapDistance, pageWidth
+        );
         moveRef.current.currentRect = currentRect;
         onMoveMovableText?.(id, currentRect);
+      }
+      if (resizeRef.current) {
+        event.preventDefault();
+        const active = resizeRef.current;
+        const pageWidth = pageSize.width / scale;
+        const pageHeight = pageSize.height / scale;
+        const dx = (event.clientX - active.startX) / scale;
+        const dy = (event.clientY - active.startY) / scale;
+        const { x, y, width, height } = active.startRect;
+        let left = x;
+        let top = y;
+        let right = x + width;
+        let bottom = y + height;
+        if (active.direction.includes('w')) left = Math.max(0, Math.min(right - active.minWidth, x + dx));
+        if (active.direction.includes('e')) right = Math.min(pageWidth, Math.max(left + active.minWidth, x + width + dx));
+        if (active.direction.includes('n')) top = Math.max(0, Math.min(bottom - active.minHeight, y + dy));
+        if (active.direction.includes('s')) bottom = Math.min(pageHeight, Math.max(top + active.minHeight, y + height + dy));
+        const currentRect = {
+          ...active.startRect,
+          x: left,
+          y: top,
+          width: right - left,
+          height: bottom - top
+        };
+        active.currentRect = currentRect;
+        onResizeMovableText?.(active.id, currentRect);
       }
       if (imageMoveRef.current) {
         const active = imageMoveRef.current;
@@ -1335,25 +1740,52 @@ function PdfPage({
         active.currentRect = currentRect;
         onMoveImage?.(active.id, currentRect);
       }
+      if (tableMoveRef.current) {
+        const active = tableMoveRef.current;
+        const pageWidth = pageSize.width / scale;
+        const pageHeight = pageSize.height / scale;
+        const dx = (event.clientX - active.startX) / scale;
+        const dy = (event.clientY - active.startY) / scale;
+        const draggedRect = active.action === 'resize'
+          ? { ...active.startRect,
+            width: Math.max(24, Math.min(pageWidth - active.startRect.x, active.startRect.width + dx)),
+            height: Math.max(24, Math.min(pageHeight - active.startRect.y, active.startRect.height + dy)) }
+          : { ...active.startRect,
+            x: Math.max(0, Math.min(pageWidth - active.startRect.width, active.startRect.x + dx)),
+            y: Math.max(0, Math.min(pageHeight - active.startRect.height, active.startRect.y + dy)) };
+        const resizing = active.action === 'resize';
+        const xSnapped = snapRectAxis(draggedRect, 'x', active.guides.x, active.snapDistance, pageWidth, resizing);
+        const currentRect = snapRectAxis(xSnapped, 'y', active.guides.y, active.snapDistance, pageHeight, resizing);
+        active.currentRect = currentRect;
+        onUpdateTable?.(active.id, { currentRect });
+      }
     };
     const handlePointerUp = () => {
       if (moveRef.current?.currentRect) {
         onMoveMovableTextEnd?.(moveRef.current.id, moveRef.current.currentRect);
       }
       moveRef.current = null;
+      if (resizeRef.current?.currentRect) {
+        onResizeMovableTextEnd?.(resizeRef.current.id, resizeRef.current.currentRect);
+      }
+      resizeRef.current = null;
       if (imageMoveRef.current?.currentRect) onMoveImageEnd?.(imageMoveRef.current.id, imageMoveRef.current.currentRect);
       imageMoveRef.current = null;
+      if (tableMoveRef.current?.currentRect) onUpdateTable?.(tableMoveRef.current.id, { currentRect: tableMoveRef.current.currentRect }, true);
+      tableMoveRef.current = null;
     };
     const handleKeyDown = (event) => {
-      if (!selectedMovableTextId && !selectedImageId) return;
-      if (event.target instanceof HTMLElement && event.target.closest('input, textarea')) return;
+      if (!selectedMovableTextId && !selectedImageId && !selectedTableId) return;
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable="true"]')) return;
       if (event.key === 'Escape') {
         onSelectMovableText?.(null);
         onSelectImage?.(null);
+        onSelectTable?.(null);
       }
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
-        if (selectedImageId) onDeleteImage?.(selectedImageId);
+        if (selectedTableId && tables.some((table) => table.id === selectedTableId)) onDeleteTable?.(selectedTableId);
+        else if (selectedImageId) onDeleteImage?.(selectedImageId);
         else onDeleteMovableText?.(selectedMovableTextId);
       }
     };
@@ -1366,7 +1798,7 @@ function PdfPage({
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [handleTextSelection, onDeleteImage, onDeleteMovableText, onMoveImage, onMoveImageEnd, onMoveMovableText, onMoveMovableTextEnd, onSelectImage, onSelectMovableText, pageSize, scale, selectedImageId, selectedMovableTextId]);
+  }, [handleTextSelection, onDeleteImage, onDeleteMovableText, onDeleteTable, onMoveImage, onMoveImageEnd, onMoveMovableText, onMoveMovableTextEnd, onResizeMovableText, onResizeMovableTextEnd, onSelectImage, onSelectMovableText, onSelectTable, onUpdateTable, pageSize, scale, selectedImageId, selectedMovableTextId, selectedTableId, tables]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1724,11 +2156,46 @@ function PdfPage({
   }, [pageNumber, pageSize, replacePreview, textLayerVersion]);
 
   const handleTextMouseDown = useCallback((event) => {
+    if (tableAddMode) return;
+    if (event.target.closest?.('.movable-text-edit-input, .movable-text-format-toolbar, .movable-text-resize-handle, button')) {
+      textDragRef.current = null;
+      return;
+    }
     setSelectionBoxes([]);
+    if (textReplaceMode && !batchSelectionActiveRef.current) {
+      // Text Replace is a hover-and-click action. Prevent native text
+      // selection so a downward drag cannot accidentally combine rows.
+      if (event.button !== 0) return;
+      event.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      textDragRef.current = {
+        startX: event.clientX,
+        startY: event.clientY,
+        replacementClick: true
+      };
+      return;
+    }
     textDragRef.current = { startX: event.clientX, startY: event.clientY };
-  }, []);
+  }, [tableAddMode, textReplaceMode]);
 
   const handleTextMouseUp = useCallback((event) => {
+    if (tableAddMode) return;
+    if (textReplaceMode && !batchSelectionActiveRef.current) {
+      const gesture = textDragRef.current;
+      textDragRef.current = null;
+      if (!gesture?.replacementClick) return;
+      const distance = Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY);
+      if (distance > 6) {
+        suppressReplacementClickRef.current = {
+          x: event.clientX,
+          y: event.clientY,
+          expiresAt: Date.now() + 250
+        };
+        window.getSelection()?.removeAllRanges();
+        setSelectionBoxes([]);
+      }
+      return;
+    }
     textDragRef.current = textDragRef.current
       ? { ...textDragRef.current, endX: event.clientX, endY: event.clientY }
       : null;
@@ -1744,7 +2211,7 @@ function PdfPage({
     }
     if (textReplaceMode || batchSelectionActiveRef.current) handleTextSelection(combinedLine);
     textDragRef.current = null;
-  }, [handleTextSelection, movableTexts, scale, textReplaceMode]);
+  }, [handleTextSelection, movableTexts, scale, tableAddMode, textReplaceMode]);
 
   useEffect(() => {
     if (!onPageReady) {
@@ -1761,7 +2228,7 @@ function PdfPage({
   return (
     <div
       ref={pageRef}
-      className={`pdf-page${textMoveMode || textReplaceMode ? ' is-text-selection-mode' : ''}${areaTextReplaceMode ? ' is-area-text-selection-mode' : ''}`}
+      className={`pdf-page${editingEnabled || textMoveMode || textReplaceMode ? ' is-text-selection-mode' : ''}${areaTextReplaceMode ? ' is-area-text-selection-mode' : ''}${textAddMode ? ' is-add-text-mode' : ''}${tableAddMode ? ' is-add-table-mode' : ''}`}
       data-page-number={pageNumber}
       onMouseDown={handleTextMouseDown}
       onMouseUp={handleTextMouseUp}
@@ -1788,7 +2255,7 @@ function PdfPage({
       />
       {areaSelectionBox ? <div className="pdf-area-text-selection-box" style={{ left: `${areaSelectionBox.x}px`, top: `${areaSelectionBox.y}px`, width: `${areaSelectionBox.width}px`, height: `${areaSelectionBox.height}px` }} /> : null}
       <HighlightLayer boxes={selectionBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
-      {textReplaceMode && hoveredReplacementLine ? (
+      {!textAddMode && (textReplaceMode || (editingEnabled && !textMoveMode)) && hoveredReplacementLine ? (
         <HighlightLayer boxes={hoveredReplacementLine.geometry.previewBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
       ) : null}
       <ReplacementPreviewLayer items={replacementPreviewItems} width={pageSize.width} height={pageSize.height} />
@@ -1797,14 +2264,19 @@ function PdfPage({
         scale={scale}
         selectedId={selectedMovableTextId}
         editingMovableText={editingMovableText}
+        textMoveMode={textMoveMode}
+        editingEnabled={editingEnabled}
         onPointerDown={handleMovableTextPointerDown}
-        onDoubleClick={editingEnabled ? onBeginEditMovableText : undefined}
+        onResizePointerDown={handleResizeMovableTextPointerDown}
+        onDoubleClick={editingEnabled && !textMoveMode ? onBeginEditMovableText : undefined}
         onEditChange={onChangeEditMovableText}
         onEditStyleChange={onChangeEditMovableTextStyle}
+        onEditSelectionChange={onEditSelectionChange}
         onEditCommit={onCommitEditMovableText}
         onEditCancel={onCancelEditMovableText}
       />
       <ImageAttachmentLayer items={imageAttachments} scale={scale} selectedId={selectedImageId} onPointerDown={handleImagePointerDown} />
+      <TableLayer items={tables} removedItems={removedTables} scale={scale} selectedId={selectedTableId} selectedCell={selectedTableCell} editingEnabled={editingEnabled} onPointerDown={handleTablePointerDown} onSelect={onSelectTable} onSelectCell={onSelectTableCell} onCopy={onCopyTable} onDelete={onDeleteTable} onUpdate={onUpdateTable} />
       <HighlightLayer boxes={highlightBoxes} width={pageSize.width} height={pageSize.height} color={highlightOptions.color} />
       <HighlightLayer boxes={findBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
     </div>
@@ -1830,14 +2302,189 @@ function ImageAttachmentLayer({ items, scale, selectedId, onPointerDown }) {
   );
 }
 
-function MovableTextLayer({ items, scale, selectedId, editingMovableText, onPointerDown, onDoubleClick, onEditChange, onEditStyleChange, onEditCommit, onEditCancel }) {
+function tableCellTopPadding(value, style, width, height, size) {
+  if (style.verticalAlign === 'top' || !value) return 2;
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context) return 2;
+  context.font = `${style.bold ? '700' : '400'} ${size}px 'Noto Sans KR', 'Malgun Gothic', sans-serif`;
+  const innerWidth = Math.max(1, width - 8);
+  const lines = String(value).split('\n').reduce((count, line) => count + Math.max(1, Math.ceil(context.measureText(line).width / innerWidth)), 0);
+  const spare = Math.max(0, height - lines * size * 1.2 - 4);
+  return Math.max(2, style.verticalAlign === 'bottom' ? spare : spare / 2);
+}
+
+function TableLayer({ items, removedItems = [], scale, selectedId, selectedCell, editingEnabled, onPointerDown, onSelect, onSelectCell, onCopy, onDelete, onUpdate }) {
+  const resizeRef = useRef(null);
+  const dragRef = useRef(null);
+  const [contextMenu, setContextMenu] = useState(null);
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+    const dismiss = (event) => {
+      if (!(event.target instanceof Element) || !event.target.closest('.pdf-table-context-menu')) setContextMenu(null);
+    };
+    const escape = (event) => { if (event.key === 'Escape') setContextMenu(null); };
+    document.addEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [contextMenu]);
+  useEffect(() => {
+    const move = (event) => {
+      const drag = dragRef.current;
+      if (drag) {
+        const bounds = drag.element.getBoundingClientRect();
+        const horizontal = Math.max(0, Math.min(0.999999, (event.clientX - bounds.left) / bounds.width));
+        const vertical = Math.max(0, Math.min(0.999999, (event.clientY - bounds.top) / bounds.height));
+        const findTrack = (sizes, position) => {
+          let limit = 0;
+          return Math.max(0, sizes.findIndex((size) => { limit += size; return position < limit; }));
+        };
+        const row = findTrack(tableSizes(drag.table.rowHeights, drag.table.rows), vertical);
+        const column = findTrack(tableSizes(drag.table.columnWidths, drag.table.columns), horizontal);
+        const target = tableCellAt(drag.table, row, column);
+        if (target.row !== drag.startRow || target.column !== drag.startColumn) {
+          if (!drag.crossed) {
+            drag.crossed = true;
+            drag.input.blur();
+            window.getSelection()?.removeAllRanges();
+          }
+          event.preventDefault();
+          if (target.row !== drag.focusRow || target.column !== drag.focusColumn) {
+            drag.focusRow = target.row;
+            drag.focusColumn = target.column;
+            onSelectCell?.(drag.table.id, target.row, target.column, true);
+          }
+        }
+      }
+      const active = resizeRef.current;
+      if (!active) return;
+      event.preventDefault();
+      const delta = (active.axis === 'row' ? event.clientY - active.start : event.clientX - active.start) / scale;
+      const next = tableResizeBoundary(active.table, active.axis, active.boundary, delta);
+      if (next !== active.table) {
+        active.preview = next;
+        onUpdate?.(active.table.id, { [active.axis === 'row' ? 'rowHeights' : 'columnWidths']: next[active.axis === 'row' ? 'rowHeights' : 'columnWidths'] });
+      }
+    };
+    const end = () => {
+      const active = resizeRef.current;
+      if (active?.preview) onUpdate?.(active.table.id, { [active.axis === 'row' ? 'rowHeights' : 'columnWidths']: active.preview[active.axis === 'row' ? 'rowHeights' : 'columnWidths'] }, true);
+      resizeRef.current = null;
+      if (dragRef.current) onSelect?.(dragRef.current.table.id);
+      dragRef.current = null;
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', end); };
+  }, [onSelect, onSelectCell, onUpdate, scale]);
+  if (!items.length && !removedItems.length) return null;
+  return <div className="pdf-table-layer" aria-label="추가한 표">
+    {removedItems.map((item) => <div key={`removed-${item.id}`} className="pdf-table-old-cover" style={{ left: `${item.currentRect.x * scale}px`, top: `${item.currentRect.y * scale}px`, width: `${item.currentRect.width * scale}px`, height: `${item.currentRect.height * scale}px` }} />)}
+    {items.map((item) => {
+      const selected = selectedId === item.id && editingEnabled;
+      const columns = tableSizes(item.columnWidths, item.columns);
+      const rows = tableSizes(item.rowHeights, item.rows);
+      const gridColumns = columns.map((value) => `${value * 100}%`).join(' ');
+      const gridRows = rows.map((value) => `${value * 100}%`).join(' ');
+      const range = selectedCell?.tableId === item.id ? selectedCell : null;
+      return <Fragment key={item.id}>
+      {item.persistedToPdf && item.hasChanges && item.savedRect ? <div className="pdf-table-old-cover" style={{ left: `${item.savedRect.x * scale}px`, top: `${item.savedRect.y * scale}px`, width: `${item.savedRect.width * scale}px`, height: `${item.savedRect.height * scale}px` }} /> : null}
+      <div className={`pdf-table-object${selected ? ' is-selected' : ''}${item.persistedToPdf ? ' is-baked' : ''}`}
+        data-table-id={item.id}
+        tabIndex={editingEnabled ? 0 : -1}
+        style={{ left: `${item.currentRect.x * scale}px`, top: `${item.currentRect.y * scale}px`, width: `${item.currentRect.width * scale}px`, height: `${item.currentRect.height * scale}px` }}
+        onPointerDown={(event) => { onPointerDown?.(event, item); if (event.target === event.currentTarget) event.currentTarget.focus(); }}
+        onContextMenu={(event) => {
+          if (!editingEnabled) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onSelect?.(item.id);
+          setContextMenu({ id: item.id, x: Math.min(event.clientX, window.innerWidth - 150), y: Math.min(event.clientY, window.innerHeight - 95) });
+        }}
+        onPointerUp={() => onSelect?.(item.id)}>
+        {selected ? <div className="pdf-table-move-handle" onPointerDown={(event) => onPointerDown?.(event, item, 'move')}>이동</div> : null}
+        {(!item.persistedToPdf || item.hasChanges || selected) ? <div className="pdf-table-grid" style={{ gridTemplateColumns: gridColumns, gridTemplateRows: gridRows, borderColor: item.borderColor }}>
+          {tableVisibleCells(item).map((cell) => {
+            const style = tableStyle(item.cellStyles?.[cell.index]);
+            const cellWidth = columns.slice(cell.column, cell.column + cell.colSpan).reduce((sum, value) => sum + value, 0) * item.currentRect.width * scale;
+            const cellHeight = rows.slice(cell.row, cell.row + cell.rowSpan).reduce((sum, value) => sum + value, 0) * item.currentRect.height * scale;
+            const fontSize = Math.max(5, (style.fontSize || item.fontSize) * scale);
+            const inRange = range && cell.row <= Math.max(range.anchor.row, range.focus.row) && cell.row + cell.rowSpan - 1 >= Math.min(range.anchor.row, range.focus.row)
+              && cell.column <= Math.max(range.anchor.column, range.focus.column) && cell.column + cell.colSpan - 1 >= Math.min(range.anchor.column, range.focus.column);
+            return <textarea key={cell.index} className={`pdf-table-cell${inRange ? ' is-in-range' : ''}`}
+              aria-label={`${cell.row + 1}행 ${cell.column + 1}열`}
+              value={item.cells[cell.index] || ''} readOnly={!selected}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                onPointerDown?.(event, item);
+                onSelectCell?.(item.id, cell.row, cell.column, event.shiftKey);
+                if (event.button === 0) dragRef.current = { table: item, element: event.currentTarget.closest('.pdf-table-object'), input: event.currentTarget,
+                  startRow: cell.row, startColumn: cell.column, focusRow: cell.row, focusColumn: cell.column, crossed: false };
+              }}
+              onChange={(event) => { const cells = [...item.cells]; cells[cell.index] = event.target.value; onUpdate?.(item.id, { cells }); }}
+              onBlur={() => onUpdate?.(item.id, {}, true)}
+              onPaste={(event) => { const next = tablePaste(item, cell.row, cell.column, event.clipboardData.getData('text/plain')); if (next) { event.preventDefault(); onUpdate?.(item.id, next, true); } }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Tab') return;
+                event.preventDefault();
+                const visible = tableVisibleCells(item);
+                const position = visible.findIndex((entry) => entry.index === cell.index);
+                const target = visible[position + (event.shiftKey ? -1 : 1)];
+                if (target) {
+                  onSelectCell?.(item.id, target.row, target.column, false);
+                  event.currentTarget.closest('.pdf-table-grid')?.querySelector(`[data-cell-index="${target.index}"]`)?.focus();
+                }
+              }}
+              data-cell-index={cell.index}
+              style={{ gridColumn: `${cell.column + 1} / span ${cell.colSpan}`, gridRow: `${cell.row + 1} / span ${cell.rowSpan}`,
+                fontSize: `${fontSize}px`, fontWeight: style.bold ? 700 : 400,
+                textAlign: style.align, color: style.color, backgroundColor: style.fill || (cell.row === 0 ? item.headerFill : '#ffffff'),
+                paddingTop: `${tableCellTopPadding(item.cells[cell.index], style, cellWidth, cellHeight, fontSize)}px` }} />;
+          })}
+        </div> : null}
+        {(!item.persistedToPdf || item.hasChanges || selected) ? <svg className="pdf-table-border-overlay" aria-hidden="true">
+          {tableBorderSegments(item).map((edge, index) => {
+            const strokeWidth = Math.max(1, edge.width * scale);
+            const dashArray = tableBorderDashArray(edge.style, strokeWidth)?.join(' ');
+            const double = edge.style === 'double';
+            const offsets = double ? [-0.45, 0.45] : [0];
+            return <Fragment key={index}>{offsets.map((offset) => {
+              const dx = (edge.x2 - edge.x1) * item.currentRect.width * scale;
+              const dy = (edge.y2 - edge.y1) * item.currentRect.height * scale;
+              const length = Math.hypot(dx, dy) || 1;
+              const xOffset = -dy / length * offset * strokeWidth;
+              const yOffset = dx / length * offset * strokeWidth;
+              return <line key={offset} x1={`${edge.x1 * 100}%`} y1={`${edge.y1 * 100}%`}
+                x2={`${edge.x2 * 100}%`} y2={`${edge.y2 * 100}%`}
+                transform={`translate(${xOffset} ${yOffset})`}
+                stroke={edge.color} strokeWidth={double ? Math.max(0.5, strokeWidth / 3) : strokeWidth}
+                strokeDasharray={dashArray} />;
+            })}</Fragment>;
+          })}
+        </svg> : null}
+        {selected && columns.slice(0, -1).map((_, index) => <div key={`col-${index}`} className="pdf-table-column-handle" style={{ left: `${columns.slice(0, index + 1).reduce((sum, value) => sum + value, 0) * 100}%` }}
+          title="열 너비 조절" onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); resizeRef.current = { table: item, axis: 'column', boundary: index + 1, start: event.clientX }; }} />)}
+        {selected && rows.slice(0, -1).map((_, index) => <div key={`row-${index}`} className="pdf-table-row-handle" style={{ top: `${rows.slice(0, index + 1).reduce((sum, value) => sum + value, 0) * 100}%` }}
+          title="행 높이 조절" onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); resizeRef.current = { table: item, axis: 'row', boundary: index + 1, start: event.clientY }; }} />)}
+        {selected ? <button type="button" className="pdf-table-resize-handle" aria-label="표 크기 조절" onPointerDown={(event) => onPointerDown?.(event, item, 'resize')} /> : null}
+      </div></Fragment>;
+    })}
+    {contextMenu ? createPortal(<div className="pdf-table-context-menu" role="menu" aria-label="표 메뉴" style={{ left: contextMenu.x, top: contextMenu.y }}>
+      <button type="button" role="menuitem" onClick={() => { onCopy?.(contextMenu.id); setContextMenu(null); }}>표 복사</button>
+      <button type="button" role="menuitem" onClick={() => { onDelete?.(contextMenu.id); setContextMenu(null); }}>표 삭제</button>
+    </div>, document.body) : null}
+  </div>;
+}
+function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMoveMode, editingEnabled, onPointerDown, onResizePointerDown, onDoubleClick, onEditChange, onEditStyleChange, onEditSelectionChange, onEditCommit, onEditCancel }) {
   if (!items.length) return null;
 
   return (
-    <div className="movable-text-layer" aria-hidden="true">
+    <div className={`movable-text-layer${textMoveMode ? ' is-move-mode' : ''}`} aria-hidden="true">
       {items.map((item) => (
         <div key={item.id}>
-          {(item.persistedToPdf && !item.hasChanges
+          {(item.type === 'addedText' || (item.persistedToPdf && !item.hasChanges)
             ? []
             : (item.persistedToPdf && item.hasChanges
               ? [item.originalRect]
@@ -1862,7 +2509,7 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, onPoin
             })()
           ))}
           <div
-            className={`movable-text-object ${selectedId === item.id ? 'is-selected' : ''} ${item.persistedToPdf && !item.hasChanges ? 'is-review-selection' : ''}`}
+            className={`movable-text-object ${selectedId === item.id ? 'is-selected' : ''} ${item.persistedToPdf && !item.hasChanges ? 'is-review-selection' : ''} ${item.type === 'addedText' ? 'is-added-text' : ''}`}
             data-movable-text-id={item.id}
             style={{
               left: `${item.currentRect.x * scale}px`,
@@ -1875,6 +2522,7 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, onPoin
                 )
               ) * scale}px`,
               width: `${item.currentRect.width * scale}px`,
+              height: `${item.currentRect.height * scale}px`,
               minHeight: `${item.currentRect.height * scale}px`,
               color: item.color,
               // Movable text is exported with the Unicode fallback font. Use
@@ -1886,73 +2534,299 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, onPoin
               // padding. Use the actual fallback font size as the line box so
               // the editor does not sit lower than the exported PDF text.
               lineHeight: `${Number(editingMovableText?.id === item.id ? editingMovableText.fontSize : item.fontSize) * scale}px`,
-              fontWeight: item.fontWeight === 'bold' ? 900 : (item.fontWeight || 'normal'),
+              fontWeight: item.fontWeight === 'bold' ? 700 : (item.fontWeight || 'normal'),
               fontStyle: item.fontStyle || 'normal',
               textDecoration: item.textDecoration || 'none',
               letterSpacing: `${(Number(item.letterSpacing) || 0) * scale}px`,
               textAlign: editingMovableText?.id === item.id ? (editingMovableText.textAlign || 'left') : (item.textAlign || 'left'),
-              textShadow: 'none',
-              WebkitTextStroke: item.fontWeight === 'bold' ? '0.32px currentColor' : '0 transparent'
+              textShadow: 'none'
             }}
             onPointerDown={(event) => onPointerDown(event, item)}
             onDoubleClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
+              if (textMoveMode || event.target.closest?.('.movable-text-resize-handle')) return;
               onDoubleClick?.(item.id);
             }}
           >
             {editingMovableText?.id === item.id ? (
               <div className="movable-text-editor" onPointerDown={(event) => event.stopPropagation()}>
-                <input
-                  className="movable-text-edit-input"
-                  value={editingMovableText.value}
-                  style={{
-                    fontFamily: item.renderFontFamily || 'DocPilotReplacement',
-                    fontWeight: editingMovableText.fontWeight === 'bold' ? 900 : (editingMovableText.fontWeight || 'normal'),
-                    fontStyle: editingMovableText.fontStyle || 'normal',
-                    textDecoration: editingMovableText.textDecoration || 'none',
-                    color: editingMovableText.color || '#111111',
-                    letterSpacing: `${Number(editingMovableText.letterSpacing) || 0}px`,
-                    textAlign: editingMovableText.textAlign || 'left',
-                    textShadow: 'none',
-                    WebkitTextStroke: editingMovableText.fontWeight === 'bold' ? '0.32px currentColor' : '0 transparent'
-                  }}
-                  onChange={(event) => onEditChange?.(event.target.value)}
-                  onDoubleClick={(event) => event.stopPropagation()}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      onEditCommit?.();
-                    } else if (event.key === 'Escape') {
-                      event.preventDefault();
-                      onEditCancel?.();
-                    } else if (event.ctrlKey || event.metaKey) {
-                      if (event.key.toLowerCase() === 'b') {
+                {item.type === 'addedText' || (Array.isArray(item.fontRuns) && item.fontRuns.length > 0)
+                  || (Array.isArray(editingMovableText.fontRuns) && editingMovableText.fontRuns.length > 0) ? (
+                  <RichMovableTextEditor
+                    editing={editingMovableText}
+                    item={item}
+                    scale={scale}
+                    onChange={onEditChange}
+                    onSelectionChange={onEditSelectionChange}
+                    onCommit={onEditCommit}
+                    onCancel={onEditCancel}
+                  />
+                ) : (
+                  <input
+                    className="movable-text-edit-input"
+                    value={editingMovableText.value}
+                    style={{
+                      fontFamily: item.renderFontFamily || 'DocPilotReplacement',
+                      fontWeight: editingMovableText.fontWeight === 'bold' ? 700 : (editingMovableText.fontWeight || 'normal'),
+                      fontStyle: editingMovableText.fontStyle || 'normal',
+                      textDecoration: editingMovableText.textDecoration || 'none',
+                      color: editingMovableText.color || '#111111',
+                      letterSpacing: `${Number(editingMovableText.letterSpacing) || 0}px`,
+                      textAlign: editingMovableText.textAlign || 'left',
+                      textShadow: 'none'
+                    }}
+                    onChange={(event) => onEditChange?.(event.target.value)}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
                         event.preventDefault();
-                        onEditStyleChange?.({ fontWeight: editingMovableText.fontWeight === 'bold' ? 'normal' : 'bold' });
-                      } else if (event.key.toLowerCase() === 'i') {
+                        onEditCommit?.();
+                      } else if (event.key === 'Escape') {
                         event.preventDefault();
-                        onEditStyleChange?.({ fontStyle: editingMovableText.fontStyle === 'italic' ? 'normal' : 'italic' });
-                      } else if (event.key.toLowerCase() === 'u') {
-                        event.preventDefault();
-                        onEditStyleChange?.({ textDecoration: editingMovableText.textDecoration === 'underline' ? 'none' : 'underline' });
+                        onEditCancel?.();
+                      } else if (event.ctrlKey || event.metaKey) {
+                        if (event.key.toLowerCase() === 'b') {
+                          event.preventDefault();
+                          onEditStyleChange?.({ fontWeight: editingMovableText.fontWeight === 'bold' ? 'normal' : 'bold' });
+                        } else if (event.key.toLowerCase() === 'i') {
+                          event.preventDefault();
+                          onEditStyleChange?.({ fontStyle: editingMovableText.fontStyle === 'italic' ? 'normal' : 'italic' });
+                        } else if (event.key.toLowerCase() === 'u') {
+                          event.preventDefault();
+                          onEditStyleChange?.({ textDecoration: editingMovableText.textDecoration === 'underline' ? 'none' : 'underline' });
+                        }
                       }
-                    }
-                  }}
-                  onBlur={() => {
-                    window.setTimeout(() => {
-                      if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar')) onEditCommit?.();
-                    }, 0);
-                  }}
-                  autoFocus
-                  aria-label="선택한 PDF 텍스트 편집"
-                />
+                    }}
+                    onBlur={() => {
+                      window.setTimeout(() => {
+                        if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar')) onEditCommit?.();
+                      }, 0);
+                    }}
+                    autoFocus
+                    aria-label="선택한 PDF 텍스트 편집"
+                  />
+                )}
               </div>
-            ) : (item.persistedToPdf && !item.hasChanges ? null : (item.displayText || item.text))}
+            ) : (item.persistedToPdf && !item.hasChanges ? null : (
+              Array.isArray(item.fontRuns) && item.fontRuns.length > 0
+                ? item.fontRuns.map((run, index) => (
+                  <span
+                    key={`${item.id}-font-run-${index}`}
+                    style={{
+                      fontFamily: item.selectedFontFamily
+                        ? (item.renderFontFamily || 'DocPilotReplacement')
+                        : (run.fontFamily || item.renderFontFamily || 'DocPilotReplacement'),
+                      fontSize: `${Math.max(1, Number(run.fontSize || item.fontSize) || 10)
+                        * (Number(item.fontSize) || 10) / Math.max(1, Number(item.autoFitBaseFontSize || item.fontSize) || 10) * scale}px`,
+                      fontWeight: run.fontWeight === 'bold' ? '700' : (run.fontWeight || 'normal'),
+                      fontStyle: run.fontStyle || 'normal',
+                      lineHeight: 'normal',
+                      textDecoration: run.textDecoration || item.textDecoration || 'none',
+                      color: run.color || item.color,
+                      letterSpacing: `${Number(item.letterSpacing || run.letterSpacing) * scale}px`,
+                      whiteSpace: item.type === 'addedText' ? 'pre-wrap' : 'pre'
+                    }}
+                  >
+                    {run.text}
+                  </span>
+                ))
+                : (item.displayText || item.text)
+            ))}
+            {editingEnabled && !textMoveMode && selectedId === item.id
+              ? ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((direction) => (
+                <span
+                  key={direction}
+                  className={`movable-text-resize-handle is-${direction}`}
+                  data-resize-direction={direction}
+                  onPointerDown={(event) => onResizePointerDown?.(event, item, direction)}
+                />
+              ))
+              : null}
           </div>
         </div>
       ))}
     </div>
+  );
+}
+
+function readEditableFontRuns(root, baseRuns) {
+  const collected = [];
+  const append = (text, baseIndex, overrides = {}) => {
+    if (!text) return;
+    const base = baseRuns[baseIndex] || baseRuns[0] || {};
+    const run = { ...base, ...overrides, sourceRunIndex: base.sourceRunIndex ?? baseIndex, text };
+    const key = JSON.stringify([
+      baseIndex, run.fontCandidates, run.fontFamily, run.fontSize, run.fontWeight,
+      run.fontStyle, run.textDecoration, run.color, run.selectedFontFamily
+    ]);
+    const last = collected[collected.length - 1];
+    if (last?.key === key) last.text += text;
+    else collected.push({ ...run, key });
+  };
+  const visit = (node, baseIndex = 0, overrides = {}) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      append(node.nodeValue || '', baseIndex, overrides);
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.tagName === 'BR') {
+      append('\n', baseIndex, overrides);
+      return;
+    }
+    const index = Number.isInteger(Number(node.dataset?.fontRunIndex))
+      ? Number(node.dataset.fontRunIndex) : baseIndex;
+    const next = { ...overrides };
+    if (node.tagName === 'B' || node.tagName === 'STRONG') next.fontWeight = 'bold';
+    if (node.tagName === 'I' || node.tagName === 'EM') next.fontStyle = 'italic';
+    if (node.tagName === 'U') next.textDecoration = 'underline';
+    if (node.style?.fontFamily) next.fontFamily = node.style.fontFamily;
+    if (node.style?.fontWeight) next.fontWeight = node.style.fontWeight;
+    if (node.style?.fontStyle) next.fontStyle = node.style.fontStyle;
+    if (node.style?.textDecoration) next.textDecoration = node.style.textDecoration;
+    if (node.style?.color) next.color = node.style.color;
+    Array.from(node.childNodes).forEach((child) => visit(child, index, next));
+  };
+  Array.from(root.childNodes).forEach((child) => visit(child));
+  return collected.map(({ key, ...run }) => run);
+}
+
+function restoreEditableSelection(root, savedRange) {
+  if (!savedRange || !Number.isFinite(savedRange.start) || !Number.isFinite(savedRange.end)) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  const locate = (target) => {
+    let consumed = 0;
+    for (const node of textNodes) {
+      const length = node.nodeValue?.length || 0;
+      if (target <= consumed + length) return { node, offset: target - consumed };
+      consumed += length;
+    }
+    const last = textNodes[textNodes.length - 1];
+    return last ? { node: last, offset: last.nodeValue?.length || 0 } : { node: root, offset: 0 };
+  };
+  const first = locate(savedRange.start);
+  const last = locate(savedRange.end);
+  const range = document.createRange();
+  range.setStart(first.node, Math.min(first.offset, first.node.nodeType === Node.TEXT_NODE ? first.node.nodeValue.length : 0));
+  range.setEnd(last.node, Math.min(last.offset, last.node.nodeType === Node.TEXT_NODE ? last.node.nodeValue.length : 0));
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChange, onCommit, onCancel }) {
+  const editorRef = useRef(null);
+  const baseRunsRef = useRef([]);
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.replaceChildren();
+    const runs = editing.fontRuns || [];
+    baseRunsRef.current = runs.map((run, index) => ({ ...run, sourceRunIndex: run.sourceRunIndex ?? index }));
+    const sizeRatio = Number(editing.fontSize || item.fontSize || 10)
+      / Math.max(1, Number(item.autoFitBaseFontSize || item.fontSize) || 10);
+    runs.forEach((run, index) => {
+      const span = document.createElement('span');
+      span.dataset.fontRunIndex = String(index);
+      span.textContent = String(run.text || '');
+      span.style.fontFamily = item.selectedFontFamily
+        ? (item.renderFontFamily || 'DocPilotReplacement')
+        : (run.fontFamily || item.renderFontFamily || 'DocPilotReplacement');
+      span.style.fontSize = `${Math.max(1, Number(run.fontSize || item.fontSize || 10) * sizeRatio * scale)}px`;
+      span.style.fontWeight = run.fontWeight === 'bold' ? '700' : (run.fontWeight || 'normal');
+      span.style.fontStyle = run.fontStyle || 'normal';
+      span.style.lineHeight = 'normal';
+      span.style.textDecoration = run.textDecoration || editing.textDecoration || 'none';
+      span.style.color = run.color || editing.color || '#111111';
+      editor.append(span);
+    });
+    const hadEditorFocus = editor.contains(document.activeElement);
+    const isNewEditor = editor.dataset.editingId !== String(editing.id);
+    editor.dataset.editingId = String(editing.id);
+    if (isNewEditor || hadEditorFocus || document.activeElement === document.body) editor.focus();
+    const selection = window.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    restoreEditableSelection(editor, editing.selectionRange);
+    const restoredSelection = window.getSelection();
+    if (restoredSelection?.rangeCount && editor.contains(restoredSelection.anchorNode)
+      && (restoredSelection.isCollapsed || editor.contains(restoredSelection.focusNode))) {
+      const range = restoredSelection.getRangeAt(0);
+      const before = range.cloneRange();
+      before.selectNodeContents(editor);
+      before.setEnd(range.startContainer, range.startOffset);
+      const start = before.toString().length;
+      onSelectionChange?.({ start, end: start + range.toString().length });
+    }
+  }, [editing.id, editing.fontRunsRevision]);
+
+  const reportSelection = () => {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection?.rangeCount || !editor.contains(selection.anchorNode)
+      || (!selection.isCollapsed && !editor.contains(selection.focusNode))) return;
+    const range = selection.getRangeAt(0);
+    const before = range.cloneRange();
+    before.selectNodeContents(editor);
+    before.setEnd(range.startContainer, range.startOffset);
+    const start = before.toString().length;
+    onSelectionChange?.({ start, end: start + range.toString().length });
+  };
+
+  const handleInput = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const fontRuns = readEditableFontRuns(editor, baseRunsRef.current);
+    const value = fontRuns.map((run) => run.text).join('');
+    onChange?.(value, fontRuns);
+  };
+
+  return (
+    <div
+      ref={editorRef}
+      className="movable-text-edit-input movable-text-edit-rich"
+      contentEditable
+      suppressContentEditableWarning
+      role="textbox"
+      aria-multiline={item.type === 'addedText' ? 'true' : 'false'}
+      aria-label="혼합 글꼴 PDF 텍스트 편집"
+      spellCheck={false}
+      onInput={handleInput}
+      onMouseUp={reportSelection}
+      onKeyUp={reportSelection}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          if (item.type === 'addedText' && !event.ctrlKey && !event.metaKey) {
+            document.execCommand('insertLineBreak');
+            handleInput();
+          } else {
+            onCommit?.();
+          }
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          onCancel?.();
+        } else if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
+          event.preventDefault();
+          document.execCommand(event.key.toLowerCase() === 'b' ? 'bold' : event.key.toLowerCase() === 'i' ? 'italic' : 'underline');
+          handleInput();
+        }
+      }}
+      onBlur={() => {
+        window.setTimeout(() => {
+          if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar')) onCommit?.();
+        }, 0);
+      }}
+    />
   );
 }
 

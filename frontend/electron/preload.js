@@ -30,3 +30,7 @@ contextBridge.exposeInMainWorld('docPilotFonts', {
   },
   list: () => ipcRenderer.invoke('docpilot-fonts:list')
 });
+
+contextBridge.exposeInMainWorld('docPilotClipboard', {
+  writeText: (value) => ipcRenderer.invoke('docpilot-clipboard:write-text', String(value || ''))
+});

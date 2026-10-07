@@ -213,15 +213,16 @@ function App() {
     const movableTexts = Array.isArray(payload?.movableTexts) ? payload.movableTexts : [];
     const highlights = Array.isArray(payload?.highlights) ? payload.highlights : [];
     const images = Array.isArray(payload?.images) ? payload.images : [];
+    const tables = Array.isArray(payload?.tables) ? payload.tables : undefined;
     if (!selectedDocument?.file || previewModel?.type !== 'pdf') {
       throw new Error('현재 선택된 PDF 문서가 없습니다.');
     }
 
-    if ((!replacement?.originalText || replacement?.newText == null) && movableTexts.length === 0 && highlights.length === 0 && images.length === 0) {
+    if ((!replacement?.originalText || replacement?.newText == null) && movableTexts.length === 0 && highlights.length === 0 && images.length === 0 && !tables?.length && !payload?.tablesChanged) {
       throw new Error('화면에 적용된 텍스트 이동 또는 하이라이트 결과가 없습니다.');
     }
     const { convertPdfWithOriginalOverlay } = await import('./services/pdfOverlayConvertService');
-    return convertPdfWithOriginalOverlay({ file: selectedDocument.file, replacement, movableTexts, highlights, images, download: payload?.download !== false });
+    return convertPdfWithOriginalOverlay({ file: selectedDocument.file, replacement, movableTexts, highlights, images, tables, tablesChanged: payload?.tablesChanged, download: payload?.download !== false });
   };
 
   const handleBatchReplaceApply = async (originalText, newText, options = {}) => {

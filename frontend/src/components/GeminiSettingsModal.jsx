@@ -1,19 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import './GeminiSettingsModal.css';
 
 const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 
 function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
   const [apiKey, setApiKey] = useState('');
+  const [isApiKeyEditing, setIsApiKeyEditing] = useState(false);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const apiKeyInputRef = useRef(null);
   const settingsApi = typeof window !== 'undefined' ? window.docPilotSettings : null;
 
   useEffect(() => {
     if (!isOpen) return;
     setApiKey('');
+    setIsApiKeyEditing(false);
     setModel(status?.model || DEFAULT_MODEL);
     setMessage('');
     setError('');
@@ -27,7 +28,6 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    apiKeyInputRef.current?.focus();
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
@@ -47,6 +47,7 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
         geminiModel: model
       });
       setApiKey('');
+      setIsApiKeyEditing(false);
       onSaved?.(nextStatus);
       setMessage('저장되었습니다. 다음 문서 작업 요청부터 적용됩니다.');
     } catch {
@@ -64,6 +65,7 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
     try {
       const nextStatus = await settingsApi.clearGeminiSettings();
       setApiKey('');
+      setIsApiKeyEditing(false);
       setModel(DEFAULT_MODEL);
       onSaved?.(nextStatus);
       setMessage('로컬 API Key 설정을 초기화했습니다.');
@@ -71,6 +73,12 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
       setError('설정을 초기화하지 못했습니다. 다시 시도해주세요.');
     }
   };
+
+  const apiKeyInputValue = isApiKeyEditing
+    ? apiKey
+    : status?.hasApiKey
+      ? '●'.repeat(status.apiKeyLength || 0)
+      : apiKey;
 
   return (
     <div className="settings-modal-backdrop" role="presentation" onMouseDown={(event) => {
@@ -91,14 +99,17 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
           <label className="settings-field">
             <span>API Key</span>
             <input
-              type="password"
-              ref={apiKeyInputRef}
-              value={apiKey}
+              type={status?.hasApiKey && !isApiKeyEditing ? 'text' : 'password'}
+              value={apiKeyInputValue}
               placeholder={status?.hasApiKey ? '기존 Key를 변경할 때만 입력' : 'AIza...'}
               autoComplete="off"
-              onChange={(event) => setApiKey(event.target.value)}
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => {
+                setIsApiKeyEditing(true);
+                setApiKey(event.target.value);
+              }}
             />
-            <small>{status?.hasApiKey ? `현재 상태: ${status.maskedApiKey || '설정됨'}` : '현재 API Key가 설정되지 않았습니다.'}</small>
+            <small>{status?.hasApiKey ? '현재 상태: 등록완료' : '현재 상태: 미등록'}</small>
           </label>
           <label className="settings-field">
             <span>모델명</span>

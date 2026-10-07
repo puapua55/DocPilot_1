@@ -58,10 +58,6 @@ function UploadPanel({ errorMessage, onFileSelect }) {
             event.target.value = '';
           }}
         />
-        <div className="secondary-meta">
-          <span>현재 단계에서는 브라우저에서 문서를 임시로 엽니다.</span>
-          <span>최종 Electron에서는 로컬 파일 열기와 저장 흐름으로 전환됩니다.</span>
-        </div>
       </div>
 
       {errorMessage ? (

@@ -633,7 +633,7 @@ export function getWordPreviewModel(documentFile, docxPreview = {}) {
     fileSize: documentFile.size,
     html: docxPreview.html || '',
     pageLayout: docxPreview.pageLayout || null,
-    renderMode: docxPreview.hasForcedPageBreak ? 'original-page-layout' : 'html-preview',
+    renderMode: 'original-page-layout',
     forcedPageBreakCount: docxPreview.forcedPageBreakCount || 0,
     messages: docxPreview.messages || [],
     renderError: docxPreview.renderError || ''

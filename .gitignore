@@ -12,6 +12,7 @@ frontend/out/
 frontend/.electron-builder/
 frontend/*.zip
 frontend/*.exe
+tmp/
 .env.local
 *.local.json
 

@@ -30,6 +30,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   const viewerRef = useRef(null);
   const [scale, setScale] = useState(DEFAULT_SCALE);
   const [docxPdfDownloadState, setDocxPdfDownloadState] = useState('idle');
+  const [isReselectConfirmOpen, setIsReselectConfirmOpen] = useState(false);
   const viewerType = previewModel?.type || (isPdfFile(file) ? 'pdf' : 'docx');
 
   useImperativeHandle(ref, () => ({
@@ -113,8 +114,15 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     event.target.value = '';
   };
 
-  const downloadCurrentDocx = () => {
+  const downloadCurrentDocx = async () => {
     if (!file) return;
+    try {
+      if (await viewerRef.current?.downloadEditedDocx?.()) return;
+    } catch (error) {
+      console.error('[DocumentViewer] DOCX edit download failed:', error);
+      window.alert(`DOCX 저장에 실패했습니다. ${error.message || error}`);
+      return;
+    }
     const highlights = viewerRef.current?.getDocxHighlights?.() || [];
     if (highlights.length > 0) {
       convertDocxFileWithHighlights(file, highlights).catch((error) => {
@@ -160,7 +168,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           <button
             type="button"
             className="secondary-button"
-            onClick={onReselect}
+            onClick={() => setIsReselectConfirmOpen(true)}
           >
             다시 선택
           </button>
@@ -229,6 +237,25 @@ const DocumentViewer = forwardRef(function DocumentViewer({
         </div>
       ) : null}
       {renderContent()}
+      {isReselectConfirmOpen ? (
+        <div className="docx-reset-confirm-backdrop" role="presentation">
+          <div className="docx-reset-confirm" role="dialog" aria-modal="true" aria-labelledby="document-reselect-confirm-title">
+            <p id="document-reselect-confirm-title">이전 파일을 닫고 새 파일을 불러오시겠습니까?</p>
+            <div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsReselectConfirmOpen(false);
+                  onReselect?.();
+                }}
+              >
+                예
+              </button>
+              <button type="button" onClick={() => setIsReselectConfirmOpen(false)}>아니오</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 });

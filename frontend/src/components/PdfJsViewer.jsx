@@ -1,15 +1,26 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import PdfPage from './PdfPage';
+import PdfTableToolbar from './PdfTableToolbar';
+import TextAlignmentIcon from './TextAlignmentIcon';
 import { loadPdfDocument } from '../services/pdfService';
 import { searchKeywordInDocument } from '../services/searchService';
 import { isPdfFile } from '../utils/fileUtils';
 import { resolveReplacementPreviewFont } from '../services/pdfReplacementFont';
 import { createHighlightBoxesFromTextLayer } from '../services/highlightService';
+import { duplicateTable, tableSizes, tableToTsv } from '../services/pdfTableModel.js';
+
+let copiedPdfTable = null;
 
 function fitMovableTextToBox(value, settings, target) {
   const text = String(value ?? '');
   const sourceSize = Math.max(4, Number(settings.baseFontSize ?? settings.fontSize) || 10);
   const sourceSpacing = Number(settings.baseLetterSpacing ?? settings.letterSpacing) || 0;
+  if (target?.manualFontSize) {
+    return { fontSize: Math.max(4, Number(settings.fontSize) || sourceSize), letterSpacing: sourceSpacing };
+  }
+  if (target?.type === 'addedText') {
+    return { fontSize: sourceSize, letterSpacing: sourceSpacing };
+  }
   const boxWidth = Number(target?.fitTextWidth || target?.originalRect?.width || target?.currentRect?.width || 0);
   if (!text || boxWidth <= 0 || typeof document === 'undefined') {
     return { fontSize: sourceSize, letterSpacing: sourceSpacing };
@@ -21,7 +32,16 @@ function fitMovableTextToBox(value, settings, target) {
   const style = settings.fontStyle || target?.fontStyle || 'normal';
   const glyphGaps = Math.max(0, [...text].length - 1);
   const minSpacing = Math.min(sourceSpacing, -sourceSize * 0.12);
+  const fontRuns = Array.isArray(settings.fontRuns) && settings.fontRuns.length > 0 ? settings.fontRuns : null;
+  const fontRunsBaseSize = Math.max(1, Number(target?.autoFitBaseFontSize || settings.baseFontSize || sourceSize));
   const measure = (size) => {
+    if (fontRuns) {
+      const sizeRatio = size / fontRunsBaseSize;
+      return fontRuns.reduce((width, run) => {
+        context.font = `${run.fontStyle || style} ${run.fontWeight || weight} ${Math.max(1, Number(run.fontSize || sourceSize) * sizeRatio)}px ${run.fontFamily || family}`;
+        return width + context.measureText(String(run.text || '')).width;
+      }, 0);
+    }
     context.font = `${style} ${weight} ${size}px ${family}`;
     return context.measureText(text).width;
   };
@@ -44,6 +64,263 @@ function fitMovableTextToBox(value, settings, target) {
     }
   }
   return { fontSize, letterSpacing };
+}
+
+function resizeMovableTextItem(item, currentRect) {
+  const resized = {
+    ...item,
+    currentRect,
+    movedRect: currentRect,
+    displayRect: currentRect,
+    fitTextWidth: currentRect.width,
+    hasChanges: item.persistedToPdf ? true : item.hasChanges
+  };
+  const value = String(item.displayText ?? item.text ?? '');
+  const fitted = fitMovableTextToBox(value, {
+    fontSize: Number(item.fontSize) || 10,
+    baseFontSize: Number(item.autoFitBaseFontSize || item.fontSize) || 10,
+    baseLetterSpacing: Number(item.autoFitBaseLetterSpacing ?? item.letterSpacing) || 0,
+    fontWeight: item.fontWeight,
+    fontStyle: item.fontStyle,
+    fontRuns: item.fontRuns,
+    fontFamily: getCurrentFontCandidate(item)
+  }, resized);
+  return { ...resized, ...fitted };
+}
+
+function applyFontFamilyToRunRange(fontRuns, selectionRange, fontFamily, rangeId) {
+  const start = Math.max(0, Number(selectionRange?.start) || 0);
+  const end = Math.max(start, Number(selectionRange?.end) || 0);
+  if (end <= start) return null;
+  let offset = 0;
+  const nextRuns = [];
+  fontRuns.forEach((run) => {
+    const text = String(run.text || '');
+    const runStart = offset;
+    const runEnd = runStart + text.length;
+    const selectedStart = Math.max(start, runStart);
+    const selectedEnd = Math.min(end, runEnd);
+    if (selectedStart >= selectedEnd) {
+      nextRuns.push(run);
+      offset = runEnd;
+      return;
+    }
+    const localStart = selectedStart - runStart;
+    const localEnd = selectedEnd - runStart;
+    if (localStart > 0) nextRuns.push({ ...run, text: text.slice(0, localStart) });
+    const selectedFont = fontFamily ? {
+      ...run,
+      text: text.slice(localStart, localEnd),
+      selectedFontFamily: fontFamily,
+      fontRangeId: rangeId,
+      originalFontCandidates: run.originalFontCandidates || run.fontCandidates || [],
+      originalFontFamily: run.originalFontFamily || run.fontFamily || '',
+      fontCandidates: [fontFamily],
+      preferBoldFont: run.fontWeight === 'bold' || Number(run.fontWeight) >= 600
+    } : {
+      ...run,
+      text: text.slice(localStart, localEnd),
+      selectedFontFamily: '',
+      fontRangeId: rangeId,
+      fontCandidates: run.originalFontCandidates || run.fontCandidates || [],
+      fontFamily: run.originalFontFamily || run.fontFamily || '',
+      preferBoldFont: run.originalPreferBoldFont === true || run.fontWeight === 'bold' || Number(run.fontWeight) >= 600
+    };
+    nextRuns.push(selectedFont);
+    if (localEnd < text.length) nextRuns.push({ ...run, text: text.slice(localEnd) });
+    offset = runEnd;
+  });
+  return nextRuns;
+}
+
+function applyInlineStyleToRunRange(fontRuns, selectionRange, style, fontSizeScale = 1) {
+  const start = Math.max(0, Number(selectionRange?.start) || 0);
+  const end = Math.max(start, Number(selectionRange?.end) || 0);
+  if (end <= start) return null;
+  let offset = 0;
+  const nextRuns = [];
+  fontRuns.forEach((run) => {
+    const text = String(run.text || '');
+    const runStart = offset;
+    const runEnd = runStart + text.length;
+    offset = runEnd;
+    const selectedStart = Math.max(start, runStart);
+    const selectedEnd = Math.min(end, runEnd);
+    if (selectedStart >= selectedEnd) {
+      nextRuns.push(run);
+      return;
+    }
+    const localStart = selectedStart - runStart;
+    const localEnd = selectedEnd - runStart;
+    if (localStart > 0) nextRuns.push({ ...run, text: text.slice(0, localStart) });
+    const selectedRun = { ...run, text: text.slice(localStart, localEnd) };
+    Object.entries(style).forEach(([key, value]) => {
+      if (key === 'fontSize') selectedRun.fontSize = Number(value) / Math.max(0.01, fontSizeScale);
+      else selectedRun[key] = value;
+    });
+    nextRuns.push(selectedRun);
+    if (localEnd < text.length) nextRuns.push({ ...run, text: text.slice(localEnd) });
+  });
+  return nextRuns;
+}
+
+function normalizeFontRunsForText(fontRuns, text) {
+  const runs = Array.isArray(fontRuns) ? fontRuns.map((run) => ({ ...run, text: String(run.text || '') })) : [];
+  if (!runs.length) return [];
+  const joined = runs.map((run) => run.text).join('');
+  if (joined.trim() !== text) {
+    // A commit can trim or otherwise normalize editor text. Do not discard
+    // every later font run when that happens: align the old and new text and
+    // retain the original run style for characters that still match.
+    if (!text) return [];
+    const oldLength = joined.length;
+    const newLength = text.length;
+    const runAtOffset = new Int32Array(oldLength);
+    let sourceOffset = 0;
+    runs.forEach((run, index) => {
+      runAtOffset.fill(index, sourceOffset, sourceOffset + run.text.length);
+      sourceOffset += run.text.length;
+    });
+
+    // Keep memory and work bounded for unusually large text boxes. Ordinary
+    // paragraph edits use LCS alignment; the fallback keeps each font run's
+    // relative share instead of collapsing the paragraph to its first run.
+    const maxAlignmentCells = 2_000_000;
+    const matchedOldByNew = new Int32Array(newLength).fill(-1);
+    if (oldLength > 0 && oldLength * newLength <= maxAlignmentCells) {
+      const width = newLength + 1;
+      const table = Array.from({ length: oldLength + 1 }, () => new Uint16Array(width));
+      for (let oldIndex = oldLength - 1; oldIndex >= 0; oldIndex -= 1) {
+        for (let newIndex = newLength - 1; newIndex >= 0; newIndex -= 1) {
+          table[oldIndex][newIndex] = joined[oldIndex] === text[newIndex]
+            ? table[oldIndex + 1][newIndex + 1] + 1
+            : Math.max(table[oldIndex + 1][newIndex], table[oldIndex][newIndex + 1]);
+        }
+      }
+      let oldIndex = 0;
+      let newIndex = 0;
+      while (oldIndex < oldLength && newIndex < newLength) {
+        if (joined[oldIndex] === text[newIndex]) {
+          matchedOldByNew[newIndex] = oldIndex;
+          oldIndex += 1;
+          newIndex += 1;
+        } else if (table[oldIndex + 1][newIndex] >= table[oldIndex][newIndex + 1]) {
+          oldIndex += 1;
+        } else {
+          newIndex += 1;
+        }
+      }
+    } else {
+      let prefix = 0;
+      while (prefix < oldLength && prefix < newLength && joined[prefix] === text[prefix]) prefix += 1;
+      let suffix = 0;
+      while (suffix < oldLength - prefix && suffix < newLength - prefix
+        && joined[oldLength - 1 - suffix] === text[newLength - 1 - suffix]) suffix += 1;
+      for (let index = 0; index < prefix; index += 1) matchedOldByNew[index] = index;
+      for (let index = 0; index < suffix; index += 1) {
+        matchedOldByNew[newLength - 1 - index] = oldLength - 1 - index;
+      }
+    }
+
+    const runAtNewOffset = new Int32Array(newLength).fill(-1);
+    for (let index = 0; index < newLength; index += 1) {
+      const oldIndex = matchedOldByNew[index];
+      if (oldIndex >= 0) runAtNewOffset[index] = runAtOffset[oldIndex];
+    }
+    let nearestLeft = -1;
+    for (let index = 0; index < newLength; index += 1) {
+      if (runAtNewOffset[index] >= 0) nearestLeft = runAtNewOffset[index];
+      else if (nearestLeft >= 0) runAtNewOffset[index] = nearestLeft;
+    }
+    let nearestRight = -1;
+    for (let index = newLength - 1; index >= 0; index -= 1) {
+      if (runAtNewOffset[index] >= 0) nearestRight = runAtNewOffset[index];
+      else if (nearestRight >= 0) runAtNewOffset[index] = nearestRight;
+    }
+    // If the entire value was replaced, no old character can anchor it.
+    if (!runAtNewOffset.some((runIndex) => runIndex >= 0)) runAtNewOffset.fill(0);
+
+    const reconciled = [];
+    for (let index = 0; index < newLength; index += 1) {
+      const runIndex = runAtNewOffset[index] >= 0 ? runAtNewOffset[index] : 0;
+      const previous = reconciled[reconciled.length - 1];
+      if (previous?.sourceRunIndex === runIndex) previous.text += text[index];
+      else reconciled.push({ ...runs[runIndex], sourceRunIndex: runIndex, text: text[index] });
+    }
+    return reconciled;
+  }
+  let trimStart = joined.length - joined.trimStart().length;
+  let remaining = joined.trim().length;
+  return runs.map((run) => {
+    const start = Math.min(trimStart, run.text.length);
+    trimStart -= start;
+    const available = run.text.length - start;
+    const kept = Math.min(remaining, available);
+    remaining -= kept;
+    return { ...run, text: run.text.slice(start, start + kept) };
+  }).filter((run) => run.text);
+}
+
+function ensureEditableFontRuns(item, value) {
+  const text = String(value || '');
+  const existing = normalizeFontRunsForText(item?.fontRuns, text);
+  if (existing.length) return existing;
+  const candidates = [...new Set([
+    ...(Array.isArray(item?.originalFontCandidates) ? item.originalFontCandidates : []),
+    ...(Array.isArray(item?.fontCandidates) ? item.fontCandidates : [])
+  ].filter((candidate) => typeof candidate === 'string' && candidate.trim()))];
+  return text ? [{
+    text,
+    fontCandidates: candidates,
+    originalFontCandidates: candidates,
+    fontFamily: item?.previewFontFamily || item?.fontFamily || 'DocPilotReplacement',
+    originalFontFamily: item?.fontFamily || item?.previewFontFamily || 'DocPilotReplacement',
+    fontSize: Number(item?.autoFitBaseFontSize || item?.fontSize) || 10,
+    fontWeight: item?.fontWeight || 'normal',
+    fontStyle: item?.fontStyle || 'normal',
+    textDecoration: item?.textDecoration || 'none',
+    color: item?.color || '#111111',
+    preferBoldFont: item?.originalPreferBoldFont === true || item?.preferBoldFont === true,
+    originalPreferBoldFont: item?.originalPreferBoldFont === true || item?.preferBoldFont === true
+  }] : [];
+}
+
+function getCurrentFontCandidate(item) {
+  const candidates = [
+    item?.selectedFontFamily,
+    item?.previewFontFamily,
+    ...(Array.isArray(item?.fontRuns) ? item.fontRuns.flatMap((run) => [
+      run.selectedFontFamily,
+      ...(Array.isArray(run.originalFontCandidates) ? run.originalFontCandidates : []),
+      ...(Array.isArray(run.fontCandidates) ? run.fontCandidates : []),
+      run.originalFontFamily,
+      run.fontFamily
+    ]) : []),
+    ...(Array.isArray(item?.originalFontCandidates) ? item.originalFontCandidates : []),
+    ...(Array.isArray(item?.fontCandidates) ? item.fontCandidates : []),
+    item?.fontFamily
+  ];
+  return candidates.find((candidate) => typeof candidate === 'string' && candidate.trim())?.trim() || '';
+}
+
+function normalizeFontDisplayKey(value) {
+  return String(value || '')
+    .replace(/^[A-Z]{6}\+/, '')
+    .replace(/-\d{4,6}$/, '')
+    .replace(/(bold|italic|oblique|regular|medium|light|black|semibold|demibold|heavy)mt$/i, '$1')
+    .replace(/[^\p{L}\p{N}]/gu, '')
+    .toLocaleLowerCase();
+}
+
+function resolveDisplayedFont(fontValue, fonts) {
+  if (!fontValue) return { value: '', label: '' };
+  const key = normalizeFontDisplayKey(fontValue);
+  const match = fonts.find((font) => [font.candidate, font.family, font.label]
+    .some((name) => normalizeFontDisplayKey(name) === key));
+  if (match) return { value: match.candidate, label: match.label || match.candidate };
+  const readableName = String(fontValue).replace(/^[A-Z]{6}\+/, '').replace(/-\d{4,6}$/, '')
+    .replace(/-(Bold|Italic|Regular|Medium|Light|Black)MT$/i, ' $1');
+  return { value: fontValue, label: readableName };
 }
 
 function normalizePdfLines(textItems) {
@@ -181,21 +458,59 @@ function getVerticalBaselineOffset(item, verticalAlign = 'middle') {
   return freeSpace / 2 + topOffset;
 }
 
-function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFontChange }) {
+function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFontChange, onBeforeFormat }) {
+  const [fontSizeDraft, setFontSizeDraft] = useState(null);
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  useEffect(() => setFontSizeDraft(null), [editing?.id]);
   if (!editing) return null;
+  const commitFontSize = () => {
+    if (fontSizeDraft === null) return;
+    const value = Number(fontSizeDraft);
+    if (fontSizeDraft !== '' && Number.isFinite(value)) {
+      onChange?.({ fontSize: Math.max(4, Math.min(144, value)) });
+    }
+    setFontSizeDraft(null);
+  };
+  const hasRange = Number(editing.selectionRange?.end) > Number(editing.selectionRange?.start);
+  const hasCaret = Number.isFinite(Number(editing.selectionRange?.start)) && !hasRange;
+  const hasInlineSelection = hasRange || hasCaret;
+  const activeWeight = hasInlineSelection ? (editing.selectedRangeFontWeight || 'normal') : editing.fontWeight;
+  const activeStyle = hasInlineSelection ? (editing.selectedRangeFontStyle || 'normal') : editing.fontStyle;
+  const activeDecoration = hasInlineSelection ? (editing.selectedRangeTextDecoration || 'none') : editing.textDecoration;
+  const hasMixedFont = hasInlineSelection && editing.selectedRangeFontMixed === true;
+  const mixedFontValue = '__docpilot_mixed_font__';
+  const fontValue = hasMixedFont
+    ? mixedFontValue
+    : hasInlineSelection
+      ? (editing.selectedRangeFontFamily || '')
+      : (editing.fontFamily ?? '');
+  const displayedFont = resolveDisplayedFont(fontValue, fonts);
+  const fontValueListed = hasMixedFont || fonts.some((font) => font.candidate === displayedFont.value);
   return (
     <div
       className="pdf-text-edit-toolbar"
       role="toolbar"
       aria-label="텍스트 서식"
       onMouseDown={(event) => {
+        const selection = window.getSelection();
+        const editor = document.querySelector('.movable-text-edit-rich[contenteditable="true"]');
+        if (editor && selection?.rangeCount && editor.contains(selection.anchorNode)
+          && (selection.isCollapsed || editor.contains(selection.focusNode))) {
+          const range = selection.getRangeAt(0);
+          const before = range.cloneRange();
+          before.selectNodeContents(editor);
+          before.setEnd(range.startContainer, range.startOffset);
+          const start = before.toString().length;
+          onBeforeFormat?.({ start, end: start + range.toString().length });
+        }
         // 서식 버튼은 편집 입력창의 포커스를 유지하되, 색상·자간 입력칸과
         // number 스피너는 브라우저 기본 입력 동작을 그대로 사용해야 한다.
         if (!event.target.closest('input, select')) event.preventDefault();
       }}
       onBlur={() => {
         window.setTimeout(() => {
-          if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar')) onCommit?.();
+          if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar')) onCommitRef.current?.();
         }, 0);
       }}
     >
@@ -203,11 +518,13 @@ function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFont
         <label className="text-edit-font-control" title="글꼴">
           <span>글꼴</span>
           <select
-            value={editing.fontFamily || ''}
+            value={displayedFont.value}
             onChange={(event) => onFontChange?.(event.target.value)}
             aria-label="글꼴"
           >
             <option value="">원본 글꼴</option>
+            {hasMixedFont ? <option value={mixedFontValue} disabled>혼합된 글꼴</option> : null}
+            {displayedFont.value && !fontValueListed ? <option value={displayedFont.value}>{displayedFont.label}</option> : null}
             {fonts.map((font) => <option key={font.candidate} value={font.candidate}>{font.label}</option>)}
           </select>
         </label>
@@ -217,15 +534,15 @@ function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFont
             min="4"
             max="144"
             step="0.1"
-            value={editing.fontSize ?? 10}
-            onChange={(event) => {
-              const rawValue = event.target.value;
-              if (rawValue === '') {
-                onChange?.({ fontSize: '' });
-                return;
+            value={fontSizeDraft ?? (hasInlineSelection
+              ? (editing.selectedRangeFontSize ?? '') : (editing.fontSize ?? 10))}
+            onChange={(event) => setFontSizeDraft(event.target.value)}
+            onBlur={commitFontSize}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                commitFontSize();
               }
-              const value = Number(rawValue);
-              if (Number.isFinite(value)) onChange?.({ fontSize: Math.max(4, Math.min(144, value)) });
             }}
             aria-label="글자 크기"
           />
@@ -233,29 +550,29 @@ function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFont
         </label>
         <button
           type="button"
-          className={editing.fontWeight === 'bold' ? 'is-active' : ''}
-          onClick={() => onChange?.({ fontWeight: editing.fontWeight === 'bold' ? 'normal' : 'bold' })}
+          className={activeWeight === 'bold' ? 'is-active' : ''}
+          onClick={() => onChange?.({ fontWeight: activeWeight === 'bold' ? 'normal' : 'bold' })}
           aria-label="굵게"
           title="굵게"
         ><strong>가</strong></button>
         <button
           type="button"
-          className={editing.fontStyle === 'italic' ? 'is-active' : ''}
-          onClick={() => onChange?.({ fontStyle: editing.fontStyle === 'italic' ? 'normal' : 'italic' })}
+          className={activeStyle === 'italic' ? 'is-active' : ''}
+          onClick={() => onChange?.({ fontStyle: activeStyle === 'italic' ? 'normal' : 'italic' })}
           aria-label="기울임"
           title="기울임"
         ><em>가</em></button>
         <button
           type="button"
-          className={editing.textDecoration === 'underline' ? 'is-active' : ''}
-          onClick={() => onChange?.({ textDecoration: editing.textDecoration === 'underline' ? 'none' : 'underline' })}
+          className={activeDecoration === 'underline' ? 'is-active' : ''}
+          onClick={() => onChange?.({ textDecoration: activeDecoration === 'underline' ? 'none' : 'underline' })}
           aria-label="밑줄"
           title="밑줄"
         ><u>가</u></button>
         <button
           type="button"
-          className={editing.textDecoration === 'line-through' ? 'is-active' : ''}
-          onClick={() => onChange?.({ textDecoration: editing.textDecoration === 'line-through' ? 'none' : 'line-through' })}
+          className={activeDecoration === 'line-through' ? 'is-active' : ''}
+          onClick={() => onChange?.({ textDecoration: activeDecoration === 'line-through' ? 'none' : 'line-through' })}
           aria-label="취소선"
           title="취소선"
         ><s>가</s></button>
@@ -304,11 +621,11 @@ function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFont
         </div>
         <div className="text-edit-format-group" role="group" aria-label="가로 정렬">
           {[
-            ['left', '≡', '왼쪽 정렬'],
-            ['center', '≡', '가운데 정렬'],
-            ['right', '≡', '오른쪽 정렬'],
-            ['justify', '☰', '양쪽 정렬']
-          ].map(([value, icon, title]) => (
+            ['left', '왼쪽 정렬'],
+            ['center', '가운데 정렬'],
+            ['right', '오른쪽 정렬'],
+            ['justify', '양쪽 정렬']
+          ].map(([value, title]) => (
             <button
               key={value}
               type="button"
@@ -316,7 +633,7 @@ function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFont
               onClick={() => onChange?.({ textAlign: value })}
               aria-label={title}
               title={title}
-            >{icon}</button>
+            ><TextAlignmentIcon align={value} /></button>
           ))}
         </div>
       </div>
@@ -428,14 +745,21 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [pdfPageSize, setPdfPageSize] = useState({ width: 0, height: 0 });
   const [fitScale, setFitScale] = useState(1);
   const [textMoveMode, setTextMoveMode] = useState(false);
+  const [textAddMode, setTextAddMode] = useState(false);
+  const [tableAddMode, setTableAddMode] = useState(false);
   const [textReplaceMode, setTextReplaceMode] = useState(false);
   const [areaTextReplaceMode, setAreaTextReplaceMode] = useState(false);
   const [movableTexts, setMovableTexts] = useState([]);
   const [imageAttachments, setImageAttachments] = useState([]);
+  const [tables, setTables] = useState([]);
+  const [selectedTableId, setSelectedTableId] = useState(null);
+  const [selectedTableCell, setSelectedTableCell] = useState(null);
+  const persistedTablesRef = useRef([]);
   const [batchReplaceRequest, setBatchReplaceRequest] = useState(null);
   const batchHandledPagesRef = useRef(new Map());
   const [selectedMovableTextId, setSelectedMovableTextId] = useState(null);
   const [editingMovableText, setEditingMovableText] = useState(null);
+  const editingSelectionRangeRef = useRef({ id: null, range: null });
   const [availableFonts, setAvailableFonts] = useState([]);
   const [selectedImageId, setSelectedImageId] = useState(null);
   const imageInputRef = useRef(null);
@@ -447,6 +771,24 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [userHighlights, setUserHighlights] = useState([]);
   const effectiveScale = scale * fitScale;
   const pageOrientation = pdfPageSize.width > pdfPageSize.height ? 'landscape' : 'portrait';
+
+  useEffect(() => {
+    if (!selectedTableId) return undefined;
+    const dismissTableTools = (event) => {
+      if (event.target instanceof Element && event.target.closest('.pdf-table-object, .pdf-table-toolbar, .pdf-table-context-menu')) return;
+      setSelectedTableId(null);
+      setSelectedTableCell(null);
+    };
+    document.addEventListener('pointerdown', dismissTableTools);
+    return () => document.removeEventListener('pointerdown', dismissTableTools);
+  }, [selectedTableId]);
+
+  useEffect(() => {
+    if (!isEditMode) {
+      setSelectedTableId(null);
+      setSelectedTableCell(null);
+    }
+  }, [isEditMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -489,6 +831,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   useEffect(() => {
     setTextMoveMode(false);
+    setTextAddMode(false);
+    setTableAddMode(false);
     setTextReplaceMode(false);
     setAreaTextReplaceMode(Boolean(isEditMode));
     setSelectedMovableTextId(null);
@@ -506,9 +850,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setHistoryState({ canUndo: index > 0, canRedo: index >= 0 && index < snapshots.length - 1, canReset: index > 0 });
   };
 
-  const commitPdfChange = (highlight, replace, nextMovableTexts = movableTexts, selectedMovableTextId = null, nextImages = imageAttachments, nextSelectedImageId = selectedImageId) => {
+  const commitPdfChange = (highlight, replace, nextMovableTexts = movableTexts, selectedMovableTextId = null, nextImages = imageAttachments, nextSelectedImageId = selectedImageId, nextTables = tables, nextSelectedTableId = selectedTableId) => {
     const history = historyRef.current;
-    const snapshot = { highlight, replace, movableTexts: nextMovableTexts, selectedMovableTextId, imageAttachments: nextImages, selectedImageId: nextSelectedImageId };
+    const snapshot = { highlight, replace, movableTexts: nextMovableTexts, selectedMovableTextId, imageAttachments: nextImages, selectedImageId: nextSelectedImageId, tables: nextTables, selectedTableId: nextSelectedTableId };
     const current = history.snapshots[history.index];
     if (current && JSON.stringify(current) === JSON.stringify(snapshot)) return;
     historyRef.current = history.index < 0
@@ -529,6 +873,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setAppliedReplacePreview(snapshot.replace);
     setMovableTexts(snapshot.movableTexts || []);
     setImageAttachments(snapshot.imageAttachments || []);
+    setTables(snapshot.tables || []);
+    setSelectedTableId(snapshot.selectedTableId || null);
     setSelectedMovableTextId(snapshot.selectedMovableTextId || null);
     setSelectedImageId(snapshot.selectedImageId || null);
     setEditingMovableText(null);
@@ -556,7 +902,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const resetAllDocumentChanges = () => {
     const history = historyRef.current;
     let reset = false;
-    if (history.index > 0 || movableTexts.length || imageAttachments.length || batchReplaceRequest) {
+    if (history.index > 0 || movableTexts.length || imageAttachments.length || JSON.stringify(tables) !== JSON.stringify(persistedTablesRef.current) || batchReplaceRequest) {
       history.index = 0;
       restorePdfSnapshot(history.snapshots[0] || {
         highlight: { keyword: '', color: 'yellow', matchMode: 'contains' },
@@ -564,6 +910,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         replace: null,
         movableTexts: [],
         imageAttachments: [],
+        tables: [],
+        selectedTableId: null,
         selectedMovableTextId: null,
         selectedImageId: null
       });
@@ -576,6 +924,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const addMovableText = (selection) => {
     const id = `movable-text-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const value = String(selection.displayText ?? selection.text ?? '');
+    // Single-selection edits can enter edit mode immediately, before the item
+    // has been committed and reopened. Always initialize font runs here so
+    // the first editor mount is rich-editable and reports caret/range fonts.
+    const fontRuns = ensureEditableFontRuns(selection, value);
     const baseFontSize = Number(selection.autoFitBaseFontSize || selection.fontSize) || 10;
     const baseLetterSpacing = Number(selection.autoFitBaseLetterSpacing ?? selection.letterSpacing) || 0;
     const fitSettings = {
@@ -585,12 +937,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       baseLetterSpacing,
       fontWeight: selection.fontWeight || 'normal',
       fontStyle: selection.fontStyle || 'normal',
+      fontRuns,
       fontFamily: selection.selectedFontFamily || selection.previewFontFamily || ''
     };
     const fitted = fitMovableTextToBox(value, fitSettings, selection);
     const fittedSelection = {
       ...selection,
       ...fitted,
+      fontRuns,
       autoFitBaseFontSize: baseFontSize,
       autoFitBaseLetterSpacing: baseLetterSpacing,
       baselineOffset: Number.isFinite(Number(selection.baselineOffset))
@@ -600,13 +954,16 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setMovableTexts((current) => {
       const supersededIds = new Set(selection.supersedesIds || []);
       const next = [...current.filter((item) => !supersededIds.has(item.id)), { ...fittedSelection, id }];
-      commitPdfChange(userHighlight, appliedReplacePreview, next, id);
+      if (selection.type !== 'addedText' || value.trim()) {
+        commitPdfChange(userHighlight, appliedReplacePreview, next, id);
+      }
       return next;
     });
     setSelectedMovableTextId(id);
     const initial = fittedSelection.autoEdit ? {
       id,
       value,
+      fontRuns,
       fontWeight: fittedSelection.fontWeight || 'normal',
       fontStyle: fittedSelection.fontStyle || 'normal',
       textDecoration: fittedSelection.textDecoration || 'none',
@@ -617,9 +974,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       textAlign: fittedSelection.textAlign || 'left',
       fontSize: Number(fittedSelection.fontSize) || 10,
       baseFontSize,
-      fontFamily: fittedSelection.selectedFontFamily || fittedSelection.previewFontFamily || '',
+      fontFamily: getCurrentFontCandidate(fittedSelection),
       color: fittedSelection.color || '#111111'
     } : null;
+    editingSelectionRangeRef.current = { id: initial?.id || null, range: null };
     setEditingMovableText(initial);
     return id;
   };
@@ -628,6 +986,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const normalized = (Array.isArray(selections) ? selections : []).filter(Boolean);
     if (!normalized.length) return [];
     const entries = normalized.map((selection) => {
+      const value = String(selection.displayText ?? selection.text ?? '');
+      const fontRuns = ensureEditableFontRuns(selection, value);
       const baseFontSize = Number(selection.fontSize) || 10;
       const baseLetterSpacing = Number(selection.letterSpacing) || 0;
       const initial = {
@@ -635,10 +995,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         letterSpacing: baseLetterSpacing, baseLetterSpacing,
         fontWeight: selection.fontWeight, fontStyle: selection.fontStyle
       };
-      const fitted = fitMovableTextToBox(String(selection.displayText ?? selection.text ?? ''), initial, selection);
+      initial.fontRuns = fontRuns;
+      const fitted = fitMovableTextToBox(value, initial, selection);
       return {
         ...selection,
         ...fitted,
+        fontRuns,
         autoFitBaseFontSize: baseFontSize,
         autoFitBaseLetterSpacing: baseLetterSpacing,
         baselineOffset: Number.isFinite(Number(selection.baselineOffset))
@@ -657,6 +1019,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const initial = {
       id: first.id,
       value: String(first.displayText ?? first.text ?? ''),
+      fontRuns: first.fontRuns || [],
       fontWeight: first.fontWeight || 'normal',
       fontStyle: first.fontStyle || 'normal',
       textDecoration: first.textDecoration || 'none',
@@ -668,9 +1031,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       textAlign: first.textAlign || 'left',
       fontSize: Number(first.fontSize) || 10,
       baseFontSize: Number(first.autoFitBaseFontSize || first.fontSize) || 10,
-      fontFamily: first.selectedFontFamily || first.previewFontFamily || '',
+      fontFamily: getCurrentFontCandidate(first),
       color: first.color || '#111111'
     };
+    editingSelectionRangeRef.current = { id: first.id, range: null };
     setEditingMovableText({ ...initial, ...fitMovableTextToBox(initial.value, initial, first) });
     return entries.map((entry) => entry.id);
   };
@@ -687,12 +1051,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       const baseFontSize = Number(item.autoFitBaseFontSize || item.fontSize) || 10;
       const baseLetterSpacing = Number(item.autoFitBaseLetterSpacing ?? item.letterSpacing) || 0;
       const settings = {
-        fontSize: baseFontSize,
+        fontSize: Number(item.fontSize) || baseFontSize,
         baseFontSize,
         letterSpacing: baseLetterSpacing,
         baseLetterSpacing,
+        fontRuns: item.fontRuns || [],
         fontWeight: item.fontWeight || 'normal',
         fontStyle: item.fontStyle || 'normal',
+        manualFontSize: item.manualFontSize === true,
         fontFamily: previewFont.selectionValue || item.selectedFontFamily || item.previewFontFamily || ''
       };
       const fitted = fitMovableTextToBox(text, settings, target);
@@ -700,7 +1066,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         ...target,
         ...fitted,
         previewFontSource: previewFont.source || 'bundled',
-        selectedFontFamily: hasResolvedSelection ? resolvedSelection : (item.selectedFontFamily || ''),
+        // A resolved preview font is only a rendering aid. Treating it as a
+        // user-selected font makes PdfPage apply the first run's font to all
+        // runs when the textbox is reopened.
+        selectedFontFamily: item.selectedFontFamily || '',
         previewFontFamily: hasResolvedOriginalFamily
           ? String(previewFont.originalFamily || '') : (item.previewFontFamily || ''),
         autoFitBaseFontSize: baseFontSize,
@@ -719,13 +1088,19 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       if (current?.id !== id) return current;
       const target = movableTexts.find((item) => item.id === id);
       if (!target) return current;
-      const previewTarget = resolveItemPreview(target);
+      const previewTarget = resolveItemPreview({
+        ...target,
+        fontSize: current.manualFontSize ? current.fontSize : target.fontSize,
+        manualFontSize: current.manualFontSize === true || target.manualFontSize === true
+      });
       const baseFontSize = Number(current.baseFontSize || previewTarget.autoFitBaseFontSize) || 10;
       const baseLetterSpacing = Number(current.baseLetterSpacing ?? previewTarget.autoFitBaseLetterSpacing) || 0;
       const next = {
         ...current,
         fontFamily: hasResolvedSelection ? resolvedSelection : current.fontFamily,
-        fontSize: baseFontSize,
+        fontRunsRevision: current.fontRuns?.length > 0
+          ? Number(current.fontRunsRevision || 0) + 1 : current.fontRunsRevision,
+        fontSize: current.manualFontSize ? current.fontSize : baseFontSize,
         baseFontSize,
         letterSpacing: baseLetterSpacing,
         baseLetterSpacing
@@ -757,6 +1132,31 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     commitPdfChange(userHighlight, appliedReplacePreview, next, id);
   };
 
+  const resizeMovableText = (id, currentRect) => {
+    setMovableTexts((current) => current.map((item) => (
+      item.id === id ? resizeMovableTextItem(item, currentRect) : item
+    )));
+    setEditingMovableText((current) => {
+      if (current?.id !== id) return current;
+      const item = movableTexts.find((entry) => entry.id === id);
+      if (!item) return current;
+      return {
+        ...current,
+        ...fitMovableTextToBox(current.value, current, { ...item, currentRect, fitTextWidth: currentRect.width })
+      };
+    });
+  };
+
+  const finishResizeMovableText = (id, currentRect) => {
+    setMovableTexts((current) => {
+      const next = current.map((item) => (
+        item.id === id ? resizeMovableTextItem(item, currentRect) : item
+      ));
+      commitPdfChange(userHighlight, appliedReplacePreview, next, id);
+      return next;
+    });
+  };
+
   const selectMovableText = (id) => setSelectedMovableTextId(id);
 
   const beginEditMovableText = (id) => {
@@ -768,6 +1168,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const initial = {
       id,
       value: String(item.displayText ?? item.text ?? ''),
+      fontRuns: ensureEditableFontRuns(item, String(item.displayText ?? item.text ?? '')),
+      manualFontSize: item.manualFontSize === true,
       fontWeight: item.fontWeight || 'normal',
       fontStyle: item.fontStyle || 'normal',
       textDecoration: item.textDecoration || 'none',
@@ -777,37 +1179,158 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       baselineOffset: Number.isFinite(Number(item.baselineOffset))
         ? Number(item.baselineOffset) : getVerticalBaselineOffset(item, item.verticalAlign),
       textAlign: item.textAlign || 'left',
-      fontSize: baseFontSize,
+      fontSize: item.manualFontSize ? Number(item.fontSize) || baseFontSize : baseFontSize,
       baseFontSize,
-      fontFamily: item.selectedFontFamily || item.previewFontFamily || '',
+      fontFamily: getCurrentFontCandidate({ ...item, fontRuns: ensureEditableFontRuns(item, String(item.displayText ?? item.text ?? '')) }),
       color: item.color || '#111111'
     };
     const fitted = fitMovableTextToBox(initial.value, initial, item);
+    editingSelectionRangeRef.current = { id, range: null };
     setEditingMovableText({ ...initial, ...fitted });
   };
 
-  const updateEditingMovableText = (value) => {
+  const updateEditingMovableText = (value, fontRuns = null) => {
     setEditingMovableText((current) => {
       if (!current) return current;
       const target = movableTexts.find((item) => item.id === current.id);
-      const fitted = fitMovableTextToBox(value, current, target);
-      return { ...current, value, ...fitted };
+      const nextFontRuns = Array.isArray(fontRuns) ? fontRuns : current.fontRuns;
+      const fitted = fitMovableTextToBox(value, { ...current, fontRuns: nextFontRuns },
+        current.manualFontSize ? { ...target, manualFontSize: true } : target);
+      return { ...current, value, fontRuns: nextFontRuns, ...fitted };
+    });
+  };
+
+  const updateEditingTextSelection = (selectionRange) => {
+    if (editingMovableText?.id) editingSelectionRangeRef.current = { id: editingMovableText.id, range: selectionRange };
+    setEditingMovableText((current) => {
+      if (!current) return current;
+      let offset = 0;
+      const selectedFamilies = new Set();
+      const selectedSizes = [];
+      const selectedWeights = new Set();
+      const selectedStyles = new Set();
+      const selectedDecorations = new Set();
+      const isCaret = Number(selectionRange.end) === Number(selectionRange.start);
+      const caretOffset = Number(selectionRange.start);
+      const totalLength = (current.fontRuns || []).reduce((length, run) => length + String(run.text || '').length, 0);
+      (current.fontRuns || []).forEach((run) => {
+        const start = offset;
+        const end = start + String(run.text || '').length;
+        const containsCaret = isCaret && (
+          (caretOffset >= start && caretOffset < end)
+          || (caretOffset === totalLength && end === totalLength && end > start)
+        );
+        const intersectsRange = !isCaret && selectionRange.end > start && selectionRange.start < end;
+        if (containsCaret || intersectsRange) {
+          const runFont = getCurrentFontCandidate(run) || current.fontFamily || '';
+          const displayedRunFont = resolveDisplayedFont(runFont, availableFonts);
+          selectedFamilies.add(displayedRunFont.value || runFont);
+          selectedWeights.add(run.fontWeight === 'bold' || Number(run.fontWeight) >= 600 ? 'bold' : 'normal');
+          selectedStyles.add(run.fontStyle || 'normal');
+          selectedDecorations.add(run.textDecoration || 'none');
+          const baseSize = Math.max(1, Number(current.baseFontSize || current.fontSize) || 10);
+          selectedSizes.push((Number(run.fontSize || baseSize) * (Number(current.fontSize) || baseSize)) / baseSize);
+        }
+        offset = end;
+      });
+      const selectedRangeFontSize = selectedSizes.length
+        && selectedSizes.every((size) => Math.abs(size - selectedSizes[0]) < 0.05)
+        ? Number(selectedSizes[0].toFixed(2)) : '';
+      return {
+        ...current,
+        selectionRange,
+        selectedRangeFontFamily: selectedFamilies.size === 1 ? [...selectedFamilies][0] : '',
+        selectedRangeFontMixed: selectedFamilies.size > 1,
+        selectedRangeFontSize,
+        selectedRangeFontWeight: selectedWeights.size === 1 ? [...selectedWeights][0] : '',
+        selectedRangeFontStyle: selectedStyles.size === 1 ? [...selectedStyles][0] : '',
+        selectedRangeTextDecoration: selectedDecorations.size === 1 ? [...selectedDecorations][0] : ''
+      };
     });
   };
 
   const updateEditingMovableTextStyle = (style) => {
-    setEditingMovableText((current) => {
-      if (!current) return current;
-      const target = movableTexts.find((item) => item.id === current.id);
-      const next = { ...current, ...style };
-      if (style.fontSize !== undefined) next.baseFontSize = Number(style.fontSize) || current.baseFontSize || current.fontSize;
-      if (style.letterSpacing !== undefined) next.baseLetterSpacing = Number(style.letterSpacing) || 0;
-      if (style.verticalAlign && target) {
-        next.baselineOffset = getVerticalBaselineOffset(target, style.verticalAlign);
+    const current = editingMovableText;
+    if (!current) return;
+    const selectionRange = editingSelectionRangeRef.current.id === current.id
+      ? editingSelectionRangeRef.current.range : current.selectionRange;
+    const target = movableTexts.find((item) => item.id === current.id);
+    const hasTextRange = Number(selectionRange?.end) > Number(selectionRange?.start);
+    const inlineKeys = ['fontSize', 'fontWeight', 'fontStyle', 'textDecoration', 'color'];
+    const inlineStyle = Object.fromEntries(Object.entries(style).filter(([key]) => inlineKeys.includes(key)));
+    if (hasTextRange && current.fontRuns?.length > 0 && Object.keys(inlineStyle).length) {
+      if (inlineStyle.fontSize === '') {
+        setEditingMovableText({ ...current, selectedRangeFontSize: '' });
+        return;
       }
-      const fitted = fitMovableTextToBox(next.value, next, target);
-      return { ...next, ...fitted };
-    });
+      const fontSizeScale = (Number(current.fontSize) || 10) / Math.max(1, Number(current.baseFontSize || current.fontSize) || 10);
+      const nextRuns = applyInlineStyleToRunRange(
+        current.fontRuns, selectionRange, inlineStyle, fontSizeScale
+      );
+      if (!nextRuns) return;
+      const manualFontSize = current.manualFontSize === true || inlineStyle.fontSize !== undefined;
+      const fitted = manualFontSize
+        ? { fontSize: Number(current.fontSize) || 10, letterSpacing: Number(current.letterSpacing) || 0 }
+        : fitMovableTextToBox(current.value, { ...current, fontRuns: nextRuns }, target);
+      const displayedSizes = [];
+      let offset = 0;
+      nextRuns.forEach((run) => {
+        const start = offset;
+        const end = start + String(run.text || '').length;
+        if (selectionRange.end > start && selectionRange.start < end) {
+          displayedSizes.push(Number(run.fontSize || current.baseFontSize)
+            * (Number(fitted.fontSize) || 10) / Math.max(1, Number(current.baseFontSize) || 10));
+        }
+        offset = end;
+      });
+      const selectedRangeFontSize = displayedSizes.length
+        && displayedSizes.every((size) => Math.abs(size - displayedSizes[0]) < 0.05)
+        ? Number(displayedSizes[0].toFixed(2)) : '';
+      setMovableTexts((items) => items.map((item) => item.id === current.id
+        ? {
+          ...item,
+          fontRuns: nextRuns,
+          fontSize: fitted.fontSize,
+          letterSpacing: fitted.letterSpacing,
+          manualFontSize,
+          hasChanges: item.persistedToPdf ? true : item.hasChanges
+        }
+        : item));
+      setEditingMovableText({
+        ...current,
+        selectionRange,
+        fontRuns: nextRuns,
+        ...fitted,
+        manualFontSize,
+        selectedRangeFontSize: inlineStyle.fontSize !== undefined ? selectedRangeFontSize : current.selectedRangeFontSize,
+        selectedRangeFontWeight: inlineStyle.fontWeight !== undefined ? inlineStyle.fontWeight : current.selectedRangeFontWeight,
+        selectedRangeFontStyle: inlineStyle.fontStyle !== undefined ? inlineStyle.fontStyle : current.selectedRangeFontStyle,
+        selectedRangeTextDecoration: inlineStyle.textDecoration !== undefined
+          ? inlineStyle.textDecoration : current.selectedRangeTextDecoration,
+        fontRunsRevision: Number(current.fontRunsRevision || 0) + 1
+      });
+      return;
+    }
+    const next = { ...current, ...style };
+    const wholeRunStyle = Object.fromEntries(Object.entries(style).filter(([key]) => (
+      ['fontWeight', 'fontStyle', 'textDecoration', 'color'].includes(key)
+    )));
+    if (current.fontRuns?.length > 0 && Object.keys(wholeRunStyle).length) {
+      next.fontRuns = current.fontRuns.map((run) => ({ ...run, ...wholeRunStyle }));
+      next.fontRunsRevision = Number(current.fontRunsRevision || 0) + 1;
+    }
+    if (style.fontSize !== undefined && style.fontSize !== '') {
+      next.fontSize = Number(style.fontSize);
+      next.manualFontSize = true;
+      next.fontRunsRevision = Number(current.fontRunsRevision || 0) + 1;
+    }
+    if (style.letterSpacing !== undefined) next.baseLetterSpacing = Number(style.letterSpacing) || 0;
+    if (style.verticalAlign && target) {
+      next.baselineOffset = getVerticalBaselineOffset(target, style.verticalAlign);
+    }
+    const fitted = fitMovableTextToBox(next.value, next,
+      next.manualFontSize ? { ...target, manualFontSize: true } : target);
+    setEditingMovableText({ ...next, ...fitted });
   };
 
   const changeEditingMovableTextFont = async (fontFamily) => {
@@ -815,6 +1338,73 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const editingId = editingMovableText.id;
     const target = movableTexts.find((item) => item.id === editingId);
     if (!target) return;
+    const selectedRange = editingSelectionRangeRef.current.id === editingId
+      ? editingSelectionRangeRef.current.range : editingMovableText.selectionRange;
+    if (editingMovableText.fontRuns?.length > 0
+      && Number(selectedRange?.end) > Number(selectedRange?.start)) {
+      const rangeId = `font-range-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const nextRuns = applyFontFamilyToRunRange(
+        editingMovableText.fontRuns, selectedRange, fontFamily, rangeId
+      );
+      if (!nextRuns) return;
+      const fitted = fitMovableTextToBox(
+        editingMovableText.value,
+        { ...editingMovableText, fontRuns: nextRuns },
+        target
+      );
+      setMovableTexts((current) => current.map((item) => item.id === editingId
+        ? {
+          ...item,
+          fontRuns: nextRuns,
+          selectedFontFamily: '',
+          fontSize: fitted.fontSize,
+          letterSpacing: fitted.letterSpacing,
+          hasChanges: item.persistedToPdf ? true : item.hasChanges
+        }
+        : item));
+      setEditingMovableText((current) => current?.id === editingId ? {
+        ...current,
+        selectionRange: selectedRange,
+        fontRuns: nextRuns,
+        ...fitted,
+        selectedRangeFontFamily: fontFamily,
+        selectedRangeFontMixed: false,
+        fontRunsRevision: Number(current.fontRunsRevision || 0) + 1
+      } : current);
+      if (fontFamily) {
+        const candidates = [fontFamily];
+        const preferBold = nextRuns.some((run) => run.fontRangeId === rangeId
+          && (run.fontWeight === 'bold' || Number(run.fontWeight) >= 600));
+        try {
+          const previewFont = await resolveReplacementPreviewFont(candidates, { preferBold });
+          const previewRuns = nextRuns.map((run) => run.fontRangeId === rangeId
+            ? { ...run, fontFamily: previewFont.fontFamily }
+            : run);
+          const previewFit = fitMovableTextToBox(
+            editingMovableText.value,
+            { ...editingMovableText, fontRuns: previewRuns },
+            target
+          );
+          setMovableTexts((current) => current.map((item) => item.id === editingId
+            ? {
+              ...item,
+              fontRuns: previewRuns,
+              fontSize: previewFit.fontSize,
+              letterSpacing: previewFit.letterSpacing
+            }
+            : item));
+          setEditingMovableText((current) => current?.id === editingId ? {
+            ...current,
+            fontRuns: previewRuns,
+            ...previewFit,
+            fontRunsRevision: Number(current.fontRunsRevision || 0) + 1
+          } : current);
+        } catch (error) {
+          console.warn('[PdfJsViewer] selected range font preview unavailable:', error);
+        }
+      }
+      return;
+    }
     const fontCandidates = fontFamily
       ? [fontFamily]
       : (target.originalFontCandidates || target.fontCandidates || []);
@@ -831,7 +1421,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     } : item));
     setEditingMovableText((current) => {
       if (current?.id !== editingId) return current;
-      const next = { ...current, fontFamily };
+      const next = {
+        ...current,
+        fontFamily,
+        fontRunsRevision: current.fontRuns?.length > 0
+          ? Number(current.fontRunsRevision || 0) + 1 : current.fontRunsRevision
+      };
       return { ...next, ...fitMovableTextToBox(next.value, next, target) };
     });
     try {
@@ -861,12 +1456,35 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     }
   };
 
-  const cancelEditMovableText = () => setEditingMovableText(null);
+  const cancelEditMovableText = () => {
+    if (editingMovableText?.id) {
+      setMovableTexts((current) => current.filter((item) => (
+        item.id !== editingMovableText.id || item.type !== 'addedText'
+        || String(item.displayText ?? item.text ?? '').trim()
+      )));
+    }
+    editingSelectionRangeRef.current = { id: null, range: null };
+    setEditingMovableText(null);
+  };
 
   const commitEditMovableText = () => {
     if (!editingMovableText) return;
     const value = String(editingMovableText.value || '').trim();
+    const committedFontRuns = normalizeFontRunsForText(editingMovableText.fontRuns, value);
     const target = movableTexts.find((item) => item.id === editingMovableText.id);
+    if (target?.type === 'addedText' && !value) {
+      setMovableTexts((current) => {
+        const next = current.filter((item) => item.id !== target.id);
+        if (String(target.displayText ?? target.text ?? '').trim()) {
+          commitPdfChange(userHighlight, appliedReplacePreview, next, null);
+        }
+        return next;
+      });
+      setSelectedMovableTextId(null);
+      editingSelectionRangeRef.current = { id: null, range: null };
+      setEditingMovableText(null);
+      return;
+    }
     if (!target || !value) {
       setEditingMovableText(null);
       return;
@@ -880,6 +1498,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           displayText: value,
           text: value,
           editedText: value,
+          fontRuns: committedFontRuns.length ? committedFontRuns : (item.fontRuns || []),
           hasChanges: item.persistedToPdf ? true : item.hasChanges,
           fontWeight: editingMovableText.fontWeight || item.fontWeight || 'normal',
           fontStyle: editingMovableText.fontStyle || item.fontStyle || 'normal',
@@ -891,9 +1510,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             : getVerticalBaselineOffset(item, editingMovableText.verticalAlign || item.verticalAlign),
           textAlign: editingMovableText.textAlign || item.textAlign || 'left',
           fontSize: Number(editingMovableText.fontSize) || item.fontSize || 10,
+          manualFontSize: editingMovableText.manualFontSize === true,
           autoFitBaseFontSize: Number(editingMovableText.baseFontSize) || item.autoFitBaseFontSize || item.fontSize || 10,
           autoFitBaseLetterSpacing: Number(editingMovableText.baseLetterSpacing) || item.autoFitBaseLetterSpacing || 0,
-          selectedFontFamily: editingMovableText.fontFamily || item.selectedFontFamily || '',
+          // Whole-box user font changes are persisted by changeEditingMovableTextFont.
+          // The editing toolbar's current run/font is only a display value and
+          // must not become a global override on commit.
+          selectedFontFamily: item.selectedFontFamily || '',
           color: editingMovableText.color || item.color || '#111111'
         }
         : item);
@@ -901,6 +1524,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       return next;
     });
     setSelectedMovableTextId(editingMovableText.id);
+    editingSelectionRangeRef.current = { id: null, range: null };
     setEditingMovableText(null);
   };
 
@@ -955,10 +1579,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     }
     const pageNumber = getActivePageNumber();
     const page = pageRefs.current[pageNumber];
-    const pageWidth = (page?.clientWidth || 600) / scale;
-    const pageHeight = (page?.clientHeight || 800) / scale;
+    const pageWidth = (page?.clientWidth || 600) / effectiveScale;
+    const pageHeight = (page?.clientHeight || 800) / effectiveScale;
     const aspectRatio = image.naturalWidth / Math.max(image.naturalHeight, 1);
-    const initialWidth = Math.min(pageWidth * 0.5, Math.max(72, image.naturalWidth / scale));
+    const initialWidth = Math.min(pageWidth * 0.5, Math.max(72, image.naturalWidth / effectiveScale));
     const height = Math.min(pageHeight * 0.5, initialWidth / aspectRatio);
     const width = height * aspectRatio;
     const id = `pdf-image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -989,6 +1613,134 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, next, null);
   };
 
+  const addTable = (item) => {
+    const width = Math.min(item.sourcePageWidth, Math.max(120, item.currentRect.width));
+    const height = Math.min(item.sourcePageHeight, Math.max(66, item.currentRect.height));
+    const table = {
+      ...item,
+      currentRect: {
+        x: Math.max(0, Math.min(item.currentRect.x, item.sourcePageWidth - width)),
+        y: Math.max(0, Math.min(item.currentRect.y, item.sourcePageHeight - height)),
+        width, height
+      },
+      id: `pdf-table-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      rows: 3, columns: 3, cells: Array(9).fill(''), cellStyles: Array(9).fill(null),
+      rowHeights: Array(3).fill(1 / 3), columnWidths: Array(3).fill(1 / 3), spans: [],
+      fontSize: 10, borderWidth: 1, borderColor: '#000000', headerFill: '#ffffff',
+      persistedToPdf: false
+    };
+    const next = [...tables, table];
+    setTables(next);
+    setSelectedTableId(null);
+    setSelectedTableCell(null);
+    setTableAddMode(false);
+    setAreaTextReplaceMode(true);
+    commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId, next, null);
+  };
+  const updateTable = (id, changes, commit = false) => {
+    const next = tables.map((table) => table.id === id ? { ...table, ...changes, hasChanges: Object.keys(changes).length ? true : table.hasChanges } : table);
+    setTables(next);
+    if (commit) commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId, next, id);
+  };
+  const resizeTableGrid = (table, rows, columns) => {
+    const nextRows = Math.max(1, Math.min(30, Number(rows) || 1));
+    const nextColumns = Math.max(1, Math.min(20, Number(columns) || 1));
+    const cells = Array.from({ length: nextRows * nextColumns }, (_, index) => {
+      const row = Math.floor(index / nextColumns);
+      const column = index % nextColumns;
+      return table.cells[row * table.columns + column] || '';
+    });
+    const cellStyles = Array.from({ length: nextRows * nextColumns }, (_, index) => {
+      const row = Math.floor(index / nextColumns);
+      const column = index % nextColumns;
+      return row < table.rows && column < table.columns ? table.cellStyles?.[row * table.columns + column] || null : null;
+    });
+    const width = Math.min(table.sourcePageWidth, Math.max(table.currentRect.width, nextColumns * 40));
+    const height = Math.min(table.sourcePageHeight, Math.max(table.currentRect.height, nextRows * 22));
+    const currentRect = { ...table.currentRect,
+      x: Math.min(table.currentRect.x, table.sourcePageWidth - width),
+      y: Math.min(table.currentRect.y, table.sourcePageHeight - height),
+      width, height };
+    updateTable(table.id, { rows: nextRows, columns: nextColumns, cells, cellStyles,
+      rowHeights: tableSizes(table.rowHeights, table.rows).slice(0, nextRows),
+      columnWidths: tableSizes(table.columnWidths, table.columns).slice(0, nextColumns),
+      spans: (table.spans || []).filter((span) => span.row + span.rowSpan <= nextRows && span.column + span.colSpan <= nextColumns), currentRect }, true);
+  };
+  const deleteTable = (id) => {
+    const next = tables.filter((table) => table.id !== id);
+    setTables(next);
+    setSelectedTableId(null);
+    setSelectedTableCell(null);
+    commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId, next, null);
+  };
+
+  const rememberTableCopy = (table) => {
+    const text = tableToTsv(table);
+    copiedPdfTable = { table: JSON.parse(JSON.stringify(table)), text, pastes: 0 };
+    return text;
+  };
+
+  const copyTable = async (id) => {
+    const table = tables.find((entry) => entry.id === id);
+    if (!table) return;
+    const text = rememberTableCopy(table);
+    try {
+      if (window.docPilotClipboard?.writeText) await window.docPilotClipboard.writeText(text);
+      else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else throw new Error('Clipboard API unavailable');
+    } catch {
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      input.remove();
+    }
+  };
+
+  const pasteCopiedTable = () => {
+    if (!copiedPdfTable) return;
+    const id = `pdf-table-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    copiedPdfTable.pastes += 1;
+    const table = duplicateTable(copiedPdfTable.table, id, 24 * copiedPdfTable.pastes);
+    table.pageNumber = pageNumbers.includes(table.pageNumber) ? table.pageNumber : currentPage;
+    const next = [...tables, table];
+    setTables(next);
+    setSelectedTableId(id);
+    setSelectedTableCell({ tableId: id, anchor: { row: 0, column: 0 }, focus: { row: 0, column: 0 } });
+    commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId, next, id);
+  };
+
+  useEffect(() => {
+    if (!isEditMode) return undefined;
+    const onCopy = (event) => {
+      const table = tables.find((entry) => entry.id === selectedTableId);
+      if (!table || !event.clipboardData) return;
+      const target = event.target;
+      if ((target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement)
+        && target.selectionStart != null && target.selectionStart !== target.selectionEnd) return;
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', rememberTableCopy(table));
+    };
+    const onPaste = (event) => {
+      if (!copiedPdfTable || !(event.target instanceof Element)
+        || (!event.target.closest('.pdf-viewer-shell') && !selectedTableId)) return;
+      const text = event.clipboardData?.getData('text/plain')?.replace(/\r\n/g, '\n').replace(/\n$/, '');
+      if (text !== copiedPdfTable.text) return;
+      event.preventDefault();
+      event.stopPropagation();
+      pasteCopiedTable();
+    };
+    document.addEventListener('copy', onCopy, true);
+    document.addEventListener('paste', onPaste, true);
+    return () => {
+      document.removeEventListener('copy', onCopy, true);
+      document.removeEventListener('paste', onPaste, true);
+    };
+  }, [isEditMode, selectedTableId, tables, currentPage, pageNumbers, userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId]);
+
   const downloadAsPdf = async () => {
     if (downloadStatus !== 'idle') return;
     setDownloadStatus('pdf-running');
@@ -1013,8 +1765,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           color: window.getComputedStyle(box).backgroundColor
         }));
       });
-      if (appliedReplacePreview?.originalText || pendingMovableTexts.length > 0 || highlights.length > 0 || imageAttachments.length > 0) {
-        const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts: pendingMovableTexts, highlights, images: imageAttachments });
+      const tablesChanged = JSON.stringify(tables) !== JSON.stringify(persistedTablesRef.current);
+      if (appliedReplacePreview?.originalText || pendingMovableTexts.length > 0 || highlights.length > 0 || imageAttachments.length > 0 || tablesChanged) {
+        const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts: pendingMovableTexts, highlights, images: imageAttachments, tables, tablesChanged });
         if (result?.movableTextCount) {
           console.debug('[PdfJsViewer] PDF text move save results', result.textMoveResults?.map((item) => ({
             displayText: item.displayText,
@@ -1032,6 +1785,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             : '';
           setDownloadMessage(`PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 직접 제거 미확인 ${result.noCoverUnresolvedCount || 0}건 · PDF 내부 원본 글꼴 재사용 ${result.fontPreservedCount}건${localFontLabel}`);
         }
+        if (tablesChanged && !result?.movableTextCount) setDownloadMessage(`PDF 저장 완료 · 표 ${result?.tableCount ?? tables.length}개 반영`);
       } else {
         const url = URL.createObjectURL(file);
         const anchor = document.createElement('a');
@@ -1484,8 +2238,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setCurrentPage(1);
       setViewMode('scroll');
       setTextMoveMode(false);
+      setTextAddMode(false);
       setMovableTexts([]);
       setImageAttachments([]);
+      setTables([]);
+      setSelectedTableId(null);
+      persistedTablesRef.current = [];
       setBatchReplaceRequest(null);
       setSelectedMovableTextId(null);
       setSelectedImageId(null);
@@ -1515,6 +2273,17 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           if (typeof loadingTask.destroy === 'function') await loadingTask.destroy();
           return;
         }
+
+        const embeddedTables = await import('../services/pdfTableService').then(({ readPdfTables }) => readPdfTables(file)).catch((error) => {
+          console.warn('[PdfJsViewer] saved table metadata could not be loaded:', error);
+          return [];
+        });
+        if (cancelled) return;
+        persistedTablesRef.current = embeddedTables;
+        setTables(embeddedTables);
+        historyRef.current.snapshots[0] = {
+          ...historyRef.current.snapshots[0], tables: embeddedTables, selectedTableId: null
+        };
 
         pdfDocumentRef.current = pdf;
         setPdfDocument(pdf);
@@ -1632,13 +2401,16 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         <div className="pdf-document-history" role="group" aria-label="문서 변경 이력">
           <button type="button" onClick={undoDocumentChange} disabled={!isEditMode || !historyState.canUndo} aria-label="적용 전으로 되돌리기">&lt;</button>
           <button type="button" onClick={redoDocumentChange} disabled={!isEditMode || !historyState.canRedo} aria-label="다시 적용하기">&gt;</button>
-          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!isEditMode || (!historyState.canReset && movableTexts.length === 0 && imageAttachments.length === 0)}>전체 초기화</button>
+          <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!isEditMode || (!historyState.canReset && movableTexts.length === 0 && imageAttachments.length === 0 && JSON.stringify(tables) === JSON.stringify(persistedTablesRef.current))}>전체 초기화</button>
           <button
             type="button"
             className={`pdf-text-move-button ${textMoveMode ? 'active' : ''}`}
             onClick={() => {
+              if (editingMovableText) commitEditMovableText();
               const next = !textMoveMode;
               setTextMoveMode(next);
+              setTextAddMode(false);
+              setTableAddMode(false);
               setTextReplaceMode(false);
               setAreaTextReplaceMode(!next);
               setSelectedMovableTextId(null);
@@ -1652,21 +2424,42 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           </button>
           <button
             type="button"
-            className={`pdf-text-move-button ${textReplaceMode ? 'active' : ''}`}
+            className={`pdf-text-move-button ${textAddMode ? 'active' : ''}`}
             onClick={() => {
-              const next = !textReplaceMode;
-              setTextReplaceMode(next);
+              if (editingMovableText) commitEditMovableText();
+              const next = !textAddMode;
+              setTextAddMode(next);
               setTextMoveMode(false);
+              setTableAddMode(false);
+              setTextReplaceMode(false);
               setAreaTextReplaceMode(!next);
               setSelectedMovableTextId(null);
               setEditingMovableText(null);
             }}
             disabled={!isEditMode}
-            aria-pressed={textReplaceMode}
-            title={textReplaceMode ? 'PDF 텍스트 교체를 종료합니다.' : 'PDF 본문에서 변경할 텍스트를 선택한 뒤 새 내용을 입력합니다.'}
+            aria-pressed={textAddMode}
+            title={textAddMode ? '텍스트 추가를 종료합니다.' : 'PDF에서 영역을 지정해 새 텍스트 상자를 만듭니다.'}
           >
-            텍스트 교체
+            텍스트 추가
           </button>
+          <button
+            type="button"
+            className={`pdf-text-move-button ${tableAddMode ? 'active' : ''}`}
+            disabled={!isEditMode}
+            aria-pressed={tableAddMode}
+            title="PDF에서 드래그해 표 영역을 지정합니다."
+            onClick={() => {
+              if (editingMovableText) commitEditMovableText();
+              const next = !tableAddMode;
+              setTableAddMode(next);
+              setTextAddMode(false);
+              setTextMoveMode(false);
+              setTextReplaceMode(false);
+              setAreaTextReplaceMode(!next);
+              setSelectedMovableTextId(null);
+              setSelectedImageId(null);
+            }}
+          >표 추가</button>
           <button type="button" className="pdf-text-move-button" disabled={!isEditMode} onClick={() => imageInputRef.current?.click()} title="현재 보고 있는 PDF 페이지에 이미지를 첨부합니다.">이미지 첨부</button>
           <input ref={imageInputRef} className="pdf-image-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={addImageAttachment} />
         </div>
@@ -1701,7 +2494,16 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         onCommit={commitEditMovableText}
         fonts={availableFonts}
         onFontChange={changeEditingMovableTextFont}
+        onBeforeFormat={updateEditingTextSelection}
       /> : null}
+      {isEditMode && tables.find((table) => table.id === selectedTableId) ? (() => {
+        const table = tables.find((entry) => entry.id === selectedTableId);
+        return <PdfTableToolbar table={table} selection={selectedTableCell}
+          onChange={(changes) => updateTable(table.id, changes, true)}
+          onResizeGrid={(rows, columns) => resizeTableGrid(table, rows, columns)}
+          onCopy={() => copyTable(table.id)}
+          onDelete={() => deleteTable(table.id)} />;
+      })() : null}
       <div ref={viewerRef} className="document-body-scroll pdf-viewer pdf-viewer-scroll">
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (
@@ -1718,11 +2520,25 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 batchReplaceRequest={batchReplaceRequest}
                 onBatchReplaceHandled={acknowledgeBatchReplacePage}
                 textMoveMode={textMoveMode}
+                textAddMode={textAddMode}
+                tableAddMode={tableAddMode}
                 textReplaceMode={textReplaceMode}
                 areaTextReplaceMode={isEditMode && areaTextReplaceMode}
                 editingEnabled={isEditMode}
                 movableTexts={movableTexts.filter((item) => item.pageNumber === pageNumber)}
                 imageAttachments={imageAttachments.filter((item) => item.pageNumber === pageNumber)}
+                tables={tables.filter((item) => item.pageNumber === pageNumber)}
+                removedTables={persistedTablesRef.current.filter((item) => item.pageNumber === pageNumber && !tables.some((table) => table.id === item.id))}
+                selectedTableId={selectedTableId}
+                selectedTableCell={selectedTableCell}
+                onSelectTableCell={(tableId, row, column, shiftKey) => setSelectedTableCell((previous) => ({
+                  tableId, anchor: shiftKey && previous?.tableId === tableId ? previous.anchor : { row, column }, focus: { row, column }
+                }))}
+                onCreateTable={addTable}
+                onSelectTable={setSelectedTableId}
+                onUpdateTable={updateTable}
+                onDeleteTable={deleteTable}
+                onCopyTable={copyTable}
                 selectedMovableTextId={selectedMovableTextId}
                 editingMovableText={editingMovableText}
                 onCreateMovableText={addMovableText}
@@ -1730,10 +2546,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 onUpdateMovableTextPreviewFont={updateMovableTextPreviewFont}
                 onMoveMovableText={moveMovableText}
                 onMoveMovableTextEnd={finishMoveMovableText}
+                onResizeMovableText={resizeMovableText}
+                onResizeMovableTextEnd={finishResizeMovableText}
                 onSelectMovableText={selectMovableText}
                 onBeginEditMovableText={beginEditMovableText}
                 onChangeEditMovableText={updateEditingMovableText}
                 onChangeEditMovableTextStyle={updateEditingMovableTextStyle}
+                onEditSelectionChange={updateEditingTextSelection}
                 onCommitEditMovableText={commitEditMovableText}
                 onCancelEditMovableText={cancelEditMovableText}
                 onDeleteMovableText={deleteMovableText}
