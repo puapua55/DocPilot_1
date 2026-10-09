@@ -68,6 +68,7 @@ test('added text can be resized and moved without opening the editor in move mod
   await editor.press('Control+Enter');
   const downloadPromise = page.waitForEvent('download');
   await page.locator('.viewer-download-button.pdf').click();
+  await page.getByRole('dialog', { name: 'PDF 다운로드 미리보기' }).getByRole('button', { name: '확인' }).click();
   const download = await downloadPromise;
   const pdfBytes = await readFile(await download.path());
   const saved = await getDocument({ data: new Uint8Array(pdfBytes), useSystemFonts: true }).promise;

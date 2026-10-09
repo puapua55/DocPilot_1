@@ -1,5 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import pdfWorkerUrl from '../workers/pdfWorker.js?worker&url';
 import { isPdfFile } from '../utils/fileUtils';
 
 // PDF.js 6 uses the new Map helper while rendering optional-content
@@ -16,6 +16,21 @@ if (typeof Map.prototype.getOrInsertComputed !== 'function') {
       return value;
     }
   });
+}
+
+if (typeof Math.sumPrecise !== 'function') {
+  Math.sumPrecise = (values) => {
+    let sum = 0;
+    let compensation = 0;
+    for (const value of values) {
+      const next = sum + value;
+      compensation += Math.abs(sum) >= Math.abs(value)
+        ? (sum - next) + value
+        : (value - next) + sum;
+      sum = next;
+    }
+    return sum + compensation;
+  };
 }
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;

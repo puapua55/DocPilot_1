@@ -30,6 +30,7 @@ async function selectText(page, partial = false) {
 async function savedText(page) {
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
+  await page.getByRole('dialog', { name: 'PDF 다운로드 미리보기' }).getByRole('button', { name: '확인' }).click();
   const bytes = readFileSync(await (await download).path());
   const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: true });
   try {

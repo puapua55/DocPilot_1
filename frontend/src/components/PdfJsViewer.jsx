@@ -1,5 +1,7 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import PdfPage from './PdfPage';
+import PdfDownloadPreview from './PdfDownloadPreview';
+import PdfEncryptionChoice from './PdfEncryptionChoice';
 import PdfTableToolbar from './PdfTableToolbar';
 import TextAlignmentIcon from './TextAlignmentIcon';
 import { loadPdfDocument } from '../services/pdfService';
@@ -724,7 +726,7 @@ function collectInstantReplacementReviewItems(viewScale = 1) {
   });
 }
 
-const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, toolbarActions, onVisualConvert, isEditMode = false, onEditModeChange }, ref) {
+const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, onFitScaleChange, onResetZoom, toolbarActions, onVisualConvert, onPagesChanged, onUndoPageChange, onRedoPageChange, onDocumentChanged, canUndoPageChange = false, canRedoPageChange = false, isEditMode = false, onEditModeChange }, ref) {
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumbers, setPageNumbers] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
@@ -734,16 +736,32 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [downloadStatus, setDownloadStatus] = useState('idle');
   const [downloadMessage, setDownloadMessage] = useState('');
   const [downloadFailed, setDownloadFailed] = useState(false);
+  const [downloadPreview, setDownloadPreview] = useState(null);
+  const [pageSelection, setPageSelection] = useState('');
+  const [deleteSelection, setDeleteSelection] = useState('');
+  const [pageToolsOpen, setPageToolsOpen] = useState(false);
+  const [pageTool, setPageTool] = useState('extract');
+  const [insertFile, setInsertFile] = useState(null);
+  const [encryptionChoiceOpen, setEncryptionChoiceOpen] = useState(false);
+  const [insertPositionMode, setInsertPositionMode] = useState('end');
+  const [insertAfterPage, setInsertAfterPage] = useState('');
+  const insertFileInputRef = useRef(null);
   const pdfDocumentRef = useRef(null);
   const pagesTextRef = useRef([]);
   const viewerRef = useRef(null);
   const pageRefs = useRef({});
+  const pageConversionNoticeRef = useRef('');
+  const fitPageAnchorRef = useRef(null);
+  const scrollPageFrameRef = useRef(null);
+  const pageNumberInputRef = useRef(null);
   const historyRef = useRef({ snapshots: [], index: -1 });
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false, canReset: false });
   const [viewMode, setViewMode] = useState('scroll');
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageNumberInput, setPageNumberInput] = useState('1');
   const [pdfPageSize, setPdfPageSize] = useState({ width: 0, height: 0 });
   const [fitScale, setFitScale] = useState(1);
+  const [fitMode, setFitMode] = useState('width');
   const [textMoveMode, setTextMoveMode] = useState(false);
   const [textAddMode, setTextAddMode] = useState(false);
   const [tableAddMode, setTableAddMode] = useState(false);
@@ -769,8 +787,103 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     matchMode: 'contains'
   });
   const [userHighlights, setUserHighlights] = useState([]);
+
+  useEffect(() => {
+    if (pageTool !== 'insert' || !isEditMode) setInsertFile(null);
+  }, [pageTool, isEditMode]);
+
+  useEffect(() => {
+    if (pageTool === 'delete' && pdfDocument?.numPages === 1) setPageTool('extract');
+  }, [pageTool, pdfDocument?.numPages]);
   const effectiveScale = scale * fitScale;
   const pageOrientation = pdfPageSize.width > pdfPageSize.height ? 'landscape' : 'portrait';
+
+  useEffect(() => {
+    if (document.activeElement !== pageNumberInputRef.current) setPageNumberInput(String(currentPage));
+  }, [currentPage]);
+
+  const jumpToPage = (value) => {
+    const page = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(page) || page < 1 || page > pageNumbers.length) {
+      setPageNumberInput(String(currentPage));
+      return;
+    }
+    setPageNumberInput(String(page));
+    setCurrentPage(page);
+    if (viewMode === 'scroll') {
+      const viewer = viewerRef.current;
+      const target = pageRefs.current[page];
+      if (viewer && target) {
+        viewer.scrollTop += target.getBoundingClientRect().top - viewer.getBoundingClientRect().top - 18;
+      }
+    }
+  };
+
+  const updateScrollPage = () => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewMode !== 'scroll') return;
+    const bounds = viewer.getBoundingClientRect();
+    const center = (bounds.top + bounds.bottom) / 2;
+    let bestPage = 1;
+    let bestVisibleHeight = -1;
+    let bestDistance = Infinity;
+    Object.entries(pageRefs.current).forEach(([pageNumber, element]) => {
+      if (!element?.isConnected || Number(pageNumber) > pageNumbers.length) return;
+      const pageBounds = element.getBoundingClientRect();
+      const visibleHeight = Math.max(0, Math.min(pageBounds.bottom, bounds.bottom) - Math.max(pageBounds.top, bounds.top));
+      const distance = Math.abs((pageBounds.top + pageBounds.bottom) / 2 - center);
+      if (visibleHeight > bestVisibleHeight || (visibleHeight === bestVisibleHeight && distance < bestDistance)) {
+        bestPage = Number(pageNumber);
+        bestVisibleHeight = visibleHeight;
+        bestDistance = distance;
+      }
+    });
+    if (bestVisibleHeight >= 0) setCurrentPage((page) => page === bestPage ? page : bestPage);
+  };
+
+  const scheduleScrollPageUpdate = () => {
+    if (scrollPageFrameRef.current !== null) return;
+    scrollPageFrameRef.current = requestAnimationFrame(() => {
+      scrollPageFrameRef.current = null;
+      updateScrollPage();
+    });
+  };
+
+  useEffect(() => {
+    if (viewMode === 'scroll' && pageNumbers.length) scheduleScrollPageUpdate();
+    return () => {
+      if (scrollPageFrameRef.current !== null) cancelAnimationFrame(scrollPageFrameRef.current);
+      scrollPageFrameRef.current = null;
+    };
+  }, [viewMode, pageNumbers.length, effectiveScale]);
+
+  useLayoutEffect(() => {
+    const anchorPage = fitPageAnchorRef.current;
+    const viewer = viewerRef.current;
+    if (!anchorPage || !viewer || viewMode !== 'scroll') return undefined;
+
+    const keepPageInView = () => {
+      const target = pageRefs.current[anchorPage];
+      if (!target?.isConnected) return;
+      const viewerBounds = viewer.getBoundingClientRect();
+      const pageBounds = target.getBoundingClientRect();
+      viewer.scrollTop += (pageBounds.top + pageBounds.bottom - viewerBounds.top - viewerBounds.bottom) / 2;
+      setCurrentPage(anchorPage);
+    };
+
+    keepPageInView();
+    const observer = new ResizeObserver(keepPageInView);
+    if (viewer.firstElementChild) observer.observe(viewer.firstElementChild);
+    const timer = window.setTimeout(() => {
+      observer.disconnect();
+      fitPageAnchorRef.current = null;
+      scheduleScrollPageUpdate();
+    }, 500);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+    };
+  }, [effectiveScale, fitMode, viewMode]);
 
   useEffect(() => {
     if (!selectedTableId) return undefined;
@@ -816,10 +929,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     if (!viewer || !pdfPageSize.width) return undefined;
 
     const updateFitScale = () => {
-      // Match the page to the usable viewer width while preserving its native
-      // aspect ratio. The cap avoids making small portrait pages oversized.
       const availableWidth = Math.max(240, viewer.clientWidth - 38);
-      const nextFitScale = Math.min(1.2, Math.max(0.5, availableWidth / pdfPageSize.width));
+      const availableHeight = Math.max(120, viewer.clientHeight - 38);
+      const widthScale = availableWidth / pdfPageSize.width;
+      const nextFitScale = Math.min(4, Math.max(0.1, fitMode === 'width'
+        ? widthScale
+        : Math.min(widthScale, availableHeight / pdfPageSize.height)));
       setFitScale((current) => Math.abs(current - nextFitScale) < 0.005 ? current : nextFitScale);
     };
 
@@ -827,7 +942,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const observer = new ResizeObserver(updateFitScale);
     observer.observe(viewer);
     return () => observer.disconnect();
-  }, [pdfPageSize]);
+  }, [pdfPageSize, fitMode]);
+
+  useEffect(() => {
+    onFitScaleChange?.(fitScale);
+  }, [fitScale, onFitScaleChange]);
 
   useEffect(() => {
     setTextMoveMode(false);
@@ -859,6 +978,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       ? { snapshots: [snapshot], index: 0 }
       : { snapshots: [...history.snapshots.slice(0, history.index + 1), snapshot], index: history.index + 1 };
     updateHistoryState();
+    onDocumentChanged?.();
   };
 
   const restorePdfSnapshot = (snapshot) => {
@@ -881,18 +1001,42 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     return true;
   };
 
-  const undoDocumentChange = () => {
+  const undoDocumentChange = async () => {
     const history = historyRef.current;
-    if (history.index <= 0) return false;
+    if (history.index <= 0) {
+      if (!canUndoPageChange || downloadStatus !== 'idle') return false;
+      setDownloadStatus('history-running');
+      try {
+        return await onUndoPageChange?.() ?? false;
+      } catch (error) {
+        setDownloadFailed(true);
+        setDownloadMessage(`페이지 복원에 실패했습니다. ${error?.message || ''}`.trim());
+        return false;
+      } finally {
+        setDownloadStatus('idle');
+      }
+    }
     history.index -= 1;
     restorePdfSnapshot(history.snapshots[history.index]);
     updateHistoryState();
     return true;
   };
 
-  const redoDocumentChange = () => {
+  const redoDocumentChange = async () => {
     const history = historyRef.current;
-    if (history.index >= history.snapshots.length - 1) return false;
+    if (history.index >= history.snapshots.length - 1) {
+      if (!canRedoPageChange || downloadStatus !== 'idle') return false;
+      setDownloadStatus('history-running');
+      try {
+        return await onRedoPageChange?.() ?? false;
+      } catch (error) {
+        setDownloadFailed(true);
+        setDownloadMessage(`페이지 삭제 재적용에 실패했습니다. ${error?.message || ''}`.trim());
+        return false;
+      } finally {
+        setDownloadStatus('idle');
+      }
+    }
     history.index += 1;
     restorePdfSnapshot(history.snapshots[history.index]);
     updateHistoryState();
@@ -1741,16 +1885,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     };
   }, [isEditMode, selectedTableId, tables, currentPage, pageNumbers, userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId]);
 
-  const downloadAsPdf = async () => {
-    if (downloadStatus !== 'idle') return;
-    setDownloadStatus('pdf-running');
-    setDownloadMessage('');
-    setDownloadFailed(false);
-    try {
-      // Review selections from an instant replacement already exist in the
-      // reloaded PDF. They are UI affordances only until edited or moved.
-      const pendingMovableTexts = movableTexts.filter((item) => !item.persistedToPdf || item.hasChanges);
-      const highlights = Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
+  const getPendingPdfChanges = () => {
+    // Review selections from an instant replacement already exist in the
+    // reloaded PDF. They are UI affordances only until edited or moved.
+    const pendingMovableTexts = movableTexts.filter((item) => !item.persistedToPdf || item.hasChanges);
+    const highlights = Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
         const pageWidth = pageElement.clientWidth || pageElement.getBoundingClientRect().width;
         const pageHeight = pageElement.clientHeight || pageElement.getBoundingClientRect().height;
         const pageNumber = Number(pageElement.dataset.pageNumber);
@@ -1764,10 +1903,53 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           height: Number.parseFloat(box.style.height),
           color: window.getComputedStyle(box).backgroundColor
         }));
-      });
-      const tablesChanged = JSON.stringify(tables) !== JSON.stringify(persistedTablesRef.current);
-      if (appliedReplacePreview?.originalText || pendingMovableTexts.length > 0 || highlights.length > 0 || imageAttachments.length > 0 || tablesChanged) {
-        const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts: pendingMovableTexts, highlights, images: imageAttachments, tables, tablesChanged });
+    });
+    const tablesChanged = JSON.stringify(tables) !== JSON.stringify(persistedTablesRef.current);
+    return {
+      replacement: appliedReplacePreview,
+      movableTexts: pendingMovableTexts,
+      highlights,
+      images: imageAttachments,
+      tables,
+      tablesChanged,
+      hasChanges: Boolean(appliedReplacePreview?.originalText || pendingMovableTexts.length || highlights.length || imageAttachments.length || tablesChanged)
+    };
+  };
+
+  const currentEncryptionSource = async () => {
+    if (file.docPilotEncryptionSource) return file.docPilotEncryptionSource;
+    const { isPdfEncrypted } = await import('../services/pdfEncryption.js');
+    return await isPdfEncrypted(file) ? file : null;
+  };
+
+  const downloadAsPdf = async (selection = null) => {
+    if (downloadStatus !== 'idle') return;
+    let selectedPages;
+    if (selection !== null) {
+      try {
+        const { parsePdfPageSelection } = await import('../services/pdfPageExtract.js');
+        selectedPages = parsePdfPageSelection(selection, pageNumbers.length);
+      } catch (error) {
+        setDownloadFailed(true);
+        setDownloadMessage(error?.message || '페이지 범위를 확인해주세요.');
+        return;
+      }
+    }
+    setDownloadStatus('pdf-preparing');
+    setDownloadMessage('');
+    setDownloadFailed(false);
+    try {
+      const changes = getPendingPdfChanges();
+      const { tablesChanged } = changes;
+      let sourceBytes = changes.hasChanges ? null : await file.arrayBuffer();
+      let fileName = file.name;
+      let successMessage = '';
+      let previewNotice = '';
+      if (changes.hasChanges) {
+        const result = await onVisualConvert?.({ ...changes, download: false });
+        if (!result?.outputBytes) throw new Error('편집 내용이 반영된 PDF를 만들지 못했습니다.');
+        sourceBytes = result.outputBytes;
+        fileName = result.outputFileName || file.name;
         if (result?.movableTextCount) {
           console.debug('[PdfJsViewer] PDF text move save results', result.textMoveResults?.map((item) => ({
             displayText: item.displayText,
@@ -1783,22 +1965,157 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           const localFontLabel = result.replacementFontSource === 'local'
             ? ` · PC 원본 계열 글꼴 적용 ${result.localFontAppliedCount || 0}건${result.replacementFontFamily ? ` (${result.replacementFontFamily})` : ''}`
             : '';
-          setDownloadMessage(`PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 직접 제거 미확인 ${result.noCoverUnresolvedCount || 0}건 · PDF 내부 원본 글꼴 재사용 ${result.fontPreservedCount}건${localFontLabel}`);
+          successMessage = `PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 직접 제거 미확인 ${result.noCoverUnresolvedCount || 0}건 · PDF 내부 원본 글꼴 재사용 ${result.fontPreservedCount}건${localFontLabel}`;
         }
-        if (tablesChanged && !result?.movableTextCount) setDownloadMessage(`PDF 저장 완료 · 표 ${result?.tableCount ?? tables.length}개 반영`);
-      } else {
-        const url = URL.createObjectURL(file);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = file.name;
-        anchor.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        if (tablesChanged && !result?.movableTextCount) successMessage = `PDF 저장 완료 · 표 ${result?.tableCount ?? tables.length}개 반영`;
       }
-      setDownloadStatus('idle');
+      if (selectedPages) {
+        const { extractPdfPages } = await import('../services/pdfPageExtract.js');
+        sourceBytes = await extractPdfPages(sourceBytes, selectedPages, {
+          onRasterized: () => {
+            previewNotice = '암호화된 PDF의 선택 페이지를 이미지로 변환했습니다. 추출본에서는 텍스트 선택과 검색이 제한됩니다.';
+          }
+        });
+        const selectionLabel = selection.replace(/\s+/g, '').replace(/,/g, '_');
+        fileName = `${file.name.replace(/\.pdf$/i, '')}_pages_${selectionLabel}.pdf`;
+        successMessage = `${selectedPages.length}페이지를 PDF로 추출했습니다.`;
+      }
+      const encryptionSource = await currentEncryptionSource();
+      setDownloadPreview({ bytes: new Uint8Array(sourceBytes), fileName, pageCount: selectedPages?.length || pageNumbers.length, isExtract: Boolean(selectedPages), successMessage, notice: previewNotice, encryptionSource, suggestEncryption: Boolean(encryptionSource || file.docPilotContainsEncryptedSource || previewNotice) });
+      setDownloadStatus('pdf-preview');
     } catch (error) {
       setDownloadFailed(true);
       setDownloadStatus('idle');
-      setDownloadMessage(`PDF 다운로드에 실패했습니다. ${error?.message || ''}`.trim());
+      setDownloadMessage(`PDF 미리보기를 준비하지 못했습니다. ${error?.message || ''}`.trim());
+    }
+  };
+
+  const closeDownloadPreview = () => {
+    setDownloadPreview(null);
+    setDownloadStatus('idle');
+  };
+
+  const confirmPdfDownload = async ({ password, inheritSource } = {}) => {
+    if (!downloadPreview) return;
+    const { bytes, fileName, successMessage } = downloadPreview;
+    const outputBytes = inheritSource
+      ? await import('../services/pdfEncryption.js').then(({ inheritPdfEncryption }) => inheritPdfEncryption(bytes, inheritSource))
+      : password
+        ? await import('../services/pdfEncryption.js').then(({ encryptPdfBytes }) => encryptPdfBytes(bytes, password))
+        : bytes;
+    const url = URL.createObjectURL(new Blob([outputBytes], { type: 'application/pdf' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setDownloadMessage(successMessage);
+    closeDownloadPreview();
+  };
+
+  const deleteSelectedPages = async () => {
+    if (downloadStatus !== 'idle') return;
+    let selectedPages;
+    try {
+      const { parsePdfPageSelection } = await import('../services/pdfPageExtract.js');
+      selectedPages = parsePdfPageSelection(deleteSelection, pageNumbers.length);
+      if (selectedPages.length >= pageNumbers.length) throw new Error('PDF에는 최소 한 페이지가 남아 있어야 합니다.');
+    } catch (error) {
+      setDownloadFailed(true);
+      setDownloadMessage(error?.message || '삭제할 페이지 범위를 확인해주세요.');
+      return;
+    }
+    setDownloadStatus('delete-running');
+    setDownloadMessage('');
+    setDownloadFailed(false);
+    try {
+      const changes = getPendingPdfChanges();
+      let sourceBytes = await file.arrayBuffer();
+      if (changes.hasChanges) {
+        const result = await onVisualConvert?.({ ...changes, download: false });
+        if (!result?.outputBytes) throw new Error('편집 내용이 반영된 PDF를 만들지 못했습니다.');
+        sourceBytes = result.outputBytes;
+      }
+      const { deletePdfPages } = await import('../services/pdfPageExtract.js');
+      let rasterized = false;
+      const outputBytes = await deletePdfPages(sourceBytes, selectedPages, {
+        onRasterized: () => { rasterized = true; },
+        onProgress: (done, total) => {
+          if (done === total || done % 5 === 0) setDownloadMessage(`암호화된 PDF 페이지 변환 중... ${done}/${total}`);
+        }
+      });
+      if (!onPagesChanged) throw new Error('변경된 PDF를 다시 열 수 없습니다.');
+      if (rasterized) pageConversionNoticeRef.current = '암호화된 PDF의 남은 페이지를 이미지로 변환했습니다. 변경된 PDF에서는 기존 텍스트 선택과 검색이 제한됩니다.';
+      await onPagesChanged({ sourceBytes, outputBytes, action: 'delete', containsEncryptedSource: rasterized, encryptionSource: await currentEncryptionSource() });
+      setDeleteSelection('');
+    } catch (error) {
+      pageConversionNoticeRef.current = '';
+      setDownloadFailed(true);
+      setDownloadMessage(`페이지 삭제에 실패했습니다. ${error?.message || ''}`.trim());
+    } finally {
+      setDownloadStatus('idle');
+    }
+  };
+
+  const insertSelectedPdf = async (selectedSource = null) => {
+    if (downloadStatus !== 'idle') return;
+    const positionText = insertPositionMode === 'front'
+      ? '0'
+      : insertPositionMode === 'end'
+        ? String(pageNumbers.length)
+        : insertAfterPage.trim();
+    const afterPage = Number(positionText);
+    if (!insertFile || !isPdfFile(insertFile)) {
+      setDownloadFailed(true);
+      setDownloadMessage('삽입할 PDF 파일을 선택해주세요.');
+      return;
+    }
+    if (!/^\d+$/.test(positionText) || !Number.isSafeInteger(afterPage) || afterPage > pageNumbers.length) {
+      setDownloadFailed(true);
+      setDownloadMessage(`삽입 위치는 0부터 ${pageNumbers.length}까지 입력해주세요.`);
+      return;
+    }
+    setDownloadStatus('insert-running');
+    setDownloadMessage('');
+    setDownloadFailed(false);
+    try {
+      const { isPdfEncrypted } = await import('../services/pdfEncryption.js');
+      const existingEncryptionSource = await currentEncryptionSource();
+      const insertedIsEncrypted = await isPdfEncrypted(insertFile);
+      if (existingEncryptionSource && insertedIsEncrypted && !selectedSource) {
+        setEncryptionChoiceOpen(true);
+        return;
+      }
+      const encryptionSource = selectedSource === 'inserted'
+        ? insertFile
+        : existingEncryptionSource || (insertedIsEncrypted ? insertFile : null);
+      const changes = getPendingPdfChanges();
+      let sourceBytes = await file.arrayBuffer();
+      if (changes.hasChanges) {
+        const result = await onVisualConvert?.({ ...changes, download: false });
+        if (!result?.outputBytes) throw new Error('편집 내용이 반영된 PDF를 만들지 못했습니다.');
+        sourceBytes = result.outputBytes;
+      }
+      const { insertPdfPages } = await import('../services/pdfPageExtract.js');
+      const rasterizedParts = new Set();
+      const { outputBytes } = await insertPdfPages(sourceBytes, await insertFile.arrayBuffer(), afterPage, {
+        onRasterized: (part) => rasterizedParts.add(part),
+        onProgress: (done, total) => {
+          if (done === total || done % 5 === 0) setDownloadMessage(`암호화된 PDF 페이지 변환 중... ${done}/${total}`);
+        }
+      });
+      if (!onPagesChanged) throw new Error('변경된 PDF를 다시 열 수 없습니다.');
+      if (rasterizedParts.size) pageConversionNoticeRef.current = `${rasterizedParts.has('current') ? '현재 PDF' : '삽입한 PDF'}의 암호화된 페이지를 이미지로 변환했습니다. 해당 페이지에서는 기존 텍스트 선택과 검색이 제한됩니다.`;
+      await onPagesChanged({ sourceBytes, outputBytes, action: 'insert', containsEncryptedSource: rasterizedParts.size > 0, encryptionSource });
+      setInsertFile(null);
+      setInsertPositionMode('end');
+      if (insertFileInputRef.current) insertFileInputRef.current.value = '';
+    } catch (error) {
+      pageConversionNoticeRef.current = '';
+      setDownloadFailed(true);
+      setDownloadMessage(`PDF 삽입에 실패했습니다. ${error?.message || ''}`.trim());
+    } finally {
+      setDownloadStatus('idle');
     }
   };
 
@@ -2249,8 +2566,16 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setSelectedImageId(null);
       setEditingMovableText(null);
       setErrorMessage('');
-      setDownloadMessage('');
+      setDownloadMessage(pageConversionNoticeRef.current);
+      pageConversionNoticeRef.current = '';
       setDownloadFailed(false);
+      setPageSelection('');
+      setDeleteSelection('');
+      setInsertFile(null);
+      setInsertPositionMode('end');
+      if (insertFileInputRef.current) insertFileInputRef.current.value = '';
+      setUserHighlight({ keyword: '', color: 'yellow', matchMode: 'contains', selectedTargets: [] });
+      setUserHighlights([]);
 
       if (!file || !isPdfFile(file)) {
         setPdfDocument(null);
@@ -2288,6 +2613,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         pdfDocumentRef.current = pdf;
         setPdfDocument(pdf);
         setPageNumbers(Array.from({ length: pdf.numPages }, (_, index) => index + 1));
+        setInsertAfterPage(String(pdf.numPages));
         setErrorMessage('');
 
         extractAllPdfText(pdf)
@@ -2394,14 +2720,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         {pageNumbers.length > 1 && viewMode === 'page' ? (
           <div className="pdf-page-navigation" role="group" aria-label="페이지 이동">
             <button type="button" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1}>이전</button>
-            <span aria-live="polite">{currentPage} / {pageNumbers.length}</span>
             <button type="button" onClick={() => setCurrentPage((page) => Math.min(pageNumbers.length, page + 1))} disabled={currentPage === pageNumbers.length}>다음</button>
           </div>
         ) : null}
-        <div className="pdf-document-history" role="group" aria-label="문서 변경 이력">
-          <button type="button" onClick={undoDocumentChange} disabled={!isEditMode || !historyState.canUndo} aria-label="적용 전으로 되돌리기">&lt;</button>
-          <button type="button" onClick={redoDocumentChange} disabled={!isEditMode || !historyState.canRedo} aria-label="다시 적용하기">&gt;</button>
+        {isEditMode ? <div className="pdf-document-history" role="group" aria-label="PDF 편집 도구">
+          <button type="button" onClick={undoDocumentChange} disabled={!isEditMode || downloadStatus !== 'idle' || (!historyState.canUndo && !canUndoPageChange)} aria-label="적용 전으로 되돌리기">&lt;</button>
+          <button type="button" onClick={redoDocumentChange} disabled={!isEditMode || downloadStatus !== 'idle' || (!historyState.canRedo && !canRedoPageChange)} aria-label="다시 적용하기">&gt;</button>
           <button type="button" className="pdf-reset-all-button" onClick={resetAllDocumentChanges} disabled={!isEditMode || (!historyState.canReset && movableTexts.length === 0 && imageAttachments.length === 0 && JSON.stringify(tables) === JSON.stringify(persistedTablesRef.current))}>전체 초기화</button>
+          <span className="pdf-toolbar-divider" aria-hidden="true" />
           <button
             type="button"
             className={`pdf-text-move-button ${textMoveMode ? 'active' : ''}`}
@@ -2462,7 +2788,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           >표 추가</button>
           <button type="button" className="pdf-text-move-button" disabled={!isEditMode} onClick={() => imageInputRef.current?.click()} title="현재 보고 있는 PDF 페이지에 이미지를 첨부합니다.">이미지 첨부</button>
           <input ref={imageInputRef} className="pdf-image-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={addImageAttachment} />
-        </div>
+        </div> : null}
         {toolbarActions}
         <div className="viewer-download-actions">
           {hasAppliedHighlights ? (
@@ -2475,18 +2801,123 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
               하이라이트 제거
             </button>
           ) : null}
-          <span className="viewer-download-label">다운로드</span>
+          <button
+            type="button"
+            className={`pdf-page-tools-toggle${pageToolsOpen ? ' active' : ''}`}
+            onClick={() => setPageToolsOpen((open) => !open)}
+            aria-expanded={pageToolsOpen}
+            aria-controls="pdf-page-tools-panel"
+          >페이지 작업</button>
           <button
             type="button"
             className="viewer-download-button pdf"
-            onClick={downloadAsPdf}
+            onClick={() => downloadAsPdf()}
             disabled={downloadStatus !== 'idle'}
             aria-label="PDF 다운로드"
           >
-            {downloadStatus === 'pdf-running' ? 'PDF 변환 중...' : 'PDF'}
+            {downloadStatus === 'pdf-preparing' ? '준비 중...' : '다운로드'}
           </button>
+      {pageToolsOpen ? <section id="pdf-page-tools-panel" className="pdf-page-tools" aria-label="PDF 페이지 작업">
+        <div className="pdf-page-tools-header">
+          <strong>페이지 작업</strong>
+          <div className="pdf-page-tools-tabs" role="group" aria-label="페이지 작업 선택">
+            <button type="button" className={(!isEditMode || pageTool === 'extract') ? 'active' : ''} aria-pressed={!isEditMode || pageTool === 'extract'} onClick={() => setPageTool('extract')}>추출</button>
+            {isEditMode ? <button type="button" className={pageTool === 'insert' ? 'active' : ''} aria-pressed={pageTool === 'insert'} onClick={() => setPageTool('insert')}>삽입</button> : null}
+            {isEditMode && pageNumbers.length > 1 ? <button type="button" className={pageTool === 'delete' ? 'active' : ''} aria-pressed={pageTool === 'delete'} onClick={() => setPageTool('delete')}>삭제</button> : null}
+          </div>
+        </div>
+        {(!isEditMode || pageTool === 'extract') ? (
+          <div className="pdf-page-tool-form" role="group" aria-label="PDF 페이지 추출">
+            <label htmlFor="pdf-extract-selection">페이지 범위</label>
+            <input
+              id="pdf-extract-selection"
+              className="pdf-page-selection-input"
+              type="text"
+              inputMode="text"
+              value={pageSelection}
+              onChange={(event) => setPageSelection(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') downloadAsPdf(pageSelection); }}
+              placeholder="예: 1-5, 8, 11-13"
+              aria-label="추출할 PDF 페이지 범위"
+              disabled={downloadStatus !== 'idle'}
+            />
+            <button type="button" className="viewer-download-button pdf" onClick={() => downloadAsPdf(pageSelection)} disabled={downloadStatus !== 'idle'}>선택 페이지 추출</button>
+          </div>
+        ) : null}
+        {isEditMode && pageTool === 'insert' ? (
+          <div className="pdf-page-tool-form pdf-page-insert-actions" role="group" aria-label="다른 PDF 삽입">
+            <label htmlFor="pdf-insert-file">추가할 PDF</label>
+            <input
+              id="pdf-insert-file"
+              ref={insertFileInputRef}
+              type="file"
+              accept=".pdf,application/pdf"
+              onChange={(event) => setInsertFile(event.target.files?.[0] || null)}
+              disabled={downloadStatus !== 'idle'}
+            />
+            <label htmlFor="pdf-insert-position-mode">삽입 위치</label>
+            <select
+              id="pdf-insert-position-mode"
+              className="pdf-insert-position-select"
+              value={insertPositionMode}
+              onChange={(event) => setInsertPositionMode(event.target.value)}
+              disabled={downloadStatus !== 'idle'}
+            >
+              <option value="front">맨 앞</option>
+              <option value="end">맨 뒤</option>
+              <option value="after">페이지 뒤 지정</option>
+            </select>
+            {insertPositionMode === 'after' ? (
+              <>
+                <label htmlFor="pdf-insert-after-page">몇 페이지 뒤</label>
+                <input
+                  id="pdf-insert-after-page"
+                  className="pdf-insert-position-input"
+                  type="number"
+                  min="0"
+                  max={pageNumbers.length}
+                  step="1"
+                  value={insertAfterPage}
+                  onChange={(event) => setInsertAfterPage(event.target.value)}
+                  disabled={downloadStatus !== 'idle'}
+                  title="0은 맨 앞, 마지막 페이지 번호는 맨 뒤에 삽입합니다."
+                />
+              </>
+            ) : null}
+            <button type="button" className="viewer-download-button pdf" onClick={() => insertSelectedPdf()} disabled={downloadStatus !== 'idle'}>
+              {downloadStatus === 'insert-running' ? '삽입 중...' : 'PDF 삽입'}
+            </button>
+          </div>
+        ) : null}
+        {isEditMode && pageTool === 'delete' && pageNumbers.length > 1 ? (
+          <div className="pdf-page-tool-form pdf-page-delete-actions" role="group" aria-label="PDF 페이지 삭제">
+            <label htmlFor="pdf-delete-page-selection">페이지 범위</label>
+            <input
+              id="pdf-delete-page-selection"
+              className="pdf-page-selection-input"
+              type="text"
+              value={deleteSelection}
+              onChange={(event) => setDeleteSelection(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') deleteSelectedPages(); }}
+              placeholder="예: 2, 4-5"
+              aria-label="삭제할 PDF 페이지 범위"
+              disabled={downloadStatus !== 'idle'}
+            />
+            <button type="button" className="viewer-download-button pdf" onClick={deleteSelectedPages} disabled={downloadStatus !== 'idle'}>
+              {downloadStatus === 'delete-running' ? '삭제 중...' : '선택 페이지 삭제'}
+            </button>
+          </div>
+        ) : null}
+      </section> : null}
         </div>
       </div>
+      {downloadPreview ? <PdfDownloadPreview {...downloadPreview} onCancel={closeDownloadPreview} onConfirm={confirmPdfDownload} /> : null}
+      {encryptionChoiceOpen ? <PdfEncryptionChoice
+        currentName={(file.docPilotEncryptionSource || file).name}
+        insertedName={insertFile?.name || ''}
+        onCancel={() => setEncryptionChoiceOpen(false)}
+        onSelect={(selection) => { setEncryptionChoiceOpen(false); void insertSelectedPdf(selection); }}
+      /> : null}
       {downloadMessage ? <div className={`pdf-visual-convert-message${downloadFailed ? ' is-error' : ''}`} role={downloadFailed ? 'alert' : 'status'}>{downloadMessage}</div> : null}
       {isEditMode ? <TextEditFormatToolbar
         editing={editingMovableText}
@@ -2504,10 +2935,46 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           onCopy={() => copyTable(table.id)}
           onDelete={() => deleteTable(table.id)} />;
       })() : null}
-      <div ref={viewerRef} className="document-body-scroll pdf-viewer pdf-viewer-scroll">
+      <div className="pdf-viewer-frame">
+        <div className="pdf-page-position-bar" role="status" aria-label="PDF 페이지 위치" aria-live="polite">
+          <input
+            ref={pageNumberInputRef}
+            className="pdf-page-position-current"
+            type="text"
+            inputMode="numeric"
+            value={pageNumberInput}
+            onChange={(event) => { if (/^\d*$/.test(event.target.value)) setPageNumberInput(event.target.value); }}
+            onFocus={(event) => event.currentTarget.select()}
+            onBlur={(event) => jumpToPage(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur();
+              if (event.key === 'Escape') {
+                event.currentTarget.value = String(currentPage);
+                event.currentTarget.blur();
+              }
+            }}
+            aria-label="이동할 페이지 번호"
+            title={`1부터 ${pageNumbers.length}까지 입력하고 Enter를 누르세요.`}
+            style={{ width: `${Math.max(2, String(pageNumbers.length).length) * 10 + 14}px` }}
+          />
+          <span aria-hidden="true">/</span>
+          <span>{pageNumbers.length}</span>
+          <button
+            type="button"
+            className="pdf-page-fit-toggle"
+            onClick={() => {
+              if (viewMode === 'scroll') fitPageAnchorRef.current = currentPage;
+              onResetZoom?.();
+              setFitMode((mode) => mode === 'width' ? 'page' : 'width');
+            }}
+            aria-label={`맞춤 방식: ${fitMode === 'width' ? '너비에 맞춤' : '페이지에 맞춤'}`}
+            title={fitMode === 'width' ? '현재 너비에 맞춤 · 클릭하면 페이지에 맞춤' : '현재 페이지에 맞춤 · 클릭하면 너비에 맞춤'}
+          >{fitMode === 'width' ? '너비 맞춤' : '페이지 맞춤'}</button>
+        </div>
+      <div ref={viewerRef} className="document-body-scroll pdf-viewer pdf-viewer-scroll" onScroll={scheduleScrollPageUpdate}>
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (
-            <div key={`${pageNumber}-${effectiveScale}`} hidden={viewMode === 'page' && currentPage !== pageNumber}>
+            <div key={pageNumber} hidden={viewMode === 'page' && currentPage !== pageNumber}>
               <PdfPage
                 pdf={pdfDocument}
                 pageNumber={pageNumber}
@@ -2562,13 +3029,17 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 onMoveImageEnd={finishImageAttachmentMove}
                 onDeleteImage={deleteImageAttachment}
                 onPageReady={(element) => {
-                  if (element) pageRefs.current[pageNumber] = element;
+                  if (element) {
+                    pageRefs.current[pageNumber] = element;
+                    scheduleScrollPageUpdate();
+                  }
                   else delete pageRefs.current[pageNumber];
                 }}
               />
             </div>
           ))}
         </div>
+      </div>
       </div>
     </div>
   );

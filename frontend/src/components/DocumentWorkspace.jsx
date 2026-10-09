@@ -15,7 +15,13 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
   onDocumentSelect,
   onDocumentClear,
   onDocumentReselect,
-  onVisualPdfConvert
+  onVisualPdfConvert,
+  onPdfPagesChanged,
+  onUndoPdfPageChange,
+  onRedoPdfPageChange,
+  onPdfDocumentChanged,
+  canUndoPdfPageChange,
+  canRedoPdfPageChange
 }, ref) {
   return (
     <section className="panel document-panel">
@@ -34,6 +40,12 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
           onChangeFile={onDocumentSelect}
           onReselect={onDocumentReselect}
           onVisualPdfConvert={onVisualPdfConvert}
+          onPdfPagesChanged={onPdfPagesChanged}
+          onUndoPdfPageChange={onUndoPdfPageChange}
+          onRedoPdfPageChange={onRedoPdfPageChange}
+          onPdfDocumentChanged={onPdfDocumentChanged}
+          canUndoPdfPageChange={canUndoPdfPageChange}
+          canRedoPdfPageChange={canRedoPdfPageChange}
         />
       ) : (
         <UploadPanel

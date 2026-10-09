@@ -46,6 +46,7 @@ test('table structure and cell formatting survive PDF save and reopen', async ({
   await page.getByRole('button', { name: '내용에 맞춤' }).click();
   const downloadEvent = page.waitForEvent('download');
   await page.locator('.viewer-download-button.pdf').click();
+  await page.getByRole('dialog', { name: 'PDF 다운로드 미리보기' }).getByRole('button', { name: '확인' }).click();
   const download = await downloadEvent;
   const bytes = await readFile(await download.path());
   const saved = await readPdfTables({ arrayBuffer: async () => bytes });
@@ -110,6 +111,7 @@ test('table track handles, insertion, splitting, and Tab navigation work', async
   await expect.poll(async () => page.getByLabel('선택한 열 너비').inputValue()).not.toBe(before);
   const downloadEvent = page.waitForEvent('download');
   await page.locator('.viewer-download-button.pdf').click();
+  await page.getByRole('dialog', { name: 'PDF 다운로드 미리보기' }).getByRole('button', { name: '확인' }).click();
   const bytes = await readFile(await (await downloadEvent).path());
   const saved = await readPdfTables({ arrayBuffer: async () => bytes });
   expect(saved[0].rows).toBe(4);
@@ -156,6 +158,7 @@ test('dragging cells applies one color and merges the selected range', async ({ 
   await expect(table.locator('.pdf-table-cell')).toHaveCount(6);
   const downloadEvent = page.waitForEvent('download');
   await page.locator('.viewer-download-button.pdf').click();
+  await page.getByRole('dialog', { name: 'PDF 다운로드 미리보기' }).getByRole('button', { name: '확인' }).click();
   const bytes = await readFile(await (await downloadEvent).path());
   const [saved] = await readPdfTables({ arrayBuffer: async () => bytes });
   expect(saved.spans).toContainEqual({ row: 1, column: 0, rowSpan: 2, colSpan: 2 });

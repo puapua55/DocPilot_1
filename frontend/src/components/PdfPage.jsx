@@ -2242,7 +2242,6 @@ function PdfPage({
         minHeight: pageSize.height ? `${pageSize.height}px` : undefined
       }}
     >
-      <div className="pdf-page-debug-label">page {pageNumber}</div>
       {renderError ? <div role="alert">{renderError}</div> : null}
       <canvas ref={canvasRef} className="pdf-canvas" />
       <PdfTextLayer

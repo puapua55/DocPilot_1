@@ -1,0 +1,52 @@
+import { test, expect } from '@playwright/test';
+import { PDFDocument } from 'pdf-lib';
+
+test('PDF editing tools stay grouped and usable in the document panel', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const source = await PDFDocument.create();
+  source.addPage([500, 600]);
+  source.addPage([500, 600]);
+  await page.goto('/');
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: 'toolbar-layout.pdf', mimeType: 'application/pdf', buffer: Buffer.from(await source.save())
+  });
+  await expect(page.locator('.pdf-page')).toHaveCount(2);
+  await page.getByRole('button', { name: '편집', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'PDF 편집 도구' })).toBeVisible();
+  const pageToolsButton = page.getByRole('button', { name: '페이지 작업', exact: true });
+  await expect(page.locator('.viewer-download-actions > .viewer-download-button.pdf')).toHaveText('다운로드');
+  await expect(page.locator('.viewer-download-actions > .viewer-download-label')).toHaveCount(0);
+  await expect(pageToolsButton).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('region', { name: 'PDF 페이지 작업' })).toHaveCount(0);
+  const historyBefore = await page.locator('.pdf-document-history').boundingBox();
+  await pageToolsButton.click();
+  await expect(pageToolsButton).toHaveAttribute('aria-expanded', 'true');
+  const buttonBounds = await pageToolsButton.boundingBox();
+  const panelBounds = await page.locator('#pdf-page-tools-panel').boundingBox();
+  const historyBounds = await page.locator('.pdf-document-history').boundingBox();
+  expect(panelBounds.y).toBeGreaterThanOrEqual(buttonBounds.y + buttonBounds.height);
+  expect(panelBounds.y).toBeLessThanOrEqual(buttonBounds.y + buttonBounds.height + 12);
+  expect(historyBounds.y).toBe(historyBefore.y);
+  expect(panelBounds.y + panelBounds.height).toBeGreaterThan(historyBounds.y);
+  await expect(page.getByRole('region', { name: 'PDF 페이지 작업' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '추출할 PDF 페이지 범위' })).toBeVisible();
+  await page.getByRole('button', { name: '삽입', exact: true }).click();
+  await expect(page.locator('#pdf-insert-file')).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '추출할 PDF 페이지 범위' })).toHaveCount(0);
+  await page.getByRole('button', { name: '삭제', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '삭제할 PDF 페이지 범위' })).toBeVisible();
+  const width = await page.locator('.pdf-viewer-shell').evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
+  expect(width.scroll).toBeLessThanOrEqual(width.client + 1);
+  await page.screenshot({ path: 'test-results/pdf-edit-toolbar.png' });
+  await pageToolsButton.click();
+  await expect(pageToolsButton).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('region', { name: 'PDF 페이지 작업' })).toHaveCount(0);
+  await expect(page.getByText('편집 도구', { exact: true })).toHaveCount(0);
+  const undoBounds = await page.getByRole('button', { name: '적용 전으로 되돌리기' }).boundingBox();
+  const imageBounds = await page.getByRole('button', { name: '이미지 첨부' }).boundingBox();
+  const zoomBounds = await page.getByRole('button', { name: '다시 선택' }).boundingBox();
+  expect(imageBounds.y).toBe(undoBounds.y);
+  expect(Math.abs(zoomBounds.y - undoBounds.y)).toBeLessThanOrEqual(2);
+  expect(undoBounds.width).toBeLessThanOrEqual(30);
+  await page.screenshot({ path: 'test-results/pdf-edit-toolbar-closed.png' });
+});

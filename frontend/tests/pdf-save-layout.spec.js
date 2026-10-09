@@ -30,6 +30,7 @@ async function openBlankPdf(page, sourceBytes = null) {
 async function downloadEditedPdf(page) {
   const promise = page.waitForEvent('download');
   await page.locator('.viewer-download-button.pdf').click();
+  await page.getByRole('dialog', { name: 'PDF 다운로드 미리보기' }).getByRole('button', { name: '확인' }).click();
   return readFile(await (await promise).path());
 }
 

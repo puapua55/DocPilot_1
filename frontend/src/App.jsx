@@ -89,6 +89,7 @@ function App() {
   const [highlightStatusMessage, setHighlightStatusMessage] = useState('');
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
   const [runningActionId, setRunningActionId] = useState(null);
+  const [pageStructureHistory, setPageStructureHistory] = useState({ past: [], future: [] });
   const { selectedDocument, previewModel, documentText, errorMessage, handleDocumentSelect, clearSelectedDocument } = useDocument();
   const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument, previewModel, documentViewerRef, isEditMode);
 
@@ -98,7 +99,12 @@ function App() {
 
   const resetDocumentViewState = () => {
     setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsBatchReplaceModalOpen(false); setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null);
-    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setIsEditMode(false); clearSelectedDocument();
+    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setIsEditMode(false); setPageStructureHistory({ past: [], future: [] }); clearSelectedDocument();
+  };
+
+  const handleNewDocumentSelect = async (file) => {
+    setPageStructureHistory({ past: [], future: [] });
+    await handleDocumentSelect(file);
   };
 
   const handleDocumentSearch = async (keyword, options = {}) => {
@@ -223,6 +229,51 @@ function App() {
     }
     const { convertPdfWithOriginalOverlay } = await import('./services/pdfOverlayConvertService');
     return convertPdfWithOriginalOverlay({ file: selectedDocument.file, replacement, movableTexts, highlights, images, tables, tablesChanged: payload?.tablesChanged, download: payload?.download !== false });
+  };
+
+  const handlePdfPagesChanged = async ({ sourceBytes, outputBytes, action, containsEncryptedSource = false, encryptionSource = undefined }) => {
+    if (!selectedDocument?.file || !sourceBytes?.byteLength || !outputBytes?.byteLength) throw new Error('변경된 PDF 데이터를 만들지 못했습니다.');
+    const previousFile = new File([sourceBytes], selectedDocument.file.name, {
+      type: 'application/pdf',
+      lastModified: Date.now()
+    });
+    const updatedFile = new File([outputBytes], selectedDocument.file.name, {
+      type: 'application/pdf',
+      lastModified: Date.now()
+    });
+    previousFile.docPilotContainsEncryptedSource = Boolean(selectedDocument.file.docPilotContainsEncryptedSource);
+    updatedFile.docPilotContainsEncryptedSource = previousFile.docPilotContainsEncryptedSource || containsEncryptedSource;
+    previousFile.docPilotEncryptionSource = selectedDocument.file.docPilotEncryptionSource;
+    updatedFile.docPilotEncryptionSource = encryptionSource === undefined
+      ? previousFile.docPilotEncryptionSource
+      : encryptionSource;
+    await handleDocumentSelect(updatedFile);
+    setPageStructureHistory((history) => ({ past: [...history.past, { before: previousFile, after: updatedFile, action }], future: [] }));
+    setSelectedSearchResult(null);
+    setHighlightKeyword('');
+    setHighlightStatusMessage(`페이지 ${action === 'insert' ? '삽입' : '삭제'}가 적용되었습니다. 변경된 페이지 번호로 계속 작업할 수 있습니다.`);
+  };
+
+  const undoPdfPageChange = async () => {
+    const entry = pageStructureHistory.past.at(-1);
+    if (!entry) return false;
+    await handleDocumentSelect(entry.before);
+    setPageStructureHistory((history) => ({ past: history.past.slice(0, -1), future: [entry, ...history.future] }));
+    setSelectedSearchResult(null);
+    setHighlightKeyword('');
+    setHighlightStatusMessage(entry.action === 'insert' ? '삽입한 페이지를 되돌렸습니다.' : '삭제한 페이지를 복원했습니다.');
+    return true;
+  };
+
+  const redoPdfPageChange = async () => {
+    const entry = pageStructureHistory.future[0];
+    if (!entry) return false;
+    await handleDocumentSelect(entry.after);
+    setPageStructureHistory((history) => ({ past: [...history.past, entry], future: history.future.slice(1) }));
+    setSelectedSearchResult(null);
+    setHighlightKeyword('');
+    setHighlightStatusMessage(`페이지 ${entry.action === 'insert' ? '삽입' : '삭제'}를 다시 적용했습니다.`);
+    return true;
   };
 
   const handleBatchReplaceApply = async (originalText, newText, options = {}) => {
@@ -423,7 +474,7 @@ function App() {
 
   const appContent = (
     <div className="app-page" onPointerDown={handleTemporarySearchDismiss}><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
-      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} isEditMode={isEditMode} onEditModeChange={setIsEditMode} onDocumentSelect={handleDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} />
+      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} isEditMode={isEditMode} onEditModeChange={setIsEditMode} onDocumentSelect={handleNewDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} onPdfPagesChanged={handlePdfPagesChanged} onUndoPdfPageChange={undoPdfPageChange} onRedoPdfPageChange={redoPdfPageChange} onPdfDocumentChanged={() => setPageStructureHistory((history) => history.future.length ? { ...history, future: [] } : history)} canUndoPdfPageChange={pageStructureHistory.past.length > 0} canRedoPdfPageChange={pageStructureHistory.future.length > 0} />
       <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} isEditMode={isEditMode} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onBatchReplaceCardClick={() => { if (!isEditMode) { appendAssistantMessage('편집모드를 활성화 해주세요'); return; } setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); setIsBatchReplaceModalOpen(true); }} onSearchResultClick={handleSearchResultClick} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteBatchReplaceAction={executeBatchReplaceAction} />
     </main></div>
     {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}

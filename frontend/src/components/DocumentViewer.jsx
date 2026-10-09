@@ -24,11 +24,18 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   onClose,
   onChangeFile,
   onReselect,
-  onVisualPdfConvert
+  onVisualPdfConvert,
+  onPdfPagesChanged,
+  onUndoPdfPageChange,
+  onRedoPdfPageChange,
+  onPdfDocumentChanged,
+  canUndoPdfPageChange,
+  canRedoPdfPageChange
 }, ref) {
   const inputRef = useRef(null);
   const viewerRef = useRef(null);
   const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [pdfFitScale, setPdfFitScale] = useState(1);
   const [docxPdfDownloadState, setDocxPdfDownloadState] = useState('idle');
   const [isReselectConfirmOpen, setIsReselectConfirmOpen] = useState(false);
   const viewerType = previewModel?.type || (isPdfFile(file) ? 'pdf' : 'docx');
@@ -174,7 +181,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           </button>
           {previewModel?.type === 'pdf' || previewModel?.type === 'word' ? (
             <ZoomControls
-              scale={scale}
+              scale={viewerType === 'pdf' ? scale * pdfFitScale : scale}
               onZoomOut={() => setScale((current) => Math.max(MIN_SCALE, current - SCALE_STEP))}
               onZoomIn={() => setScale((current) => Math.min(MAX_SCALE, current + SCALE_STEP))}
             />
@@ -205,8 +212,16 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           isEditMode={isEditMode}
           onEditModeChange={onEditModeChange}
           scale={scale}
+          onFitScaleChange={setPdfFitScale}
+          onResetZoom={() => setScale(1)}
           toolbarActions={viewerActions}
           onVisualConvert={onVisualPdfConvert}
+          onPagesChanged={onPdfPagesChanged}
+          onUndoPageChange={onUndoPdfPageChange}
+          onRedoPageChange={onRedoPdfPageChange}
+          onDocumentChanged={onPdfDocumentChanged}
+          canUndoPageChange={canUndoPdfPageChange}
+          canRedoPageChange={canRedoPdfPageChange}
         />
       );
     }

@@ -30,13 +30,28 @@ function copyPdfJsSupportAssets() {
   };
 }
 
+function fixQpdfResizableMemoryDecode() {
+  return {
+    name: 'fix-qpdf-resizable-memory-decode',
+    enforce: 'pre',
+    transform(code, id) {
+      if (!id.replaceAll('\\', '/').includes('/pdfstudio/dist/wasm/qpdf.js')) return null;
+      const original = 'UTF8Decoder.decode(heapOrArray.subarray(idx,endPtr))';
+      if (!code.includes(original)) throw new Error('pdfstudio qpdf decoder changed; review the compatibility fix.');
+      // Chromium rejects a TextDecoder view backed by growable WASM memory.
+      return code.replace(original, 'UTF8Decoder.decode(Uint8Array.from(heapOrArray.subarray(idx,endPtr)))');
+    }
+  };
+}
+
 export default defineConfig(({ command }) => ({
-  plugins: [react(), copyPdfJsSupportAssets()],
+  plugins: [fixQpdfResizableMemoryDecode(), react(), copyPdfJsSupportAssets()],
   // Vite dev keeps the normal web root; packaged Electron loads file:// URLs.
   base: command === 'build' ? './' : '/',
   // Load the API directly, just like its worker URL, to avoid stale prebundles
   // mixing PDF.js versions after node_modules is restored or updated.
-  optimizeDeps: { exclude: ['pdfjs-dist'] },
+  optimizeDeps: { exclude: ['pdfjs-dist', 'pdfstudio'] },
+  worker: { format: 'es' },
   server: {
     port: 5173,
     open: false,
