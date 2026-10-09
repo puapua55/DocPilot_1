@@ -4,6 +4,7 @@ import AssistantPanel from './components/AssistantPanel';
 import BatchTextReplaceModal from './components/BatchTextReplaceModal';
 import DocumentWorkspace from './components/DocumentWorkspace';
 import HighlightModal from './components/HighlightModal';
+import PdfPasswordDialog from './components/PdfPasswordDialog';
 import SearchModal from './components/SearchModal';
 import { useChat } from './hooks/useChat';
 import { useDocument } from './hooks/useDocument';
@@ -90,21 +91,41 @@ function App() {
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
   const [runningActionId, setRunningActionId] = useState(null);
   const [pageStructureHistory, setPageStructureHistory] = useState({ past: [], future: [] });
+  const [protectedPdfFile, setProtectedPdfFile] = useState(null);
   const { selectedDocument, previewModel, documentText, errorMessage, handleDocumentSelect, clearSelectedDocument } = useDocument();
   const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument, previewModel, documentViewerRef, isEditMode);
 
   useEffect(() => { console.log('[App] highlightKeyword:', highlightKeyword); }, [highlightKeyword]);
-  useEffect(() => { console.log('[App] selectedFile:', selectedDocument?.file ?? null); }, [selectedDocument]);
   useEffect(() => { console.log('[App] selectedSearchResult:', selectedSearchResult); }, [selectedSearchResult]);
 
   const resetDocumentViewState = () => {
     setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsBatchReplaceModalOpen(false); setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null);
-    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setIsEditMode(false); setPageStructureHistory({ past: [], future: [] }); clearSelectedDocument();
+    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setIsEditMode(false); setPageStructureHistory({ past: [], future: [] }); setProtectedPdfFile(null); clearSelectedDocument();
   };
 
   const handleNewDocumentSelect = async (file) => {
     setPageStructureHistory({ past: [], future: [] });
+    if (file?.name?.toLowerCase().endsWith('.pdf')) {
+      try {
+        const { requiresPdfPassword } = await import('./services/pdfEncryption.js');
+        if (await requiresPdfPassword(file)) {
+          setProtectedPdfFile(file);
+          return;
+        }
+      } catch (error) {
+        // Let the regular viewer report damaged or unsupported PDFs.
+        console.warn('[App] PDF password check failed:', error);
+      }
+    }
     await handleDocumentSelect(file);
+  };
+
+  const openProtectedPdf = async (password) => {
+    if (!protectedPdfFile) return;
+    const { unlockPdfForViewing } = await import('./services/pdfEncryption.js');
+    const unlockedFile = await unlockPdfForViewing(protectedPdfFile, password);
+    await handleDocumentSelect(unlockedFile);
+    setProtectedPdfFile(null);
   };
 
   const handleDocumentSearch = async (keyword, options = {}) => {
@@ -498,6 +519,11 @@ function App() {
       onResultClick={handleSearchResultClick}
       onClose={() => { setIsBatchReplaceModalOpen(false); setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); }}
     />
+    {protectedPdfFile ? <PdfPasswordDialog
+      fileName={protectedPdfFile.name}
+      onConfirm={openProtectedPdf}
+      onCancel={resetDocumentViewState}
+    /> : null}
     </div>
   );
   return <AppErrorBoundary>{appContent}</AppErrorBoundary>;

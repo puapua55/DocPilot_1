@@ -38,6 +38,16 @@ test('viewer page counter follows scrolling and page navigation', async ({ page 
   await pageInput.press('Tab');
   await expect(pageInput).toHaveValue('4');
   await expect(page.locator('.pdf-page[data-page-number="4"]')).toBeVisible();
+  const counterGroup = page.locator('.pdf-page-position-counter');
+  const [previousBounds, currentBounds, totalBounds, nextBounds] = await Promise.all([
+    counterGroup.locator('.pdf-page-position-nav').first().boundingBox(),
+    pageInput.boundingBox(),
+    counterGroup.locator('span').last().boundingBox(),
+    counterGroup.locator('.pdf-page-position-nav').last().boundingBox()
+  ]);
+  expect(previousBounds.x + previousBounds.width).toBeLessThanOrEqual(currentBounds.x);
+  expect(nextBounds.x).toBeGreaterThanOrEqual(totalBounds.x + totalBounds.width);
+  await expect(page.locator('.pdf-view-mode-controls .pdf-page-navigation')).toHaveCount(0);
   await page.getByRole('group', { name: '페이지 이동' }).getByRole('button', { name: '이전' }).click();
   await expect(pageInput).toHaveValue('3');
   await page.screenshot({ path: 'test-results/pdf-page-position.png' });

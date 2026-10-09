@@ -27,6 +27,15 @@ function createContentOrderAnchor() {
   return `%DOCPILOT_TEXT_ORDER_${nextContentOrderAnchor++}%\n`;
 }
 
+function inverseContentTransform(matrix) {
+  if (!Array.isArray(matrix) || matrix.length !== 6 || !matrix.every(Number.isFinite)) return null;
+  const [a, b, c, d, e, f] = matrix;
+  const determinant = a * d - b * c;
+  if (Math.abs(determinant) < 1e-10) return null;
+  return [d / determinant, -b / determinant, -c / determinant, a / determinant,
+    (c * f - d * e) / determinant, (b * e - a * f) / determinant];
+}
+
 export function resetPageDrawingStream(page) {
   page.contentStream = undefined;
   page.contentStreamRef = undefined;
@@ -64,7 +73,11 @@ export function insertDrawingCommandsAtContentAnchors(pdfDocument, replacements)
       anchored.forEach((item) => {
         const index = source.indexOf(item.contentOrderAnchor);
         if (index < 0) return;
-        source = source.slice(0, index) + `\n${item.anchoredDrawingCommands}\n` + source.slice(index + item.contentOrderAnchor.length);
+        const inverse = inverseContentTransform(item.contentOrderCtm);
+        const commands = inverse
+          ? `q\n${inverse.map((value) => Number(value.toFixed(10))).join(' ')} cm\n${item.anchoredDrawingCommands}\nQ`
+          : item.anchoredDrawingCommands;
+        source = source.slice(0, index) + `\n${commands}\n` + source.slice(index + item.contentOrderAnchor.length);
         inserted = true;
       });
       if (!inserted) continue;
@@ -600,7 +613,8 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
       const stream = pdfDocument.context.flateStream(Uint8Array.from(rewritten, (char) => char.charCodeAt(0)));
       page.node.set(name('Contents'), pdfDocument.context.register(stream));
       retired.push(...analysis.retired);
-      edits.forEach(({ item, candidate, candidates: matchedCandidates, nextText, mode, originalEncodedText, originalFontReusable, replacementFont: itemReplacementFont, replacementOutlineFont: itemReplacementOutlineFont, contentOrderAnchor }) => {
+      edits.forEach(({ item, candidate, candidates: matchedCandidates, nextText, mode, originalEncodedText, originalFontReusable, replacementFont: itemReplacementFont, replacementOutlineFont: itemReplacementOutlineFont, contentOrderAnchor, anchorCandidate }) => {
+        const contentOrderCtm = (anchorCandidate || matchedCandidates.reduce((first, entry) => entry.objectStart < first.objectStart ? entry : first)).ctm;
         const commandRange = {
           start: Math.min(...matchedCandidates.map((entry) => entry.objectStart)),
           end: Math.max(...matchedCandidates.map((entry) => entry.objectEnd))
@@ -610,7 +624,7 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
             sourceFullText: matchedCandidates.map((entry) => entry.text).join(''), newFullText: nextText,
             commandRange, deletedCommandCount: matchedCandidates.length,
             fontPreserved: true, canReuseOriginalFont: true,
-            drawingCommands: makeOriginalFontCommand(candidate, originalEncodedText), contentOrderAnchor, reason: null });
+            drawingCommands: makeOriginalFontCommand(candidate, originalEncodedText), contentOrderAnchor, contentOrderCtm, reason: null });
           return;
         }
         // DOM font metrics can be reduced by PDF.js's text-layer width
@@ -657,7 +671,7 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
         outcomes.set(item, { direct: true, directReplacement: true, replaceMode: mode,
           sourceFullText: matchedCandidates.map((entry) => entry.text).join(''), newFullText: nextText,
           commandRange, deletedCommandCount: matchedCandidates.length,
-          fontPreserved: false, canReuseOriginalFont: false, drawingCommands, contentOrderAnchor, reason: null });
+          fontPreserved: false, canReuseOriginalFont: false, drawingCommands, contentOrderAnchor, contentOrderCtm, reason: null });
       });
     } catch (error) {
       items.forEach((item) => outcomes.set(item, { direct: false,
@@ -770,8 +784,17 @@ function editMovedText(pdfDocument, replacements, preserveFont) {
       if (!edits.length) continue;
       let rewritten = analysis.source;
       const drawingCommands = new Map();
+      const streamChanges = [];
+      edits.forEach((edit) => {
+        if (!preserveFont) {
+          edit.contentOrderAnchor = createContentOrderAnchor();
+          streamChanges.push({ start: Math.min(...edit.candidates.map((candidate) => candidate.objectStart)),
+            end: Math.min(...edit.candidates.map((candidate) => candidate.objectStart)),
+            text: edit.contentOrderAnchor });
+        }
+      });
       edits.flatMap(({ candidates, item }) => candidates.map((candidate) => ({ candidate, item, candidates })))
-        .sort((a, b) => b.candidate.start - a.candidate.start).forEach(({ candidate, item, candidates }) => {
+        .forEach(({ candidate, item, candidates }) => {
         if (preserveFont) {
           if (candidates.length !== 1) fail('여러 glyph로 분리된 텍스트는 원본 글꼴 재삽입 없이 overlay로 저장합니다.');
           // The pointer delta is in displayed page coordinates (top-left).
@@ -792,12 +815,15 @@ function editMovedText(pdfDocument, replacements, preserveFont) {
             `${values} Tm`, analysis.source.slice(candidate.start, candidate.end), 'ET', 'Q'
           ].join('\n'));
         }
-        rewritten = rewritten.slice(0, candidate.start) + rewritten.slice(candidate.end);
+        streamChanges.push({ start: candidate.start, end: candidate.end, text: '' });
+      });
+      streamChanges.sort((a, b) => b.start - a.start).forEach(({ start, end, text }) => {
+        rewritten = rewritten.slice(0, start) + text + rewritten.slice(end);
       });
       const stream = pdfDocument.context.flateStream(Uint8Array.from(rewritten, (char) => char.charCodeAt(0)));
       page.node.set(name('Contents'), pdfDocument.context.register(stream));
       retired.push(...analysis.retired);
-      edits.forEach(({ item, candidates }) => outcomes.set(item, {
+      edits.forEach(({ item, candidates, contentOrderAnchor }) => outcomes.set(item, {
         direct: true,
         directRemoval: true,
         deleteMode: candidates.length === 1 && !item.sourceSelection?.partialSelection
@@ -809,7 +835,9 @@ function editMovedText(pdfDocument, replacements, preserveFont) {
         fontPreserved: preserveFont,
         canReuseOriginalFont: candidates[0].fontInfo.canReuseOriginalFont === true,
         sourceFont: candidates[0].fontInfo,
-        drawingCommands: drawingCommands.get(item)
+        drawingCommands: drawingCommands.get(item),
+        contentOrderAnchor: contentOrderAnchor || null,
+        contentOrderCtm: contentOrderAnchor ? candidates.reduce((first, entry) => entry.objectStart < first.objectStart ? entry : first).ctm : null
       }));
     } catch (error) {
       moves.forEach((item) => outcomes.set(item, {

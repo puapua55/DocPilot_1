@@ -67,7 +67,7 @@ function PdfTextLayer({ pageNumber, textContent, viewport, width, height, onRend
           span.dataset.unicodeText = item.str;
           span.dataset.pdfSource = JSON.stringify({
           text: item.str, unicodeText: item.str, textItemIndex: index,
-          transform: item.transform, pdfFontName: item.fontName,
+          transform: item.transform, width: item.width, pdfFontName: item.fontName,
           sourceFont: textContent.fontPreviews?.[index] || null
           });
         }

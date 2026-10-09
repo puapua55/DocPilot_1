@@ -26,9 +26,15 @@ function normalizeResults(response, keyword, newText) {
       lineNumber,
       foundText,
       newText: replaceFirst(foundText, keyword, newText),
+      originalOrder: index,
       raw
     };
-  });
+  }).sort((first, second) => (
+    (first.pageNumber ?? Number.MAX_SAFE_INTEGER) - (second.pageNumber ?? Number.MAX_SAFE_INTEGER)
+    || (first.lineNumber ?? Number.MAX_SAFE_INTEGER) - (second.lineNumber ?? Number.MAX_SAFE_INTEGER)
+    || Number(first.raw?.matchIndex ?? 0) - Number(second.raw?.matchIndex ?? 0)
+    || first.originalOrder - second.originalOrder
+  ));
 }
 
 function getInitialSelectedIds(results, initialValues) {
@@ -280,7 +286,7 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
                   >
                     <td className="batch-replace-index-cell">{index + 1}</td>
                     <td className="batch-replace-check-cell">
-                      <input type="checkbox" checked={selectedIds.includes(result.id)} onChange={() => toggleResult(result.id)} aria-label={`페이지 ${result.pageNumber || '-'} 찾은 텍스트 ${result.foundText} 선택`} disabled={busy} />
+                      <input type="checkbox" checked={selectedIds.includes(result.id)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={() => toggleResult(result.id)} aria-label={`페이지 ${result.pageNumber || '-'} 찾은 텍스트 ${result.foundText} 선택`} disabled={busy} />
                     </td>
                     <td title={result.foundText}>
                       <span className="batch-replace-value">{result.foundText || '-'}</span>

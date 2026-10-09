@@ -78,6 +78,36 @@ function sampleReplacementBackground(canvas, pageSize, cover) {
   }
 }
 
+function findReplacementBackgroundRightEdge(canvas, pageSize, cover, backgroundColor) {
+  const context = canvas?.getContext('2d', { willReadFrequently: true });
+  const channels = String(backgroundColor || '').match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number);
+  if (!context || channels?.length !== 3 || !pageSize.width || !pageSize.height) return null;
+  const scaleX = canvas.width / pageSize.width;
+  const scaleY = canvas.height / pageSize.height;
+  const start = Math.max(0, Math.min(canvas.width - 1, Math.floor((cover.x + cover.width) * scaleX)));
+  const rows = [0.2, 0.5, 0.8].map((fraction) => Math.max(0, Math.min(canvas.height - 1,
+    Math.floor((cover.y + cover.height * fraction) * scaleY))));
+  const isBlueCard = channels[2] - channels[0] > 25 && channels[2] - channels[1] > 8;
+  try {
+    const strips = rows.map((row) => context.getImageData(start, row, canvas.width - start, 1).data);
+    let consecutiveMisses = 0;
+    for (let offset = 0; offset < canvas.width - start; offset += 1) {
+      const matchingRows = strips.filter((strip) => {
+        const index = offset * 4;
+        const rgb = [strip[index], strip[index + 1], strip[index + 2]];
+        const close = rgb.every((channel, channelIndex) => Math.abs(channel - channels[channelIndex]) <= 28);
+        const blue = isBlueCard && rgb[2] - rgb[0] > 20 && rgb[2] - rgb[1] > 7 && rgb[0] < 225;
+        return close || blue;
+      }).length;
+      consecutiveMisses = matchingRows >= 2 ? 0 : consecutiveMisses + 1;
+      if (consecutiveMisses >= 8) return (start + offset - consecutiveMisses + 1) / scaleX;
+    }
+  } catch (error) {
+    console.warn('[PdfPage] replacement background edge sampling failed:', error);
+  }
+  return null;
+}
+
 function sampleReplacementTextColor(canvas, pageSize, cover) {
   const context = canvas?.getContext('2d', { willReadFrequently: true });
   if (!context || !pageSize.width || !pageSize.height) return null;
@@ -979,6 +1009,7 @@ function PdfPage({
   const suppressReplacementClickRef = useRef(false);
   const handledBatchRequestRef = useRef('');
   const batchSelectionActiveRef = useRef(false);
+  const activeBatchTargetRef = useRef(null);
   const handleTextLayerRendered = useCallback(() => {
     setTextLayerVersion((version) => version + 1);
   }, []);
@@ -1012,7 +1043,8 @@ function PdfPage({
       : [];
     const selectedSpans = lineSelection
       ? lineSelection.parts.map((part) => part.span).filter(Boolean)
-      : getVisualRangeTextSpans(textLayer, range, pageRef.current, scale, movableTexts, textDragRef.current);
+      : isBatchSelection ? rangeSpans
+        : getVisualRangeTextSpans(textLayer, range, pageRef.current, scale, movableTexts, textDragRef.current);
     const selectionText = lineSelection?.text || selection.toString().trim();
     const spanText = selectedSpans.map((span) => span.dataset.unicodeText || span.textContent || '').join('').trim();
     const wholeSpanRange = selectedSpans.length === 1 ? document.createRange() : null;
@@ -1023,7 +1055,8 @@ function PdfPage({
     // For partial/multi-item selections, retain the browser's selected range.
     const selectedText = lineSelection
       ? lineSelection.text
-      : (selectedSpans.length > rangeSpans.length
+      : isBatchSelection ? selectionText
+        : (selectedSpans.length > rangeSpans.length
         ? spanText
         : (wholeSpan ? spanText : selectionText)) || spanText;
     const fontRunSelection = buildSelectionFontRuns(
@@ -1042,7 +1075,7 @@ function PdfPage({
       ? fontRunSelection.runs : [];
     const displayText = String(isBatchSelection ? batchReplaceRequest?.newText : selectedText);
     const batchTarget = isBatchSelection
-      ? (batchReplaceRequest?.targets || []).find((target) => Number(target?.pageNumber ?? target?.page) === pageNumber) || null
+      ? activeBatchTargetRef.current
       : null;
     // Do not block a user-selected range because PDF.js exposed unusual
     // Unicode. The export layer will choose direct removal or overlay
@@ -1062,7 +1095,7 @@ function PdfPage({
     if (!geometry) {
       return;
     }
-    const { currentRect, coverRects } = geometry;
+    let { currentRect, coverRects } = geometry;
     if (currentRect.width < 2 || currentRect.height < 2) return;
 
     const lineSourceItem = lineSelection?.parts.find((part) => part.item)?.item || null;
@@ -1095,6 +1128,19 @@ function PdfPage({
         };
       }
     }
+    // A PDF.js DOM Range can begin a few points before the actual glyph
+    // matrix. Batch replacement should use the source PDF coordinates so a
+    // preceding word space is not swallowed by the new text.
+    if (isBatchSelection && sourceSelection?.wholeItem
+      && Array.isArray(sourceInfo?.transform) && Number.isFinite(Number(sourceInfo.transform[4]))
+      && Number.isFinite(Number(sourceInfo.transform[5])) && Number(sourceInfo.width) > 0
+      && Number(viewport.rotation || 0) === 0) {
+      const sourceX = viewport.convertToViewportPoint(sourceInfo.transform[4], sourceInfo.transform[5])[0] / scale;
+      if (Number.isFinite(sourceX) && Math.abs(sourceX - currentRect.x) < Math.max(8, currentRect.height)) {
+        currentRect = { ...currentRect, x: sourceX, width: Number(sourceInfo.width) };
+        coverRects = [currentRect];
+      }
+    }
     const computedFontSize = Number.parseFloat(computedStyle?.fontSize);
     // The visible PDF.js text layer is the authoritative size for editor
     // geometry. Some pages expose a source transform size that differs from
@@ -1125,6 +1171,10 @@ function PdfPage({
       width: cover.width * scale,
       height: cover.height * scale
     });
+    const backgroundRightEdge = findReplacementBackgroundRightEdge(canvasRef.current, pageSize, {
+      x: cover.x * scale, y: cover.y * scale,
+      width: cover.width * scale, height: cover.height * scale
+    }, backgroundColor);
     const sampledTextColor = sampleReplacementTextColor(canvasRef.current, pageSize, {
       x: cover.x * scale,
       y: cover.y * scale,
@@ -1176,7 +1226,8 @@ function PdfPage({
     const displayRect = {
       ...currentRect,
       x: anchoredX,
-      width: Math.max(currentRect.width, measuredText.width + horizontalSafetyPadding * 2),
+      width: isBatchSelection ? currentRect.width
+        : Math.max(currentRect.width, measuredText.width + horizontalSafetyPadding * 2),
       height: Math.max(currentRect.height, measuredText.height + verticalSafetyPadding * 2)
     };
     let glyphScaleX = 1;
@@ -1190,6 +1241,7 @@ function PdfPage({
       type: (paragraphEditMode || textReplaceMode || isBatchSelection) ? 'replacementText' : 'movableText',
       pageNumber,
       searchLineNumber: batchTarget?.lineNumber ?? batchTarget?.line ?? null,
+      searchMatchIndex: batchTarget?.matchIndex ?? null,
       displayText,
       text: displayText,
       // PDF.js can expose a compact source string while browser selection
@@ -1201,7 +1253,10 @@ function PdfPage({
       originalText: lineSelection?.sourceText || sourceSelection?.selectedText || selectedText,
       supersedesIds: lineSelection?.supersedesIds || [],
       originalRect: currentRect,
+      sourceAdvanceWidth: isBatchSelection && sourceSelection?.wholeItem
+        && [...selectedText].length === [...displayText].length ? Number(sourceInfo?.width) || null : null,
       fitTextWidth: currentRect.width,
+      fitToBoxByLetterSpacing: isBatchSelection,
       displayRect,
       movedRect: displayRect,
       currentRect: displayRect,
@@ -1209,6 +1264,7 @@ function PdfPage({
       sourcePageWidth: pageSize.width / scale,
       sourcePageHeight: pageSize.height / scale,
       backgroundColor,
+      backgroundRightEdge: Number.isFinite(backgroundRightEdge) ? backgroundRightEdge / scale : null,
       // PDF.js text-layer bounds can be tighter than anti-aliased canvas
       // glyphs. Keep a small bleed around the cover so the original glyph
       // never remains visible behind a live editor.
@@ -1268,7 +1324,7 @@ function PdfPage({
     });
     if (createdTextId && fontCandidates.length) {
       resolveReplacementPreviewFont(fontCandidates, { preferBold: preferBoldFont })
-        .then((previewFont) => onUpdateMovableTextPreviewFont?.(createdTextId, previewFont))
+        .then((previewFont) => onUpdateMovableTextPreviewFont?.(createdTextId, previewFont, fontRuns))
         .catch((fontError) => {
           console.warn('[PdfPage] source font preview unavailable; using bundled font:', fontError);
         });
@@ -1409,6 +1465,10 @@ function PdfPage({
       const backgroundColor = sampleReplacementBackground(canvasRef.current, pageSize, {
         x: cover.x * scale, y: cover.y * scale, width: cover.width * scale, height: cover.height * scale
       });
+      const backgroundRightEdge = findReplacementBackgroundRightEdge(canvasRef.current, pageSize, {
+        x: cover.x * scale, y: cover.y * scale,
+        width: cover.width * scale, height: cover.height * scale
+      }, backgroundColor);
       const computedColor = computedStyle?.color || '';
       const color = sourceFont?.textColor || sampleReplacementTextColor(canvasRef.current, pageSize, {
         x: cover.x * scale, y: cover.y * scale, width: cover.width * scale, height: cover.height * scale
@@ -1419,7 +1479,8 @@ function PdfPage({
         sourceText: text, originalText: text, originalUnicodeText: text,
         originalRect: currentRect, fitTextWidth: currentRect.width, displayRect, movedRect: displayRect, currentRect: displayRect, coverRects,
         sourcePageWidth: pageSize.width / scale, sourcePageHeight: pageSize.height / scale,
-        backgroundColor, coverPadding: Math.max(1 / scale, fontSize * 0.06), color, renderFontFamily: 'DocPilotReplacement', fontSize,
+        backgroundColor, backgroundRightEdge: Number.isFinite(backgroundRightEdge) ? backgroundRightEdge / scale : null,
+        coverPadding: Math.max(1 / scale, fontSize * 0.06), color, renderFontFamily: 'DocPilotReplacement', fontSize,
         fontFamily: computedStyle?.fontFamily || 'Helvetica, Arial, sans-serif', fontWeight: 'normal',
         preferBoldFont, fontStyle: computedStyle?.fontStyle || 'normal', letterSpacing: 0,
         verticalAlign: 'middle', textAlign: 'left', allowMove: false, autoEdit: index === 0,
@@ -1437,7 +1498,7 @@ function PdfPage({
     selections.forEach((selection, index) => {
       if (!ids[index] || !selection.fontCandidates.length) return;
       resolveReplacementPreviewFont(selection.fontCandidates, { preferBold: selection.preferBoldFont })
-        .then((previewFont) => onUpdateMovableTextPreviewFont?.(ids[index], previewFont))
+        .then((previewFont) => onUpdateMovableTextPreviewFont?.(ids[index], previewFont, selection.fontRuns))
         .catch(() => undefined);
     });
   }, [onCreateMovableTexts, onUpdateMovableTextPreviewFont, pageNumber, pageSize, scale, textContent]);
@@ -1606,10 +1667,14 @@ function PdfPage({
       const selection = window.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
+      activeBatchTargetRef.current = target;
       batchSelectionActiveRef.current = true;
       handleTextSelection();
       batchSelectionActiveRef.current = false;
+      activeBatchTargetRef.current = null;
     });
+    window.getSelection()?.removeAllRanges();
+    setSelectionBoxes([]);
     handledBatchRequestRef.current = batchReplaceRequest.id;
     onBatchReplaceHandled?.(batchReplaceRequest.id, pageNumber);
   }, [batchReplaceRequest, handleTextSelection, onBatchReplaceHandled, pageNumber, textLayerVersion]);
@@ -2097,6 +2162,19 @@ function PdfPage({
     }
 
     let frameId = window.requestAnimationFrame(() => {
+      if (findResult?.type === 'pdf-replacement' && findResult.replacementId) {
+        const replacement = Array.from(pageRef.current.querySelectorAll('.movable-text-object[data-movable-text-id]'))
+          .find((element) => element.dataset.movableTextId === findResult.replacementId);
+        if (replacement) {
+          const pageRect = pageRef.current.getBoundingClientRect();
+          const rect = replacement.getBoundingClientRect();
+          setFindBoxes([{
+            page: pageNumber, x: rect.left - pageRect.left, y: rect.top - pageRect.top,
+            width: rect.width, height: rect.height
+          }]);
+          return;
+        }
+      }
       let boxes = createHighlightBoxesFromTextLayer(pageRef.current, keyword, {
         matchMode: 'contains',
         lineNumber: Number(findResult?.lineNumber ?? findResult?.line),
@@ -2476,6 +2554,15 @@ function TableLayer({ items, removedItems = [], scale, selectedId, selectedCell,
     </div>, document.body) : null}
   </div>;
 }
+function getMovableRunWeight(run, item) {
+  const weight = run.fontWeight === 'bold' ? '700' : (run.fontWeight || 'normal');
+  const resolvedSource = run.renderFontSource || (run.renderFontFamily === item.renderFontFamily ? item.previewFontSource : '');
+  // The registered local face can already be a Bold font. Requesting CSS
+  // bold again would synthesize extra weight that is absent from PDF export.
+  return resolvedSource === 'local' && run.originalPreferBoldFont === true && (weight === '700' || Number(weight) >= 600)
+    ? 'normal' : weight;
+}
+
 function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMoveMode, editingEnabled, onPointerDown, onResizePointerDown, onDoubleClick, onEditChange, onEditStyleChange, onEditSelectionChange, onEditCommit, onEditCancel }) {
   if (!items.length) return null;
 
@@ -2566,6 +2653,7 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
                     className="movable-text-edit-input"
                     value={editingMovableText.value}
                     style={{
+                      backgroundColor: item.backgroundColor || '#ffffff',
                       fontFamily: item.renderFontFamily || 'DocPilotReplacement',
                       fontWeight: editingMovableText.fontWeight === 'bold' ? 700 : (editingMovableText.fontWeight || 'normal'),
                       fontStyle: editingMovableText.fontStyle || 'normal',
@@ -2615,12 +2703,12 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
                     style={{
                       fontFamily: item.selectedFontFamily
                         ? (item.renderFontFamily || 'DocPilotReplacement')
-                        : (run.fontFamily || item.renderFontFamily || 'DocPilotReplacement'),
+                        : (run.renderFontFamily || item.renderFontFamily || 'DocPilotReplacement'),
                       fontSize: `${Math.max(1, Number(run.fontSize || item.fontSize) || 10)
                         * (Number(item.fontSize) || 10) / Math.max(1, Number(item.autoFitBaseFontSize || item.fontSize) || 10) * scale}px`,
-                      fontWeight: run.fontWeight === 'bold' ? '700' : (run.fontWeight || 'normal'),
+                      fontWeight: getMovableRunWeight(run, item),
                       fontStyle: run.fontStyle || 'normal',
-                      lineHeight: 'normal',
+                      lineHeight: '1',
                       textDecoration: run.textDecoration || item.textDecoration || 'none',
                       color: run.color || item.color,
                       letterSpacing: `${Number(item.letterSpacing || run.letterSpacing) * scale}px`,
@@ -2718,6 +2806,7 @@ function restoreEditableSelection(root, savedRange) {
 function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChange, onCommit, onCancel }) {
   const editorRef = useRef(null);
   const baseRunsRef = useRef([]);
+  const runPreviewKey = (item.fontRuns || []).map((run) => run.renderFontFamily || '').join('\u0000');
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
@@ -2733,11 +2822,11 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
       span.textContent = String(run.text || '');
       span.style.fontFamily = item.selectedFontFamily
         ? (item.renderFontFamily || 'DocPilotReplacement')
-        : (run.fontFamily || item.renderFontFamily || 'DocPilotReplacement');
+        : (run.renderFontFamily || item.fontRuns?.[index]?.renderFontFamily || item.renderFontFamily || 'DocPilotReplacement');
       span.style.fontSize = `${Math.max(1, Number(run.fontSize || item.fontSize || 10) * sizeRatio * scale)}px`;
-      span.style.fontWeight = run.fontWeight === 'bold' ? '700' : (run.fontWeight || 'normal');
+      span.style.fontWeight = getMovableRunWeight(run, item);
       span.style.fontStyle = run.fontStyle || 'normal';
-      span.style.lineHeight = 'normal';
+      span.style.lineHeight = '1';
       span.style.textDecoration = run.textDecoration || editing.textDecoration || 'none';
       span.style.color = run.color || editing.color || '#111111';
       editor.append(span);
@@ -2765,7 +2854,7 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
       const start = before.toString().length;
       onSelectionChange?.({ start, end: start + range.toString().length });
     }
-  }, [editing.id, editing.fontRunsRevision]);
+  }, [editing.id, editing.fontRunsRevision, item.renderFontFamily, runPreviewKey]);
 
   const reportSelection = () => {
     const editor = editorRef.current;
@@ -2792,6 +2881,7 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
     <div
       ref={editorRef}
       className="movable-text-edit-input movable-text-edit-rich"
+      style={{ backgroundColor: item.backgroundColor || '#ffffff' }}
       contentEditable
       suppressContentEditableWarning
       role="textbox"

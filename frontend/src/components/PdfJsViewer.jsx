@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, us
 import PdfPage from './PdfPage';
 import PdfDownloadPreview from './PdfDownloadPreview';
 import PdfEncryptionChoice from './PdfEncryptionChoice';
+import PdfPasswordDialog from './PdfPasswordDialog';
 import PdfTableToolbar from './PdfTableToolbar';
 import TextAlignmentIcon from './TextAlignmentIcon';
 import { loadPdfDocument } from '../services/pdfService';
@@ -12,6 +13,27 @@ import { createHighlightBoxesFromTextLayer } from '../services/highlightService'
 import { duplicateTable, tableSizes, tableToTsv } from '../services/pdfTableModel.js';
 
 let copiedPdfTable = null;
+
+function measureMovableTextWidth(value, settings, target) {
+  const text = String(value ?? '');
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context || !text) return 0;
+  const baseSize = Math.max(4, Number(settings.baseFontSize ?? settings.fontSize) || 10);
+  const size = settings.manualFontSize ? Math.max(4, Number(settings.fontSize) || baseSize) : baseSize;
+  const family = target.renderFontFamily || settings.fontFamily || target.fontFamily || 'Arial, sans-serif';
+  const runs = Array.isArray(settings.fontRuns) && settings.fontRuns.length ? settings.fontRuns : null;
+  const ratio = size / Math.max(1, Number(target.autoFitBaseFontSize || settings.baseFontSize || baseSize));
+  const width = runs ? runs.reduce((sum, run) => {
+    const weight = run.renderFontSource === 'local' && run.originalPreferBoldFont === true
+      ? 'normal' : (run.fontWeight || settings.fontWeight || 'normal');
+    context.font = `${run.fontStyle || settings.fontStyle || 'normal'} ${weight} ${Math.max(1, Number(run.fontSize || baseSize) * ratio)}px ${run.renderFontFamily || family}`;
+    return sum + context.measureText(String(run.text || '')).width;
+  }, 0) : (() => {
+    context.font = `${settings.fontStyle || 'normal'} ${settings.fontWeight || 'normal'} ${size}px ${family}`;
+    return context.measureText(text).width;
+  })();
+  return width + Math.max(0, [...text].length - 1) * (Number(settings.baseLetterSpacing ?? settings.letterSpacing) || 0);
+}
 
 function fitMovableTextToBox(value, settings, target) {
   const text = String(value ?? '');
@@ -40,7 +62,7 @@ function fitMovableTextToBox(value, settings, target) {
     if (fontRuns) {
       const sizeRatio = size / fontRunsBaseSize;
       return fontRuns.reduce((width, run) => {
-        context.font = `${run.fontStyle || style} ${run.fontWeight || weight} ${Math.max(1, Number(run.fontSize || sourceSize) * sizeRatio)}px ${run.fontFamily || family}`;
+        context.font = `${run.fontStyle || style} ${run.fontWeight || weight} ${Math.max(1, Number(run.fontSize || sourceSize) * sizeRatio)}px ${run.renderFontFamily || family}`;
         return width + context.measureText(String(run.text || '')).width;
       }, 0);
     }
@@ -65,6 +87,10 @@ function fitMovableTextToBox(value, settings, target) {
       letterSpacing = glyphGaps ? Math.max(minSpacing * (fontSize / sourceSize), (boxWidth - naturalWidth) / glyphGaps) : 0;
     }
   }
+  if (target?.fitToBoxByLetterSpacing && glyphGaps > 0
+    && naturalWidth + glyphGaps * letterSpacing < boxWidth) {
+    letterSpacing = (boxWidth - naturalWidth) / glyphGaps;
+  }
   return { fontSize, letterSpacing };
 }
 
@@ -75,6 +101,7 @@ function resizeMovableTextItem(item, currentRect) {
     movedRect: currentRect,
     displayRect: currentRect,
     fitTextWidth: currentRect.width,
+    manuallyResized: true,
     hasChanges: item.persistedToPdf ? true : item.hasChanges
   };
   const value = String(item.displayText ?? item.text ?? '');
@@ -112,6 +139,8 @@ function applyFontFamilyToRunRange(fontRuns, selectionRange, fontFamily, rangeId
     if (localStart > 0) nextRuns.push({ ...run, text: text.slice(0, localStart) });
     const selectedFont = fontFamily ? {
       ...run,
+      renderFontFamily: undefined,
+      renderFontSource: undefined,
       text: text.slice(localStart, localEnd),
       selectedFontFamily: fontFamily,
       fontRangeId: rangeId,
@@ -121,6 +150,8 @@ function applyFontFamilyToRunRange(fontRuns, selectionRange, fontFamily, rangeId
       preferBoldFont: run.fontWeight === 'bold' || Number(run.fontWeight) >= 600
     } : {
       ...run,
+      renderFontFamily: undefined,
+      renderFontSource: undefined,
       text: text.slice(localStart, localEnd),
       selectedFontFamily: '',
       fontRangeId: rangeId,
@@ -389,6 +420,8 @@ function filterMovedSourceSearchResults(results, movableTexts) {
   const hidden = movableTexts
     .map((item) => ({
       pageNumber: Number(item.pageNumber),
+      lineNumber: Number(item.searchLineNumber ?? item.lineNumber),
+      matchIndex: item.searchMatchIndex == null ? NaN : Number(item.searchMatchIndex),
       text: normalizeMovableMatchText(item.previousSourceText || item.sourceSelection?.selectedText || item.sourceText || item.originalText)
     }))
     .filter((item) => item.pageNumber > 0 && item.text);
@@ -404,6 +437,8 @@ function filterMovedSourceSearchResults(results, movableTexts) {
     const keyword = normalizeMovableMatchText(result.keyword);
     const index = hidden.findIndex((item, hiddenIndex) => (
       !consumed.has(hiddenIndex) && item.pageNumber === pageNumber
+        && (!Number.isInteger(item.lineNumber) || item.lineNumber <= 0 || item.lineNumber === Number(result.lineNumber ?? result.line))
+        && (!Number.isInteger(item.matchIndex) || item.matchIndex < 0 || item.matchIndex === Number(result.matchIndex))
         && item.text.includes(keyword)
         && fullText.includes(item.text)
     ));
@@ -742,6 +777,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [pageToolsOpen, setPageToolsOpen] = useState(false);
   const [pageTool, setPageTool] = useState('extract');
   const [insertFile, setInsertFile] = useState(null);
+  const [protectedInsertFile, setProtectedInsertFile] = useState(null);
   const [encryptionChoiceOpen, setEncryptionChoiceOpen] = useState(false);
   const [insertPositionMode, setInsertPositionMode] = useState('end');
   const [insertAfterPage, setInsertAfterPage] = useState('');
@@ -778,9 +814,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [selectedMovableTextId, setSelectedMovableTextId] = useState(null);
   const [editingMovableText, setEditingMovableText] = useState(null);
   const editingSelectionRangeRef = useRef({ id: null, range: null });
+  const editingModifiedRef = useRef({ id: null, modified: false });
   const [availableFonts, setAvailableFonts] = useState([]);
   const [selectedImageId, setSelectedImageId] = useState(null);
   const imageInputRef = useRef(null);
+  const imageTargetPageRef = useRef(null);
   const [userHighlight, setUserHighlight] = useState({
     keyword: String(highlightKeyword || ''),
     color: 'yellow',
@@ -819,18 +857,20 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     }
   };
 
-  const updateScrollPage = () => {
+  const getVisiblePageNumber = () => {
+    if (viewMode !== 'scroll') return currentPage || 1;
     const viewer = viewerRef.current;
-    if (!viewer || viewMode !== 'scroll') return;
+    if (!viewer) return currentPage || 1;
     const bounds = viewer.getBoundingClientRect();
     const center = (bounds.top + bounds.bottom) / 2;
-    let bestPage = 1;
+    let bestPage = currentPage || 1;
     let bestVisibleHeight = -1;
     let bestDistance = Infinity;
     Object.entries(pageRefs.current).forEach(([pageNumber, element]) => {
       if (!element?.isConnected || Number(pageNumber) > pageNumbers.length) return;
       const pageBounds = element.getBoundingClientRect();
       const visibleHeight = Math.max(0, Math.min(pageBounds.bottom, bounds.bottom) - Math.max(pageBounds.top, bounds.top));
+      if (visibleHeight <= 0) return;
       const distance = Math.abs((pageBounds.top + pageBounds.bottom) / 2 - center);
       if (visibleHeight > bestVisibleHeight || (visibleHeight === bestVisibleHeight && distance < bestDistance)) {
         bestPage = Number(pageNumber);
@@ -838,7 +878,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         bestDistance = distance;
       }
     });
-    if (bestVisibleHeight >= 0) setCurrentPage((page) => page === bestPage ? page : bestPage);
+    return bestPage;
+  };
+
+  const updateScrollPage = () => {
+    if (viewMode !== 'scroll') return;
+    const bestPage = getVisiblePageNumber();
+    setCurrentPage((page) => page === bestPage ? page : bestPage);
   };
 
   const scheduleScrollPageUpdate = () => {
@@ -1185,8 +1231,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
   // Preview-font resolution is visual metadata only. It must not add an undo
   // entry or modify the replacement itself; export uses fontCandidates.
-  const updateMovableTextPreviewFont = (id, previewFont) => {
+  const updateMovableTextPreviewFont = (id, previewFont, sourceFontRuns = null) => {
     if (!id || !previewFont?.fontFamily) return;
+    const sourceItem = movableTexts.find((item) => item.id === id);
+    const runsToResolve = Array.isArray(sourceFontRuns) && sourceFontRuns.length
+      ? sourceFontRuns : sourceItem?.fontRuns;
     const hasResolvedSelection = Object.prototype.hasOwnProperty.call(previewFont, 'selectionValue');
     const resolvedSelection = hasResolvedSelection ? String(previewFont.selectionValue || '') : null;
     const hasResolvedOriginalFamily = Object.prototype.hasOwnProperty.call(previewFont, 'originalFamily');
@@ -1199,16 +1248,43 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         baseFontSize,
         letterSpacing: baseLetterSpacing,
         baseLetterSpacing,
-        fontRuns: item.fontRuns || [],
+        fontRuns: (item.fontRuns || []).map((run) => ({
+          ...run,
+          renderFontFamily: item.fontRuns?.length === 1
+            ? previewFont.fontFamily : run.renderFontFamily,
+          renderFontSource: item.fontRuns?.length === 1
+            ? previewFont.source : run.renderFontSource
+        })),
         fontWeight: item.fontWeight || 'normal',
         fontStyle: item.fontStyle || 'normal',
         manualFontSize: item.manualFontSize === true,
         fontFamily: previewFont.selectionValue || item.selectedFontFamily || item.previewFontFamily || ''
       };
+      // The rendered text can be wider than PDF.js's invisible selection
+      // layer. Keep room for it before fitting, including text on colored
+      // cards and body-size text.
+      if (!item.fitToBoxByLetterSpacing && !item.manuallyResized && item.type !== 'addedText' && !text.includes('\n')
+        && item.currentRect && Number(item.sourcePageWidth) > 0) {
+        const naturalWidth = measureMovableTextWidth(text, settings, target);
+        const pageAvailable = Number(item.sourcePageWidth) - Number(item.currentRect.x) - 2;
+        const backgroundAvailable = Number.isFinite(Number(item.backgroundRightEdge))
+          && Number(item.backgroundRightEdge) > Number(item.currentRect.x) + Number(item.originalRect?.width || 0)
+          ? Number(item.backgroundRightEdge) - Number(item.currentRect.x) - 2
+          : pageAvailable;
+        const available = Math.min(pageAvailable, backgroundAvailable);
+        const expandedWidth = Math.min(available, Math.max(Number(item.currentRect.width),
+          naturalWidth * 1.18));
+        if (expandedWidth > Number(item.currentRect.width)) {
+          target.currentRect = { ...item.currentRect, width: expandedWidth };
+          target.displayRect = { ...(item.displayRect || item.currentRect), width: expandedWidth };
+          target.fitTextWidth = expandedWidth;
+        }
+      }
       const fitted = fitMovableTextToBox(text, settings, target);
       return {
         ...target,
         ...fitted,
+        fontRuns: settings.fontRuns,
         previewFontSource: previewFont.source || 'bundled',
         // A resolved preview font is only a rendering aid. Treating it as a
         // user-selected font makes PdfPage apply the first run's font to all
@@ -1241,6 +1317,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       const baseLetterSpacing = Number(current.baseLetterSpacing ?? previewTarget.autoFitBaseLetterSpacing) || 0;
       const next = {
         ...current,
+        fontRuns: current.fontRuns?.length === 1
+          ? current.fontRuns.map((run) => ({
+            ...run,
+            renderFontFamily: previewFont.fontFamily,
+            renderFontSource: previewFont.source
+          }))
+          : current.fontRuns,
         fontFamily: hasResolvedSelection ? resolvedSelection : current.fontFamily,
         fontRunsRevision: current.fontRuns?.length > 0
           ? Number(current.fontRunsRevision || 0) + 1 : current.fontRunsRevision,
@@ -1254,6 +1337,32 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         ...fitMovableTextToBox(next.value, next, previewTarget)
       };
     });
+    if (!runsToResolve || runsToResolve.length <= 1) return;
+    // A text box may contain several source fonts. Resolve each run instead
+    // of applying the first run's font to the whole box.
+    Promise.all(runsToResolve.map(async (run) => {
+      const candidates = run.selectedFontFamily
+        ? [run.selectedFontFamily]
+        : (run.originalFontCandidates?.length ? run.originalFontCandidates : run.fontCandidates || []);
+      if (!candidates.length) return previewFont;
+      const resolved = await resolveReplacementPreviewFont(candidates, {
+        preferBold: run.originalPreferBoldFont === true || run.preferBoldFont === true
+      });
+      return resolved;
+    })).then((fonts) => {
+      const applyRunFonts = (runs) => runs.map((run, index) => ({
+        ...run,
+        renderFontFamily: fonts[index]?.fontFamily || run.renderFontFamily || previewFont.fontFamily,
+        renderFontSource: fonts[index]?.source || run.renderFontSource || previewFont.source
+      }));
+      setMovableTexts((current) => current.map((item) => item.id === id && !item.selectedFontFamily
+        && item.fontRuns?.length === fonts.length
+        ? resolveItemPreview({ ...item, fontRuns: applyRunFonts(item.fontRuns) })
+        : item));
+      setEditingMovableText((current) => current?.id === id && current.fontRuns?.length === fonts.length
+        ? { ...current, fontRuns: applyRunFonts(current.fontRuns), fontRunsRevision: Number(current.fontRunsRevision || 0) + 1 }
+        : current);
+    }).catch((error) => console.warn('[PdfJsViewer] run font preview unavailable:', error));
   };
 
   const moveMovableText = (id, currentRect) => {
@@ -1306,6 +1415,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const beginEditMovableText = (id) => {
     const item = movableTexts.find((entry) => entry.id === id);
     if (!item) return;
+    editingModifiedRef.current = { id, modified: false };
     setSelectedMovableTextId(id);
     const baseFontSize = Number(item.autoFitBaseFontSize || item.fontSize) || 10;
     const baseLetterSpacing = Number(item.autoFitBaseLetterSpacing ?? item.letterSpacing) || 0;
@@ -1334,6 +1444,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   };
 
   const updateEditingMovableText = (value, fontRuns = null) => {
+    if (editingMovableText?.id) {
+      editingModifiedRef.current = { id: editingMovableText.id, modified: true };
+    }
     setEditingMovableText((current) => {
       if (!current) return current;
       const target = movableTexts.find((item) => item.id === current.id);
@@ -1396,6 +1509,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const updateEditingMovableTextStyle = (style) => {
     const current = editingMovableText;
     if (!current) return;
+    editingModifiedRef.current = { id: current.id, modified: true };
     const selectionRange = editingSelectionRangeRef.current.id === current.id
       ? editingSelectionRangeRef.current.range : current.selectionRange;
     const target = movableTexts.find((item) => item.id === current.id);
@@ -1480,6 +1594,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const changeEditingMovableTextFont = async (fontFamily) => {
     if (!editingMovableText) return;
     const editingId = editingMovableText.id;
+    editingModifiedRef.current = { id: editingId, modified: true };
     const target = movableTexts.find((item) => item.id === editingId);
     if (!target) return;
     const selectedRange = editingSelectionRangeRef.current.id === editingId
@@ -1522,7 +1637,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         try {
           const previewFont = await resolveReplacementPreviewFont(candidates, { preferBold });
           const previewRuns = nextRuns.map((run) => run.fontRangeId === rangeId
-            ? { ...run, fontFamily: previewFont.fontFamily }
+            ? { ...run, fontFamily: previewFont.fontFamily, renderFontFamily: previewFont.fontFamily, renderFontSource: previewFont.source }
             : run);
           const previewFit = fitMovableTextToBox(
             editingMovableText.value,
@@ -1608,11 +1723,22 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       )));
     }
     editingSelectionRangeRef.current = { id: null, range: null };
+    editingModifiedRef.current = { id: null, modified: false };
     setEditingMovableText(null);
   };
 
   const commitEditMovableText = () => {
     if (!editingMovableText) return;
+    // Merely opening an existing replacement and clicking away must not
+    // recalculate its font metrics or mark the saved PDF text for redrawing.
+    if (editingModifiedRef.current.id === editingMovableText.id
+      && !editingModifiedRef.current.modified) {
+      editingModifiedRef.current = { id: null, modified: false };
+      editingSelectionRangeRef.current = { id: null, range: null };
+      setEditingMovableText(null);
+      return;
+    }
+    editingModifiedRef.current = { id: null, modified: false };
     const value = String(editingMovableText.value || '').trim();
     const committedFontRuns = normalizeFontRunsForText(editingMovableText.fontRuns, value);
     const target = movableTexts.find((item) => item.id === editingMovableText.id);
@@ -1680,18 +1806,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     commitPdfChange(userHighlight, appliedReplacePreview, next, null);
   };
 
-  const getActivePageNumber = () => {
-    const viewer = viewerRef.current;
-    if (!viewer) return currentPage || 1;
-    const middle = viewer.getBoundingClientRect().top + viewer.clientHeight / 2;
-    return Number(Object.entries(pageRefs.current).sort(([, first], [, second]) => (
-      Math.abs(first.getBoundingClientRect().top - middle) - Math.abs(second.getBoundingClientRect().top - middle)
-    ))[0]?.[0]) || currentPage || 1;
-  };
-
   const addImageAttachment = async (event) => {
     const fileToAdd = event.target.files?.[0];
     event.target.value = '';
+    const pageNumber = imageTargetPageRef.current || getVisiblePageNumber();
+    imageTargetPageRef.current = null;
     if (!fileToAdd) return;
     if (!/^image\/(png|jpeg|jpg|webp)$/i.test(fileToAdd.type)) {
       setDownloadFailed(true);
@@ -1721,7 +1840,6 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       embeddedDataUrl = canvas.toDataURL('image/png');
       mimeType = 'image/png';
     }
-    const pageNumber = getActivePageNumber();
     const page = pageRefs.current[pageNumber];
     const pageWidth = (page?.clientWidth || 600) / effectiveScale;
     const pageHeight = (page?.clientHeight || 800) / effectiveScale;
@@ -2057,15 +2175,16 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     }
   };
 
-  const insertSelectedPdf = async (selectedSource = null) => {
+  const insertSelectedPdf = async (selectedSource = null, providedInsertFile = null) => {
     if (downloadStatus !== 'idle') return;
+    const fileToInsert = providedInsertFile || insertFile;
     const positionText = insertPositionMode === 'front'
       ? '0'
       : insertPositionMode === 'end'
         ? String(pageNumbers.length)
         : insertAfterPage.trim();
     const afterPage = Number(positionText);
-    if (!insertFile || !isPdfFile(insertFile)) {
+    if (!fileToInsert || !isPdfFile(fileToInsert)) {
       setDownloadFailed(true);
       setDownloadMessage('삽입할 PDF 파일을 선택해주세요.');
       return;
@@ -2079,16 +2198,21 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setDownloadMessage('');
     setDownloadFailed(false);
     try {
-      const { isPdfEncrypted } = await import('../services/pdfEncryption.js');
+      const { isPdfEncrypted, requiresPdfPassword } = await import('../services/pdfEncryption.js');
       const existingEncryptionSource = await currentEncryptionSource();
-      const insertedIsEncrypted = await isPdfEncrypted(insertFile);
-      if (existingEncryptionSource && insertedIsEncrypted && !selectedSource) {
+      const insertedEncryptionSource = fileToInsert.docPilotEncryptionSource
+        || (await isPdfEncrypted(fileToInsert) ? fileToInsert : null);
+      if (insertedEncryptionSource === fileToInsert && await requiresPdfPassword(fileToInsert)) {
+        setProtectedInsertFile(fileToInsert);
+        return;
+      }
+      if (existingEncryptionSource && insertedEncryptionSource && !selectedSource) {
         setEncryptionChoiceOpen(true);
         return;
       }
       const encryptionSource = selectedSource === 'inserted'
-        ? insertFile
-        : existingEncryptionSource || (insertedIsEncrypted ? insertFile : null);
+        ? insertedEncryptionSource
+        : existingEncryptionSource || insertedEncryptionSource;
       const changes = getPendingPdfChanges();
       let sourceBytes = await file.arrayBuffer();
       if (changes.hasChanges) {
@@ -2098,7 +2222,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       }
       const { insertPdfPages } = await import('../services/pdfPageExtract.js');
       const rasterizedParts = new Set();
-      const { outputBytes } = await insertPdfPages(sourceBytes, await insertFile.arrayBuffer(), afterPage, {
+      const { outputBytes } = await insertPdfPages(sourceBytes, await fileToInsert.arrayBuffer(), afterPage, {
         onRasterized: (part) => rasterizedParts.add(part),
         onProgress: (done, total) => {
           if (done === total || done % 5 === 0) setDownloadMessage(`암호화된 PDF 페이지 변환 중... ${done}/${total}`);
@@ -2119,6 +2243,21 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     }
   };
 
+  const confirmInsertPdfPassword = async (password) => {
+    if (!protectedInsertFile) return;
+    const { unlockPdfForViewing } = await import('../services/pdfEncryption.js');
+    const unlockedFile = await unlockPdfForViewing(protectedInsertFile, password);
+    setProtectedInsertFile(null);
+    setInsertFile(unlockedFile);
+    await insertSelectedPdf(null, unlockedFile);
+  };
+
+  const cancelInsertPdfPassword = () => {
+    setProtectedInsertFile(null);
+    setInsertFile(null);
+    if (insertFileInputRef.current) insertFileInputRef.current.value = '';
+  };
+
   const clearAppliedHighlights = () => {
     const clearedHighlight = { keyword: '', color: 'yellow', matchMode: 'contains', selectedTargets: [] };
     setUserHighlight(clearedHighlight);
@@ -2133,7 +2272,6 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     ? userHighlight.selectedTargets.length > 0
     : Boolean(userHighlight.keyword);
 
-  console.log('[PdfJsViewer] file:', file);
 
   const ensurePdfTextPages = async () => {
     if (pagesTextRef.current.length > 0) {
@@ -2166,8 +2304,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
 
     const viewerElement = viewerRef.current;
     if (viewerElement) {
+      const replacementRect = target.type === 'pdf-replacement' ? target.replacementRect : null;
       const keyword = String(target.keyword ?? target.matchedText ?? target.originalText ?? '').trim();
-      const targetBoxes = keyword
+      const targetBoxes = keyword && !replacementRect
         ? createHighlightBoxesFromTextLayer(pageElement, keyword, {
           matchMode: 'contains',
           lineNumber: Number(target.lineNumber ?? target.line),
@@ -2176,7 +2315,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         })
         : [];
       const targetBox = targetBoxes[0];
-      const targetY = target.y != null && Number.isFinite(Number(target.y))
+      const targetY = replacementRect && Number.isFinite(Number(replacementRect.y))
+        ? (Number(replacementRect.y) + Number(replacementRect.height || 0) / 2) * effectiveScale
+        : target.y != null && Number.isFinite(Number(target.y))
         ? Number(target.y)
         : targetBox
           ? targetBox.y + targetBox.height / 2
@@ -2371,12 +2512,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
               value = `${value.slice(0, start)}${newText}${value.slice(end)}`;
             }
           });
+          const fontRuns = normalizeFontRunsForText(ensureEditableFontRuns(item, getReplacementSearchText(item)), value);
           const baseFontSize = Number(item.autoFitBaseFontSize || item.fontSize) || 10;
           const baseLetterSpacing = Number(item.autoFitBaseLetterSpacing ?? item.letterSpacing) || 0;
           const fitted = fitMovableTextToBox(value, {
             fontSize: baseFontSize, baseFontSize,
             letterSpacing: baseLetterSpacing, baseLetterSpacing,
-            fontWeight: item.fontWeight, fontStyle: item.fontStyle,
+            fontWeight: item.fontWeight, fontStyle: item.fontStyle, fontRuns,
             fontFamily: item.selectedFontFamily || item.previewFontFamily || ''
           }, item);
           return {
@@ -2384,6 +2526,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             displayText: value,
             text: value,
             editedText: value,
+            fontRuns,
+            sourceAdvanceWidth: [...value].length === [...getReplacementSearchText(item)].length
+              ? item.sourceAdvanceWidth : null,
             ...fitted,
             autoFitBaseFontSize: baseFontSize,
             autoFitBaseLetterSpacing: baseLetterSpacing,
@@ -2572,6 +2717,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setPageSelection('');
       setDeleteSelection('');
       setInsertFile(null);
+      setProtectedInsertFile(null);
       setInsertPositionMode('end');
       if (insertFileInputRef.current) insertFileInputRef.current.value = '';
       setUserHighlight({ keyword: '', color: 'yellow', matchMode: 'contains', selectedTargets: [] });
@@ -2717,12 +2863,6 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             <button type="button" className={isEditMode ? 'active' : ''} onClick={() => onEditModeChange?.(true)} aria-pressed={isEditMode}>편집</button>
           </div>
         </div>
-        {pageNumbers.length > 1 && viewMode === 'page' ? (
-          <div className="pdf-page-navigation" role="group" aria-label="페이지 이동">
-            <button type="button" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1}>이전</button>
-            <button type="button" onClick={() => setCurrentPage((page) => Math.min(pageNumbers.length, page + 1))} disabled={currentPage === pageNumbers.length}>다음</button>
-          </div>
-        ) : null}
         {isEditMode ? <div className="pdf-document-history" role="group" aria-label="PDF 편집 도구">
           <button type="button" onClick={undoDocumentChange} disabled={!isEditMode || downloadStatus !== 'idle' || (!historyState.canUndo && !canUndoPageChange)} aria-label="적용 전으로 되돌리기">&lt;</button>
           <button type="button" onClick={redoDocumentChange} disabled={!isEditMode || downloadStatus !== 'idle' || (!historyState.canRedo && !canRedoPageChange)} aria-label="다시 적용하기">&gt;</button>
@@ -2786,7 +2926,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
               setSelectedImageId(null);
             }}
           >표 추가</button>
-          <button type="button" className="pdf-text-move-button" disabled={!isEditMode} onClick={() => imageInputRef.current?.click()} title="현재 보고 있는 PDF 페이지에 이미지를 첨부합니다.">이미지 첨부</button>
+          <button type="button" className="pdf-text-move-button" disabled={!isEditMode} onClick={() => {
+            const pageNumber = getVisiblePageNumber();
+            imageTargetPageRef.current = pageNumber;
+            setCurrentPage(pageNumber);
+            imageInputRef.current?.click();
+          }} title="현재 보고 있는 PDF 페이지에 이미지를 첨부합니다.">이미지 첨부</button>
           <input ref={imageInputRef} className="pdf-image-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={addImageAttachment} />
         </div> : null}
         {toolbarActions}
@@ -2912,6 +3057,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         </div>
       </div>
       {downloadPreview ? <PdfDownloadPreview {...downloadPreview} onCancel={closeDownloadPreview} onConfirm={confirmPdfDownload} /> : null}
+      {protectedInsertFile ? <PdfPasswordDialog
+        fileName={protectedInsertFile.name}
+        onConfirm={confirmInsertPdfPassword}
+        onCancel={cancelInsertPdfPassword}
+      /> : null}
       {encryptionChoiceOpen ? <PdfEncryptionChoice
         currentName={(file.docPilotEncryptionSource || file).name}
         insertedName={insertFile?.name || ''}
@@ -2937,6 +3087,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       })() : null}
       <div className="pdf-viewer-frame">
         <div className="pdf-page-position-bar" role="status" aria-label="PDF 페이지 위치" aria-live="polite">
+          <div className="pdf-page-position-counter" role={viewMode === 'page' && pageNumbers.length > 1 ? 'group' : undefined} aria-label={viewMode === 'page' && pageNumbers.length > 1 ? '페이지 이동' : undefined}>
+          {viewMode === 'page' && pageNumbers.length > 1 ? (
+            <button type="button" className="pdf-page-position-nav" aria-label="이전" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1}>&lt;</button>
+          ) : null}
           <input
             ref={pageNumberInputRef}
             className="pdf-page-position-current"
@@ -2959,6 +3113,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           />
           <span aria-hidden="true">/</span>
           <span>{pageNumbers.length}</span>
+          {viewMode === 'page' && pageNumbers.length > 1 ? (
+            <button type="button" className="pdf-page-position-nav" aria-label="다음" onClick={() => setCurrentPage((page) => Math.min(pageNumbers.length, page + 1))} disabled={currentPage === pageNumbers.length}>&gt;</button>
+          ) : null}
+          </div>
           <button
             type="button"
             className="pdf-page-fit-toggle"

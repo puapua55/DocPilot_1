@@ -105,7 +105,6 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   }));
 
   if (file) {
-    console.log('[DocumentViewer] file:', file);
     console.log('[DocumentViewer] viewerType:', viewerType);
     console.log('[selectedFile.name]', file.name);
     console.log('[selectedFile.size]', file.size);

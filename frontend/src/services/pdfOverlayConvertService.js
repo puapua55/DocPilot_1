@@ -53,8 +53,9 @@ function measurePdfText(font, text, size) {
 
 function drawPdfTextWithLetterSpacing(page, text, options, letterSpacing = 0, horizontalScale = 1) {
   const spacing = Number(letterSpacing) || 0;
-  const squeeze = Math.min(1, Math.max(0.01, Number(horizontalScale) || 1));
-  if (squeeze < 0.9999) {
+  const squeeze = Math.min(2, Math.max(0.01, Number(horizontalScale) || 1));
+  const scaled = Math.abs(squeeze - 1) > 0.0001;
+  if (scaled) {
     page.pushOperators(
       PDFOperator.of(PDFOperatorNames.PushGraphicsState),
       PDFOperator.of(PDFOperatorNames.BeginText),
@@ -67,7 +68,7 @@ function drawPdfTextWithLetterSpacing(page, text, options, letterSpacing = 0, ho
   // PDF matches the editor's CSS letter-spacing setting.
   if (!spacing || options.rotate?.angle) {
     page.drawText(text, options);
-    if (squeeze < 0.9999) page.pushOperators(PDFOperator.of(PDFOperatorNames.PopGraphicsState));
+    if (scaled) page.pushOperators(PDFOperator.of(PDFOperatorNames.PopGraphicsState));
     return;
   }
   let cursorX = options.x;
@@ -77,7 +78,7 @@ function drawPdfTextWithLetterSpacing(page, text, options, letterSpacing = 0, ho
     cursorX += options.font.widthOfTextAtSize(character, options.size) * squeeze;
     if (index < characters.length - 1) cursorX += spacing * squeeze;
   });
-  if (squeeze < 0.9999) page.pushOperators(PDFOperator.of(PDFOperatorNames.PopGraphicsState));
+  if (scaled) page.pushOperators(PDFOperator.of(PDFOperatorNames.PopGraphicsState));
 }
 
 function getRichRunLines(fontRuns = []) {
@@ -132,10 +133,30 @@ function getNextLineVector(rotation, distance) {
 }
 
 function drawPdfFontRuns(page, replacement, mapped) {
+  if (replacement.fitToBoxByLetterSpacing && replacement.fontRuns?.length === 1
+    && !String(replacement.text || '').includes('\n')) {
+    const run = replacement.fontRuns[0];
+    const glyphGaps = Math.max(0, [...String(run.text || '')].length - 1);
+    const runSize = mapped.fontSize * (Number(run.fontSize) || replacement.fontSize)
+      / Math.max(1, Number(replacement.fontSize) || 1);
+    // Letter-spaced text is drawn one glyph at a time, so measure those same
+    // glyph advances rather than the font's possibly kerned whole-string width.
+    const naturalWidth = [...String(run.text || '')].reduce((width, character) => (
+      width + (measurePdfText(run.replacementFont, character, runSize) || 0)
+    ), 0);
+    if (glyphGaps > 0 && naturalWidth != null && mapped.textBoxWidth > naturalWidth) {
+      run.letterSpacing = (mapped.textBoxWidth - naturalWidth) / glyphGaps;
+      run.autoLetterSpacing = true;
+    }
+  }
   const measureRun = (run) => {
     const size = mapped.fontSize * (Number(run.fontSize) || replacement.fontSize) / Math.max(1, Number(replacement.fontSize) || 1);
     const spacing = (Number(run.letterSpacing) || 0) * mapped.fontSize / Math.max(1, Number(replacement.fontSize) || 1);
-    const width = measurePdfText(run.replacementFont, run.text, size);
+    const width = run.autoLetterSpacing
+      ? [...String(run.text || '')].reduce((sum, character) => (
+        sum + (measurePdfText(run.replacementFont, character, size) || 0)
+      ), 0)
+      : measurePdfText(run.replacementFont, run.text, size);
     return { size, spacing, width: width == null ? 0 : width + spacing * Math.max(0, [...run.text].length - 1) };
   };
   const sourceLines = getRichRunLines(replacement.fontRuns || []);
@@ -155,8 +176,13 @@ function drawPdfFontRuns(page, replacement, mapped) {
     lineOffsets[index] = lineHeights.slice(0, index).reduce((sum, lineHeight) => sum + lineHeight, 0);
   });
   const maxLineWidth = Math.max(0, ...lineWidths);
-  const horizontalScale = !replacement.preserveFontSize && maxLineWidth > mapped.textBoxWidth && mapped.textBoxWidth > 0
-    ? mapped.textBoxWidth / maxLineWidth : 1;
+  const sourceAdvance = Number(replacement.sourceAdvanceWidth) * page.getWidth()
+    / Math.max(1, Number(replacement.sourcePageWidth));
+  const sourceScale = sourceAdvance > 0 && maxLineWidth > 0 ? sourceAdvance / maxLineWidth : 0;
+  const horizontalScale = sourceScale >= 0.8 && sourceScale <= 1.25
+    ? sourceScale
+    : !replacement.preserveFontSize && maxLineWidth > mapped.textBoxWidth && mapped.textBoxWidth > 0
+      ? mapped.textBoxWidth / maxLineWidth : 1;
   const fittedWidth = maxLineWidth * horizontalScale;
   replacement.renderBounds = {
     x: mapped.textX,
@@ -351,8 +377,10 @@ function collectMovableTextReplacements(movableTexts = []) {
       preferBoldFont: item.preferBoldFont === true,
       textDecoration: item.textDecoration || 'none',
       letterSpacing: Number(item.letterSpacing) || 0,
+      fitToBoxByLetterSpacing: item.fitToBoxByLetterSpacing === true,
       textAlign: item.textAlign || 'left',
       textBoxWidth: Number(item.fitTextWidth || item.originalRect?.width || item.currentRect?.width || 0),
+      sourceAdvanceWidth: item.manuallyResized ? null : Number(item.sourceAdvanceWidth) || null,
       backgroundColor: parseCssColor(item.backgroundColor, [255, 255, 255]),
       textColor: parseCssColor(item.color, [17, 17, 17]),
       type: item.type === 'addedText' ? 'added-text' : 'movable-text',
@@ -1033,6 +1061,7 @@ export async function buildPdfWithTextEdits({
     replacement.canReuseOriginalFont = outcome.canReuseOriginalFont === true;
     replacement.drawingCommands = outcome.drawingCommands;
     replacement.contentOrderAnchor = outcome.contentOrderAnchor || null;
+    replacement.contentOrderCtm = outcome.contentOrderCtm || null;
     if (replacement.contentOrderAnchor && replacement.drawingCommands) replacement.anchoredDrawingCommands = replacement.drawingCommands;
     if (Array.isArray(outcome.textColor) && outcome.textColor.length >= 3) replacement.textColor = outcome.textColor;
     replacement.sourceFullText = outcome.sourceFullText || replacement.sourceFullText;
@@ -1058,6 +1087,8 @@ export async function buildPdfWithTextEdits({
     replacement.sourceFont = outcome.sourceFont;
     replacement.canReuseOriginalFont = outcome.canReuseOriginalFont === true;
     replacement.drawingCommands = outcome.drawingCommands;
+    replacement.contentOrderAnchor = outcome.contentOrderAnchor || null;
+    replacement.contentOrderCtm = outcome.contentOrderCtm || null;
   });
   // Draw viewer highlights after the original page content has been loaded,
   // but before replacement covers/text, so highlights stay behind edited text.
@@ -1107,6 +1138,7 @@ export async function buildPdfWithTextEdits({
     const itemFontSource = replacement.fontSource || fontSource;
     if (!itemReplacementFont) return;
     if (replacement.fontRuns?.length > 0) {
+      if (replacement.contentOrderAnchor) resetPageDrawingStream(page);
       drawPdfFontRuns(page, replacement, mapped);
       if (replacement.contentOrderAnchor) replacement.anchoredDrawingCommands = capturePageDrawingStream(page);
       return;
@@ -1120,8 +1152,13 @@ export async function buildPdfWithTextEdits({
     // Canvas metrics used by the editor can differ from the embedded PDF font
     // metrics. Fit the final PDF glyph advances to the selected source box at
     // export time, preserving vertical size and baseline.
-    const horizontalScale = !replacement.preserveFontSize && measuredWidth > mapped.textBoxWidth && mapped.textBoxWidth > 0
-      ? mapped.textBoxWidth / measuredWidth : 1;
+    const sourceAdvance = Number(replacement.sourceAdvanceWidth) * page.getWidth()
+      / Math.max(1, Number(replacement.sourcePageWidth));
+    const sourceScale = sourceAdvance > 0 && measuredWidth > 0 ? sourceAdvance / measuredWidth : 0;
+    const horizontalScale = sourceScale >= 0.8 && sourceScale <= 1.25
+      ? sourceScale
+      : !replacement.preserveFontSize && measuredWidth > mapped.textBoxWidth && mapped.textBoxWidth > 0
+        ? mapped.textBoxWidth / measuredWidth : 1;
     const fittedWidth = measuredWidth == null ? null : measuredWidth * horizontalScale;
     applyTextAlignment(mapped, replacement, fittedWidth);
     const textColor = toPdfColor(replacement.textColor);

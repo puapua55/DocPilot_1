@@ -110,3 +110,53 @@ test('encrypted viewer PDF passes its settings through a plain PDF insertion', a
   expect((await toolkit.getInfo(bytes, { password: 'viewer-owner' })).encryption.ownerPasswordMatched).toBe(true);
   expect(await toolkit.pageCount(bytes)).toBe(2);
 });
+
+test('password-protected insertion asks for the password before encryption settings', async ({ page }) => {
+  test.setTimeout(90_000);
+  const toolkit = await createPdfToolkit();
+  const current = await toolkit.lock(await onePage(250), {
+    userPassword: '', ownerPassword: 'current-owner', keyLength: 256,
+    permissions: { print: 'none' }
+  });
+  const inserted = await toolkit.lock(await onePage(300), {
+    userPassword: 'insert-open', ownerPassword: 'insert-owner', keyLength: 256,
+    permissions: { print: 'full' }
+  });
+  await openPdf(page, 'current.pdf', current);
+  await page.getByRole('button', { name: '편집', exact: true }).click();
+  await page.locator('.pdf-page-tools-toggle').click();
+  await page.locator('.pdf-page-tools-tabs button').filter({ hasText: '삽입' }).click();
+  const fileInput = page.locator('#pdf-insert-file');
+  const insertButton = page.locator('.pdf-page-insert-actions .viewer-download-button');
+  const chooseInserted = () => fileInput.setInputFiles({
+    name: 'inserted.pdf', mimeType: 'application/pdf', buffer: Buffer.from(inserted)
+  });
+  await chooseInserted();
+  await insertButton.click();
+  const passwordDialog = page.getByRole('dialog', { name: 'PDF 비밀번호 입력' });
+  await expect(passwordDialog).toBeVisible();
+  await expect(page.getByRole('dialog', { name: '합본 암호화 설정 선택' })).toHaveCount(0);
+  await passwordDialog.getByRole('button', { name: '취소' }).click();
+  await expect(page.locator('.pdf-page-position-bar')).toContainText('1');
+
+  await chooseInserted();
+  await insertButton.click();
+  await passwordDialog.getByRole('textbox', { name: 'PDF 열기 비밀번호' }).fill('wrong');
+  await passwordDialog.getByRole('button', { name: '확인' }).click();
+  await expect(passwordDialog.getByRole('alert')).toContainText('비밀번호가 올바르지 않습니다');
+  await passwordDialog.getByRole('textbox', { name: 'PDF 열기 비밀번호' }).fill('insert-open');
+  await passwordDialog.getByRole('button', { name: '확인' }).click();
+  const choice = page.getByRole('dialog', { name: '합본 암호화 설정 선택' });
+  await expect(passwordDialog).toHaveCount(0);
+  await expect(choice).toBeVisible();
+  await choice.getByRole('button', { name: /삽입할 PDF 설정/ }).click();
+  await expect(page.locator('.pdf-page-position-bar')).toContainText('2');
+  await page.locator('.viewer-download-actions .viewer-download-button.pdf').first().click();
+  await expect(page.getByRole('radio', { name: /원본 설정 승계.*inserted\.pdf/ })).toBeChecked();
+  const output = await downloadPdf(page);
+  expect(await toolkit.requiresPassword(output)).toBe(true);
+  const info = await toolkit.getInfo(output, { password: 'insert-owner' });
+  expect(info.pageCount).toBe(2);
+  expect(info.encryption.ownerPasswordMatched).toBe(true);
+  expect(info.encryption.permissions.print).toBe(true);
+});
