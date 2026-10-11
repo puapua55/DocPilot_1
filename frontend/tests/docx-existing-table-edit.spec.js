@@ -12,7 +12,8 @@ test('existing Word table remains selected and its cell can be edited', async ({
   await expect(page.locator('.docx-table-toolbar')).toBeVisible();
   await table.dispatchEvent('click');
   await expect(page.locator('.docx-table-toolbar')).toBeVisible();
-  await page.locator('.docx-table-toolbar').getByLabel('셀 색').fill('#ffcc00');
+  await page.locator('.docx-table-toolbar').getByRole('tab', { name: '셀 서식' }).click();
+  await page.locator('.docx-table-toolbar').getByLabel('셀 배경색').fill('#ffcc00');
   await expect(page.locator('.docx-table-toolbar')).toBeVisible();
   const secondTable = page.locator('.docx-content section.docx table').nth(1);
   await secondTable.locator('td, th').first().click();

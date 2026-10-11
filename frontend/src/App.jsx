@@ -9,6 +9,7 @@ import SearchModal from './components/SearchModal';
 import { useChat } from './hooks/useChat';
 import { useDocument } from './hooks/useDocument';
 import { searchKeywordInDocument } from './services/searchService';
+import { findSimilarDocumentTexts } from './services/similarTextSearch';
 
 function normalizeCount(result) {
   if (typeof result === 'number') return result;
@@ -90,28 +91,36 @@ function App() {
   const [highlightStatusMessage, setHighlightStatusMessage] = useState('');
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
   const [runningActionId, setRunningActionId] = useState(null);
+  const [pendingSimilarSearch, setPendingSimilarSearch] = useState(null);
   const [pageStructureHistory, setPageStructureHistory] = useState({ past: [], future: [] });
   const [protectedPdfFile, setProtectedPdfFile] = useState(null);
   const { selectedDocument, previewModel, documentText, errorMessage, handleDocumentSelect, clearSelectedDocument } = useDocument();
-  const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage } = useChat(selectedDocument, previewModel, documentViewerRef, isEditMode);
+  const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage, appendUserMessage } = useChat(selectedDocument, previewModel, documentViewerRef, isEditMode);
+  const isPdfEditRestricted = previewModel?.type === 'pdf' && selectedDocument?.file?.docPilotEditRestricted === true;
+  const pdfEditRestrictedMessage = '이 PDF는 비밀번호 없이 열리는 암호화 문서이므로 편집할 수 없습니다.';
 
   useEffect(() => { console.log('[App] highlightKeyword:', highlightKeyword); }, [highlightKeyword]);
   useEffect(() => { console.log('[App] selectedSearchResult:', selectedSearchResult); }, [selectedSearchResult]);
 
   const resetDocumentViewState = () => {
     setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsBatchReplaceModalOpen(false); setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null);
-    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setIsEditMode(false); setPageStructureHistory({ past: [], future: [] }); setProtectedPdfFile(null); clearSelectedDocument();
+    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setPendingSimilarSearch(null); setIsEditMode(false); setPageStructureHistory({ past: [], future: [] }); setProtectedPdfFile(null); clearSelectedDocument();
   };
 
   const handleNewDocumentSelect = async (file) => {
+    setPendingSimilarSearch(null);
     setPageStructureHistory({ past: [], future: [] });
+    setIsHighlightModalOpen(false);
+    setIsBatchReplaceModalOpen(false);
+    setIsEditMode(false);
     if (file?.name?.toLowerCase().endsWith('.pdf')) {
       try {
-        const { requiresPdfPassword } = await import('./services/pdfEncryption.js');
+        const { requiresPdfPassword, isPdfEncrypted } = await import('./services/pdfEncryption.js');
         if (await requiresPdfPassword(file)) {
           setProtectedPdfFile(file);
           return;
         }
+        file.docPilotEditRestricted = await isPdfEncrypted(file);
       } catch (error) {
         // Let the regular viewer report damaged or unsupported PDFs.
         console.warn('[App] PDF password check failed:', error);
@@ -169,6 +178,7 @@ function App() {
   };
 
   const handleHighlightSearch = async (keyword, options = {}) => {
+    if (isPdfEditRestricted) return { ok: false, message: pdfEditRestrictedMessage, count: 0, results: [] };
     if (!selectedDocument) {
       return {
         ok: false,
@@ -236,6 +246,7 @@ function App() {
   };
 
   const handleVisualPdfConvert = async (payload = {}) => {
+    if (isPdfEditRestricted) throw new Error(pdfEditRestrictedMessage);
     const replacement = payload?.replacement || payload;
     const movableTexts = Array.isArray(payload?.movableTexts) ? payload.movableTexts : [];
     const highlights = Array.isArray(payload?.highlights) ? payload.highlights : [];
@@ -253,6 +264,7 @@ function App() {
   };
 
   const handlePdfPagesChanged = async ({ sourceBytes, outputBytes, action, containsEncryptedSource = false, encryptionSource = undefined }) => {
+    if (isPdfEditRestricted) throw new Error(pdfEditRestrictedMessage);
     if (!selectedDocument?.file || !sourceBytes?.byteLength || !outputBytes?.byteLength) throw new Error('변경된 PDF 데이터를 만들지 못했습니다.');
     const previousFile = new File([sourceBytes], selectedDocument.file.name, {
       type: 'application/pdf',
@@ -298,6 +310,7 @@ function App() {
   };
 
   const handleBatchReplaceApply = async (originalText, newText, options = {}) => {
+    if (isPdfEditRestricted) throw new Error(pdfEditRestrictedMessage);
     if (!isEditMode) throw new Error('편집모드를 활성화 해주세요');
     if (!selectedDocument?.file) throw new Error('먼저 문서를 선택해주세요.');
     if (!documentViewerRef.current?.replaceText) throw new Error('현재 문서 뷰어에서 텍스트 변경을 지원하지 않습니다.');
@@ -393,6 +406,17 @@ function App() {
     finally { setRunningActionId(null); }
   };
 
+  const askSimilarSearchQuestion = (candidates, index, originalKeyword, documentFile) => {
+    if (index >= candidates.length) {
+      setPendingSimilarSearch(null);
+      appendAssistantMessage(`'${originalKeyword}'와 비슷한 문구를 더 찾지 못했습니다.`);
+      return;
+    }
+    const questionId = `similar-search-${Date.now()}-${Math.random()}`;
+    setPendingSimilarSearch({ questionId, candidates, index, originalKeyword, documentFile });
+    appendAssistantMessage(`찾으려는 텍스트가 '${candidates[index]}'인가요?`, { id: questionId });
+  };
+
   const executeSearchAction = async (messageId, action) => {
     if (!validateKeywordAction(action)) return;
     await runAction(messageId, 'search', async () => {
@@ -405,6 +429,19 @@ function App() {
       const rawResult = await handleDocumentSearch(action.keyword, { matchMode: 'contains' });
       const results = getSearchResults(rawResult);
       const count = results.length || normalizeCount(rawResult);
+      if (count === 0 && !action.skipSimilarSearch) {
+        let segments = [];
+        try {
+          segments = await documentViewerRef.current?.getSearchableTextSegments?.() || [];
+        } catch (error) {
+          console.warn('[App] similar text source unavailable:', error);
+        }
+        const candidates = findSimilarDocumentTexts(segments, action.keyword);
+        if (candidates.length) {
+          askSimilarSearchQuestion(candidates, 0, action.keyword, selectedDocument?.file);
+          return;
+        }
+      }
       const visibleResults = results.slice(0, 20);
       const hasMoreResults = results.length > visibleResults.length;
       appendAssistantMessage(
@@ -417,6 +454,40 @@ function App() {
         }
       );
     });
+  };
+
+  const answerSimilarSearch = async (questionId, accepted, fromChat = false) => {
+    const pending = pendingSimilarSearch;
+    if (!pending || pending.questionId !== questionId || pending.documentFile !== selectedDocument?.file) return;
+    if (!fromChat) appendUserMessage(accepted ? '맞아요' : '아니요');
+    setPendingSimilarSearch(null);
+    if (accepted) {
+      await executeSearchAction(questionId, {
+        keyword: pending.candidates[pending.index],
+        skipSimilarSearch: true
+      });
+    } else {
+      askSimilarSearchQuestion(pending.candidates, pending.index + 1,
+        pending.originalKeyword, pending.documentFile);
+    }
+  };
+
+  const handleChatMessage = (message) => {
+    const answer = String(message || '').trim();
+    if (pendingSimilarSearch?.documentFile === selectedDocument?.file) {
+      if (/^(네|예|응|맞아|맞아요|맞습니다|그거야|yes|y)$/iu.test(answer)) {
+        appendUserMessage(answer);
+        void answerSimilarSearch(pendingSimilarSearch.questionId, true, true);
+        return;
+      }
+      if (/^(아니|아니요|아닙니다|다음|no|n)$/iu.test(answer)) {
+        appendUserMessage(answer);
+        void answerSimilarSearch(pendingSimilarSearch.questionId, false, true);
+        return;
+      }
+    }
+    setPendingSimilarSearch(null);
+    void handleSendMessage(message);
   };
 
   const executeHighlightAction = async (messageId, action) => {
@@ -447,6 +518,7 @@ function App() {
 
   const executeBatchReplaceAction = async (messageId, action) => {
     if (!requireDocumentForAction()) return;
+    if (isPdfEditRestricted) { appendAssistantMessage(pdfEditRestrictedMessage); return; }
     if (!isEditMode) {
       appendAssistantMessage('편집모드를 활성화 해주세요');
       return;
@@ -495,8 +567,8 @@ function App() {
 
   const appContent = (
     <div className="app-page" onPointerDown={handleTemporarySearchDismiss}><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
-      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} isEditMode={isEditMode} onEditModeChange={setIsEditMode} onDocumentSelect={handleNewDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} onPdfPagesChanged={handlePdfPagesChanged} onUndoPdfPageChange={undoPdfPageChange} onRedoPdfPageChange={redoPdfPageChange} onPdfDocumentChanged={() => setPageStructureHistory((history) => history.future.length ? { ...history, future: [] } : history)} canUndoPdfPageChange={pageStructureHistory.past.length > 0} canRedoPdfPageChange={pageStructureHistory.future.length > 0} />
-      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} isEditMode={isEditMode} onSendMessage={handleSendMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => setIsHighlightModalOpen(true)} onBatchReplaceCardClick={() => { if (!isEditMode) { appendAssistantMessage('편집모드를 활성화 해주세요'); return; } setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); setIsBatchReplaceModalOpen(true); }} onSearchResultClick={handleSearchResultClick} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteBatchReplaceAction={executeBatchReplaceAction} />
+      <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} isEditMode={isEditMode && !isPdfEditRestricted} isPdfEditRestricted={isPdfEditRestricted} onEditModeChange={(enabled) => setIsEditMode(enabled && !isPdfEditRestricted)} onDocumentSelect={handleNewDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} onPdfPagesChanged={handlePdfPagesChanged} onUndoPdfPageChange={undoPdfPageChange} onRedoPdfPageChange={redoPdfPageChange} onPdfDocumentChanged={() => setPageStructureHistory((history) => history.future.length ? { ...history, future: [] } : history)} canUndoPdfPageChange={pageStructureHistory.past.length > 0} canRedoPdfPageChange={pageStructureHistory.future.length > 0} />
+      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} activeSuggestionId={pendingSimilarSearch?.questionId} isEditMode={isEditMode && !isPdfEditRestricted} isPdfEditRestricted={isPdfEditRestricted} onSendMessage={handleChatMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => { if (isPdfEditRestricted) return; setIsHighlightModalOpen(true); }} onBatchReplaceCardClick={() => { if (isPdfEditRestricted) { appendAssistantMessage(pdfEditRestrictedMessage); return; } if (!isEditMode) { appendAssistantMessage('편집모드를 활성화 해주세요'); return; } setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); setIsBatchReplaceModalOpen(true); }} onSearchResultClick={handleSearchResultClick} onSuggestionAnswer={answerSimilarSearch} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteBatchReplaceAction={executeBatchReplaceAction} />
     </main></div>
     {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
     <HighlightModal

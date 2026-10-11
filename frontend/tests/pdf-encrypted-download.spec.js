@@ -17,9 +17,12 @@ async function openPdf(page, name, bytes) {
 }
 
 async function insertPdf(page, name, bytes) {
-  await page.getByRole('button', { name: '편집', exact: true }).click();
-  await page.locator('.pdf-page-tools-toggle').click();
-  await page.locator('.pdf-page-tools-tabs button').filter({ hasText: '삽입' }).click();
+  const editButton = page.getByRole('button', { name: '편집', exact: true });
+  if (await editButton.getAttribute('aria-pressed') !== 'true') await editButton.click();
+  if (!await page.locator('.pdf-page-tools').isVisible()) await page.locator('.pdf-page-tools-toggle').click();
+  if (!await page.locator('#pdf-insert-file').isVisible()) {
+    await page.locator('.pdf-page-tools-tabs button').filter({ hasText: '삽입' }).click();
+  }
   await page.locator('#pdf-insert-file').setInputFiles({
     name, mimeType: 'application/pdf', buffer: Buffer.from(bytes)
   });
@@ -77,7 +80,9 @@ test('two encrypted sources prompt for the settings to inherit', async ({ page }
     userPassword: '', ownerPassword: 'second-owner', keyLength: 256,
     permissions: { print: 'full', extract: true }
   });
-  await openPdf(page, 'first.pdf', first);
+  await openPdf(page, 'plain.pdf', await onePage());
+  await insertPdf(page, 'first.pdf', first);
+  await expect(page.locator('.pdf-page-position-bar')).toContainText('2');
   await insertPdf(page, 'second.pdf', second);
   const choice = page.getByRole('dialog', { name: '합본 암호화 설정 선택' });
   await expect(choice).toBeVisible();
@@ -87,14 +92,14 @@ test('two encrypted sources prompt for the settings to inherit', async ({ page }
   await expect(page.getByRole('radio', { name: /원본 설정 승계.*second\.pdf/ })).toBeChecked();
   const bytes = await downloadPdf(page);
   const info = await toolkit.getInfo(bytes);
-  expect(info.pageCount).toBe(2);
+  expect(info.pageCount).toBe(3);
   expect(info.encryption.permissions.print).toBe(true);
   expect(info.encryption.permissions.extract).toBe(true);
   expect((await toolkit.getInfo(bytes, { password: 'second-owner' })).encryption.ownerPasswordMatched).toBe(true);
   await expect(toolkit.getInfo(bytes, { password: 'first-owner' })).rejects.toThrow();
 });
 
-test('encrypted viewer PDF passes its settings through a plain PDF insertion', async ({ page }) => {
+test('encrypted viewer PDF stays read-only and preserves its encryption on download', async ({ page }) => {
   test.setTimeout(90_000);
   const toolkit = await createPdfToolkit();
   const encrypted = await toolkit.lock(await onePage(250), {
@@ -102,13 +107,12 @@ test('encrypted viewer PDF passes its settings through a plain PDF insertion', a
     permissions: { print: 'none', extract: false }
   });
   await openPdf(page, 'encrypted.pdf', encrypted);
-  await insertPdf(page, 'plain.pdf', await onePage());
-  await expect(page.getByRole('dialog', { name: '합본 암호화 설정 선택' })).toHaveCount(0);
+  await expect(page.locator('.pdf-edit-mode-toggle button').last()).toBeDisabled();
   await page.locator('.viewer-download-actions .viewer-download-button.pdf').first().click();
   await expect(page.getByRole('radio', { name: /원본 설정 승계.*encrypted\.pdf/ })).toBeChecked();
   const bytes = await downloadPdf(page);
   expect((await toolkit.getInfo(bytes, { password: 'viewer-owner' })).encryption.ownerPasswordMatched).toBe(true);
-  expect(await toolkit.pageCount(bytes)).toBe(2);
+  expect(await toolkit.pageCount(bytes)).toBe(1);
 });
 
 test('password-protected insertion asks for the password before encryption settings', async ({ page }) => {
@@ -122,10 +126,9 @@ test('password-protected insertion asks for the password before encryption setti
     userPassword: 'insert-open', ownerPassword: 'insert-owner', keyLength: 256,
     permissions: { print: 'full' }
   });
-  await openPdf(page, 'current.pdf', current);
-  await page.getByRole('button', { name: '편집', exact: true }).click();
-  await page.locator('.pdf-page-tools-toggle').click();
-  await page.locator('.pdf-page-tools-tabs button').filter({ hasText: '삽입' }).click();
+  await openPdf(page, 'plain.pdf', await onePage());
+  await insertPdf(page, 'current.pdf', current);
+  await expect(page.locator('.pdf-page-position-bar')).toContainText('2');
   const fileInput = page.locator('#pdf-insert-file');
   const insertButton = page.locator('.pdf-page-insert-actions .viewer-download-button');
   const chooseInserted = () => fileInput.setInputFiles({
@@ -137,7 +140,7 @@ test('password-protected insertion asks for the password before encryption setti
   await expect(passwordDialog).toBeVisible();
   await expect(page.getByRole('dialog', { name: '합본 암호화 설정 선택' })).toHaveCount(0);
   await passwordDialog.getByRole('button', { name: '취소' }).click();
-  await expect(page.locator('.pdf-page-position-bar')).toContainText('1');
+  await expect(page.locator('.pdf-page-position-bar')).toContainText('2');
 
   await chooseInserted();
   await insertButton.click();
@@ -150,13 +153,13 @@ test('password-protected insertion asks for the password before encryption setti
   await expect(passwordDialog).toHaveCount(0);
   await expect(choice).toBeVisible();
   await choice.getByRole('button', { name: /삽입할 PDF 설정/ }).click();
-  await expect(page.locator('.pdf-page-position-bar')).toContainText('2');
+  await expect(page.locator('.pdf-page-position-bar')).toContainText('3');
   await page.locator('.viewer-download-actions .viewer-download-button.pdf').first().click();
   await expect(page.getByRole('radio', { name: /원본 설정 승계.*inserted\.pdf/ })).toBeChecked();
   const output = await downloadPdf(page);
   expect(await toolkit.requiresPassword(output)).toBe(true);
   const info = await toolkit.getInfo(output, { password: 'insert-owner' });
-  expect(info.pageCount).toBe(2);
+  expect(info.pageCount).toBe(3);
   expect(info.encryption.ownerPasswordMatched).toBe(true);
   expect(info.encryption.permissions.print).toBe(true);
 });

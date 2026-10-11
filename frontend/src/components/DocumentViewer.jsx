@@ -20,6 +20,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   replacePreview,
   selectedSearchResult,
   isEditMode = false,
+  isPdfEditRestricted = false,
   onEditModeChange,
   onClose,
   onChangeFile,
@@ -51,6 +52,9 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     },
     searchDocument(keyword, options) {
       return viewerRef.current?.searchDocument?.(keyword, options) ?? [];
+    },
+    getSearchableTextSegments() {
+      return viewerRef.current?.getSearchableTextSegments?.() ?? [];
     },
     getPdfHighlights() {
       return viewerRef.current?.getPdfHighlights?.() ?? [];
@@ -209,6 +213,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
           replacePreview={replacePreview}
           selectedSearchResult={selectedSearchResult}
           isEditMode={isEditMode}
+          isPdfEditRestricted={isPdfEditRestricted}
           onEditModeChange={onEditModeChange}
           scale={scale}
           onFitScaleChange={setPdfFitScale}

@@ -11,6 +11,7 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
   selectedSearchResult,
   errorMessage,
   isEditMode,
+  isPdfEditRestricted,
   onEditModeChange,
   onDocumentSelect,
   onDocumentClear,
@@ -35,6 +36,7 @@ const DocumentWorkspace = forwardRef(function DocumentWorkspace({
           replacePreview={replacePreview}
           selectedSearchResult={selectedSearchResult}
           isEditMode={isEditMode}
+          isPdfEditRestricted={isPdfEditRestricted}
           onEditModeChange={onEditModeChange}
           onClose={onDocumentClear}
           onChangeFile={onDocumentSelect}

@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import PdfPage from './PdfPage';
 import PdfDownloadPreview from './PdfDownloadPreview';
 import PdfEncryptionChoice from './PdfEncryptionChoice';
@@ -761,7 +762,7 @@ function collectInstantReplacementReviewItems(viewScale = 1) {
   });
 }
 
-const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, onFitScaleChange, onResetZoom, toolbarActions, onVisualConvert, onPagesChanged, onUndoPageChange, onRedoPageChange, onDocumentChanged, canUndoPageChange = false, canRedoPageChange = false, isEditMode = false, onEditModeChange }, ref) {
+const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, selectedSearchResult, replacePreview, scale = 1, onFitScaleChange, onResetZoom, toolbarActions, onVisualConvert, onPagesChanged, onUndoPageChange, onRedoPageChange, onDocumentChanged, canUndoPageChange = false, canRedoPageChange = false, isEditMode = false, isPdfEditRestricted = false, onEditModeChange }, ref) {
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumbers, setPageNumbers] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
@@ -801,6 +802,28 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [textMoveMode, setTextMoveMode] = useState(false);
   const [textAddMode, setTextAddMode] = useState(false);
   const [tableAddMode, setTableAddMode] = useState(false);
+  const [tablePickerOpen, setTablePickerOpen] = useState(false);
+  const [tablePickerSize, setTablePickerSize] = useState({ rows: 3, columns: 3 });
+  const tablePickerRef = useRef(null);
+  const [tablePasteMenu, setTablePasteMenu] = useState(null);
+  useEffect(() => {
+    if (!tablePickerOpen) return undefined;
+    const dismiss = (event) => {
+      if (!tablePickerRef.current?.contains(event.target)) setTablePickerOpen(false);
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [tablePickerOpen]);
+  useEffect(() => {
+    if (!tablePasteMenu) return undefined;
+    const dismiss = (event) => {
+      if (!event.target.closest?.('.pdf-table-context-menu')) setTablePasteMenu(null);
+    };
+    const escape = (event) => { if (event.key === 'Escape') setTablePasteMenu(null); };
+    document.addEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape); };
+  }, [tablePasteMenu]);
   const [textReplaceMode, setTextReplaceMode] = useState(false);
   const [areaTextReplaceMode, setAreaTextReplaceMode] = useState(false);
   const [movableTexts, setMovableTexts] = useState([]);
@@ -1876,8 +1899,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   };
 
   const addTable = (item) => {
-    const width = Math.min(item.sourcePageWidth, Math.max(120, item.currentRect.width));
-    const height = Math.min(item.sourcePageHeight, Math.max(66, item.currentRect.height));
+    const rows = item.rows || tablePickerSize.rows;
+    const columns = item.columns || tablePickerSize.columns;
+    const width = Math.min(item.sourcePageWidth, Math.max(120, columns * 40, item.currentRect.width));
+    const height = Math.min(item.sourcePageHeight, Math.max(66, rows * 22, item.currentRect.height));
     const table = {
       ...item,
       currentRect: {
@@ -1886,8 +1911,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         width, height
       },
       id: `pdf-table-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      rows: 3, columns: 3, cells: Array(9).fill(''), cellStyles: Array(9).fill(null),
-      rowHeights: Array(3).fill(1 / 3), columnWidths: Array(3).fill(1 / 3), spans: [],
+      rows, columns,
+      cells: Array(rows * columns).fill(''),
+      cellStyles: Array(rows * columns).fill(null),
+      rowHeights: Array(rows).fill(1 / rows),
+      columnWidths: Array(columns).fill(1 / columns), spans: [],
       fontSize: 10, borderWidth: 1, borderColor: '#000000', headerFill: '#ffffff',
       persistedToPdf: false
     };
@@ -1898,6 +1926,21 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setTableAddMode(false);
     setAreaTextReplaceMode(true);
     commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId, next, null);
+  };
+  const insertPickedTable = (rows, columns) => {
+    const pageNumber = getVisiblePageNumber();
+    const pageElement = Array.from(viewerRef.current?.querySelectorAll('.pdf-page[data-page-number]') || [])
+      .find((page) => Number(page.dataset.pageNumber) === pageNumber);
+    if (!pageElement) return;
+    const rect = pageElement.getBoundingClientRect();
+    const pageWidth = rect.width / effectiveScale;
+    const pageHeight = rect.height / effectiveScale;
+    const width = Math.min(pageWidth, Math.max(120, columns * 40, 300));
+    const height = Math.min(pageHeight, Math.max(66, rows * 22, 108));
+    addTable({ pageNumber, rows, columns, sourcePageWidth: pageWidth, sourcePageHeight: pageHeight,
+      currentRect: { x: Math.max(0, (pageWidth - width) / 2), y: Math.min(60, Math.max(0, pageHeight - height)), width, height } });
+    setTablePickerSize({ rows, columns });
+    setTablePickerOpen(false);
   };
   const updateTable = (id, changes, commit = false) => {
     const next = tables.map((table) => table.id === id ? { ...table, ...changes, hasChanges: Object.keys(changes).length ? true : table.hasChanges } : table);
@@ -1962,12 +2005,21 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     }
   };
 
-  const pasteCopiedTable = () => {
+  const pasteCopiedTable = (target = null) => {
     if (!copiedPdfTable) return;
     const id = `pdf-table-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     copiedPdfTable.pastes += 1;
     const table = duplicateTable(copiedPdfTable.table, id, 24 * copiedPdfTable.pastes);
-    table.pageNumber = pageNumbers.includes(table.pageNumber) ? table.pageNumber : currentPage;
+    table.pageNumber = target?.pageNumber || (pageNumbers.includes(table.pageNumber) ? table.pageNumber : currentPage);
+    if (target) {
+      table.sourcePageWidth = target.pageWidth;
+      table.sourcePageHeight = target.pageHeight;
+    }
+    if (target) table.currentRect = {
+      ...table.currentRect,
+      x: Math.max(0, Math.min(target.x, table.sourcePageWidth - table.currentRect.width)),
+      y: Math.max(0, Math.min(target.y, table.sourcePageHeight - table.currentRect.height))
+    };
     const next = [...tables, table];
     setTables(next);
     setSelectedTableId(id);
@@ -2356,6 +2408,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         [...sourceResults, ...replacementResults], movableTexts
       );
     },
+    async getSearchableTextSegments() {
+      const pages = await ensurePdfTextPages();
+      return [
+        ...pages.flatMap((page) => page.lines.map((line) => ({ text: line.text }))),
+        ...movableTexts.map((item) => ({ text: getReplacementSearchText(item) }))
+      ];
+    },
     getPdfHighlights() {
       return Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
         const pageWidth = pageElement.clientWidth || pageElement.getBoundingClientRect().width;
@@ -2545,7 +2604,6 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       if (sourceResults.length) {
         // Resolve each hit to a browser Range in PdfPage. This reuses the
         // manual drag-selection geometry instead of the line preview path.
-        setViewMode('scroll');
         setAppliedReplacePreview(null);
         const requestId = `batch-range-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         batchHandledPagesRef.current.delete(requestId);
@@ -2841,6 +2899,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     return <div className="pdf-loading" role="alert">{errorMessage}</div>;
   }
 
+  const batchTargetPageNumbers = new Set((batchReplaceRequest?.targets || [])
+    .map((target) => Number(target.pageNumber ?? target.page)));
+
   if (!pdfDocument) {
     return <div className="pdf-loading">PDF 미리보기를 준비 중입니다...</div>;
   }
@@ -2849,7 +2910,22 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     <div
       className={`pdf-viewer-shell pdf-viewer-${pageOrientation}`}
       data-page-ratio={pdfPageSize.width && pdfPageSize.height ? (pdfPageSize.width / pdfPageSize.height).toFixed(4) : undefined}
+      onContextMenu={(event) => {
+        if (!isEditMode || !copiedPdfTable || event.target.closest('.pdf-table-object')) return;
+        const page = event.target.closest('.pdf-page[data-page-number]');
+        if (!page) return;
+        event.preventDefault();
+        const rect = page.getBoundingClientRect();
+        setTablePasteMenu({ pageNumber: Number(page.dataset.pageNumber),
+          x: (event.clientX - rect.left) / effectiveScale, y: (event.clientY - rect.top) / effectiveScale,
+          pageWidth: rect.width / effectiveScale, pageHeight: rect.height / effectiveScale,
+          screenX: Math.min(event.clientX, window.innerWidth - 150), screenY: Math.min(event.clientY, window.innerHeight - 45) });
+      }}
     >
+      {tablePasteMenu ? createPortal(<div className="pdf-table-context-menu" role="menu" aria-label="페이지 메뉴"
+        style={{ left: tablePasteMenu.screenX, top: tablePasteMenu.screenY }}>
+        <button type="button" role="menuitem" onClick={() => { pasteCopiedTable(tablePasteMenu); setTablePasteMenu(null); }}>표 붙여넣기</button>
+      </div>, document.body) : null}
       <div className="pdf-view-mode-controls document-toolbar" aria-label="PDF 보기 방식">
         <div className="pdf-view-mode-toggle-group">
           {pageNumbers.length > 1 ? (
@@ -2860,8 +2936,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           ) : null}
           <div className="pdf-edit-mode-toggle" role="group" aria-label="문서 모드 선택">
             <button type="button" className={!isEditMode ? 'active' : ''} onClick={() => onEditModeChange?.(false)} aria-pressed={!isEditMode}>뷰어</button>
-            <button type="button" className={isEditMode ? 'active' : ''} onClick={() => onEditModeChange?.(true)} aria-pressed={isEditMode}>편집</button>
+            <button type="button" className={isEditMode ? 'active' : ''} onClick={() => onEditModeChange?.(true)} aria-pressed={isEditMode} disabled={isPdfEditRestricted} title={isPdfEditRestricted ? '암호화된 PDF는 편집할 수 없습니다.' : undefined}>편집</button>
           </div>
+          {isPdfEditRestricted ? <span className="pdf-readonly-notice" role="status">암호화 PDF · 편집 제한</span> : null}
         </div>
         {isEditMode ? <div className="pdf-document-history" role="group" aria-label="PDF 편집 도구">
           <button type="button" onClick={undoDocumentChange} disabled={!isEditMode || downloadStatus !== 'idle' || (!historyState.canUndo && !canUndoPageChange)} aria-label="적용 전으로 되돌리기">&lt;</button>
@@ -2908,24 +2985,45 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           >
             텍스트 추가
           </button>
+          <div className="pdf-table-picker" ref={tablePickerRef}>
           <button
             type="button"
             className={`pdf-text-move-button ${tableAddMode ? 'active' : ''}`}
             disabled={!isEditMode}
-            aria-pressed={tableAddMode}
-            title="PDF에서 드래그해 표 영역을 지정합니다."
+            aria-expanded={tablePickerOpen}
+            title="행과 열을 선택해 현재 페이지에 표를 삽입합니다."
             onClick={() => {
               if (editingMovableText) commitEditMovableText();
-              const next = !tableAddMode;
-              setTableAddMode(next);
+              setTablePickerOpen((open) => !open);
+              setTableAddMode(false);
               setTextAddMode(false);
               setTextMoveMode(false);
               setTextReplaceMode(false);
-              setAreaTextReplaceMode(!next);
+              setAreaTextReplaceMode(true);
               setSelectedMovableTextId(null);
               setSelectedImageId(null);
             }}
           >표 추가</button>
+          {tablePickerOpen && <div className="pdf-table-picker-panel" role="dialog" aria-label="PDF 표 만들기">
+            <strong>{tablePickerSize.rows}행 × {tablePickerSize.columns}열</strong>
+            <div className="pdf-table-picker-grid">
+              {Array.from({ length: 8 }, (_, row) => Array.from({ length: 10 }, (_, column) =>
+                <button key={`${row}-${column}`} type="button" aria-label={`${row + 1}행 ${column + 1}열 선택`}
+                  className={row < tablePickerSize.rows && column < tablePickerSize.columns ? 'is-active' : ''}
+                  onMouseEnter={() => setTablePickerSize({ rows: row + 1, columns: column + 1 })}
+                  onFocus={() => setTablePickerSize({ rows: row + 1, columns: column + 1 })}
+                  onClick={() => insertPickedTable(row + 1, column + 1)} />))}
+            </div>
+            <form className="pdf-table-picker-custom" onSubmit={(event) => { event.preventDefault(); insertPickedTable(tablePickerSize.rows, tablePickerSize.columns); }}>
+              <span>표 만들기</span>
+              <label>행 <input type="number" min="1" max="30" value={tablePickerSize.rows}
+                onChange={(event) => setTablePickerSize((size) => ({ ...size, rows: Math.max(1, Math.min(30, Number(event.target.value) || 1)) }))} /></label>
+              <label>열 <input type="number" min="1" max="20" value={tablePickerSize.columns}
+                onChange={(event) => setTablePickerSize((size) => ({ ...size, columns: Math.max(1, Math.min(20, Number(event.target.value) || 1)) }))} /></label>
+              <button type="submit">삽입</button>
+            </form>
+          </div>}
+          </div>
           <button type="button" className="pdf-text-move-button" disabled={!isEditMode} onClick={() => {
             const pageNumber = getVisiblePageNumber();
             imageTargetPageRef.current = pageNumber;
@@ -3132,7 +3230,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       <div ref={viewerRef} className="document-body-scroll pdf-viewer pdf-viewer-scroll" onScroll={scheduleScrollPageUpdate}>
         <div className="pdf-viewer-stack">
           {pageNumbers.map((pageNumber) => (
-            <div key={pageNumber} hidden={viewMode === 'page' && currentPage !== pageNumber}>
+            <div
+              key={pageNumber}
+              className={viewMode === 'page' && currentPage !== pageNumber && batchTargetPageNumbers.has(pageNumber)
+                ? 'pdf-page-batch-target-offscreen' : undefined}
+              hidden={viewMode === 'page' && currentPage !== pageNumber && !batchTargetPageNumbers.has(pageNumber)}
+            >
               <PdfPage
                 pdf={pdfDocument}
                 pageNumber={pageNumber}

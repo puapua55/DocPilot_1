@@ -93,8 +93,9 @@ function ChatBatchReplaceResults({ results, replacementText }) {
 function AssistantPanel({
   messages, loading, error, selectedDocument, runningActionId, onSendMessage,
   isEditMode = false,
+  isPdfEditRestricted = false,
   onSearchCardClick, onHighlightCardClick, onBatchReplaceCardClick,
-  onSearchResultClick,
+  onSearchResultClick, onSuggestionAnswer, activeSuggestionId,
   onExecuteSearchAction, onExecuteHighlightAction, onExecuteBatchReplaceAction
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -135,7 +136,7 @@ function AssistantPanel({
 
   const getCardActionProps = (index) => {
     const handler = [onSearchCardClick, onHighlightCardClick, onBatchReplaceCardClick][index];
-    const disabled = index === 2 && !isEditMode;
+    const disabled = (index === 1 && isPdfEditRestricted) || (index === 2 && (!isEditMode || isPdfEditRestricted));
     return {
       className: `feature-card feature-card-actionable${disabled ? ' is-disabled' : ''}`,
       onClick: disabled ? undefined : handler, role: 'button', tabIndex: disabled ? -1 : 0,
@@ -191,11 +192,17 @@ function AssistantPanel({
                       replacementText={message.batchReplacementText}
                     />
                   ) : null}
+                  {message.role === 'assistant' && activeSuggestionId === message.id ? (
+                    <div className="chat-similar-choice" aria-label="비슷한 텍스트 확인">
+                      <button type="button" onClick={() => onSuggestionAnswer?.(message.id, true)} disabled={Boolean(runningActionId)}>맞아요</button>
+                      <button type="button" onClick={() => onSuggestionAnswer?.(message.id, false)} disabled={Boolean(runningActionId)}>아니요</button>
+                    </div>
+                  ) : null}
                   {message.role === 'assistant' && message.action && !['search', 'batch-replace'].includes(message.action.type) ? (
                     <AiActionCard
                       action={message.action}
                       selectedFile={selectedFile}
-                      disabled={!selectedFile || (message.action.type === 'batch-replace' && !isEditMode)}
+                      disabled={!selectedFile || (isPdfEditRestricted && ['highlight', 'batch-replace'].includes(message.action.type)) || (message.action.type === 'batch-replace' && !isEditMode)}
                       runningType={runningType}
                       onSearch={(action) => onExecuteSearchAction?.(message.id, action)}
                       onHighlight={(action) => onExecuteHighlightAction?.(message.id, action)}

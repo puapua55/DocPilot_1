@@ -17,6 +17,13 @@ export function useChat(selectedDocument, previewModel, documentViewerRef, isEdi
     ]);
   };
 
+  const appendUserMessage = (text) => {
+    setMessages((current) => [
+      ...current,
+      { id: `user-${Date.now()}-${Math.random()}`, role: 'user', text: String(text) }
+    ]);
+  };
+
   const handleSendMessage = async (message) => {
     const trimmed = message.trim();
     if (!trimmed || loading) return;
@@ -91,5 +98,5 @@ export function useChat(selectedDocument, previewModel, documentViewerRef, isEdi
     }
   };
 
-  return { messages, loading, error, handleSendMessage, appendAssistantMessage };
+  return { messages, loading, error, handleSendMessage, appendAssistantMessage, appendUserMessage };
 }

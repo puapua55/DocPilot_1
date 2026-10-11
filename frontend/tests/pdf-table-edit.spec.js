@@ -16,17 +16,15 @@ test('table structure and cell formatting survive PDF save and reopen', async ({
   await expect(pdfPage.locator('.textLayer')).toHaveAttribute('data-rendered', 'true');
   await page.locator('.pdf-edit-mode-toggle button').last().click();
   await page.getByRole('button', { name: '표 추가' }).click();
-  const bounds = await pdfPage.boundingBox();
-  const scale = bounds.width / 500;
-  await page.mouse.move(bounds.x + 80 * scale, bounds.y + 80 * scale);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + 330 * scale, bounds.y + 230 * scale, { steps: 8 });
-  await page.mouse.up();
+  await page.getByRole('button', { name: '3행 3열 선택' }).click();
   const table = pdfPage.locator('.pdf-table-object');
   await expect(table).toBeVisible();
-  await expect(page.locator('.pdf-table-toolbar')).toHaveCount(0);
   await table.getByRole('textbox', { name: '1행 1열' }).click();
   await expect(page.locator('.pdf-table-toolbar')).toBeVisible();
+  const viewerTop = (await page.locator('.pdf-viewer-frame').boundingBox()).y;
+  await page.getByRole('tab', { name: '행·열' }).click();
+  await expect(page.locator('.pdf-table-toolbar-content')).toBeVisible();
+  expect((await page.locator('.pdf-viewer-frame').boundingBox()).y).toBeGreaterThan(viewerTop);
   await table.getByRole('textbox', { name: '1행 1열' }).fill('제목');
   await table.getByRole('textbox', { name: '1행 2열' }).click({ modifiers: ['Shift'] });
   await page.getByRole('button', { name: '셀 병합' }).click();
@@ -81,18 +79,14 @@ test('table track handles, insertion, splitting, and Tab navigation work', async
   await expect(pdfPage.locator('.textLayer')).toHaveAttribute('data-rendered', 'true');
   await page.locator('.pdf-edit-mode-toggle button').last().click();
   await page.getByRole('button', { name: '표 추가' }).click();
-  const bounds = await pdfPage.boundingBox();
-  const scale = bounds.width / 500;
-  await page.mouse.move(bounds.x + 80 * scale, bounds.y + 80 * scale);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + 330 * scale, bounds.y + 230 * scale, { steps: 8 });
-  await page.mouse.up();
+  await page.getByRole('button', { name: '3행 3열 선택' }).click();
   const table = pdfPage.locator('.pdf-table-object');
   const first = table.getByRole('textbox', { name: '1행 1열' });
   await first.click();
   await first.fill('시작');
   await first.press('Tab');
   await expect(table.getByRole('textbox', { name: '1행 2열' })).toBeFocused();
+  await page.getByRole('tab', { name: '행·열' }).click();
   await page.getByRole('button', { name: '아래에 행' }).click();
   await expect(table.getByRole('textbox', { name: '4행 1열' })).toBeVisible();
   await page.getByRole('button', { name: '오른쪽에 열' }).click();
@@ -136,14 +130,8 @@ test('dragging cells applies one color and merges the selected range', async ({ 
   await expect(pdfPage.locator('.textLayer')).toHaveAttribute('data-rendered', 'true');
   await page.locator('.pdf-edit-mode-toggle button').last().click();
   await page.getByRole('button', { name: '표 추가' }).click();
-  const bounds = await pdfPage.boundingBox();
-  const scale = bounds.width / 500;
-  await page.mouse.move(bounds.x + 80 * scale, bounds.y + 80 * scale);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + 330 * scale, bounds.y + 230 * scale, { steps: 8 });
-  await page.mouse.up();
+  await page.getByRole('button', { name: '3행 3열 선택' }).click();
   const table = pdfPage.locator('.pdf-table-object');
-  await expect(page.locator('.pdf-table-toolbar')).toHaveCount(0);
   const start = await table.getByRole('textbox', { name: '2행 1열' }).boundingBox();
   const end = await table.getByRole('textbox', { name: '3행 2열' }).boundingBox();
   await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
@@ -165,4 +153,45 @@ test('dragging cells applies one color and merges the selected range', async ({ 
   for (const index of [3, 4, 6, 7]) expect(saved.cellStyles[index].fill).toBe('#eac8ff');
   await pdfPage.click({ position: { x: 10, y: 10 } });
   await expect(page.locator('.pdf-table-toolbar')).toHaveCount(0);
+});
+
+test('a copied table can be pasted from the page context menu', async ({ page }) => {
+  const source = await PDFDocument.create();
+  source.addPage([500, 500]);
+  await page.goto('/');
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'table-copy.pdf', mimeType: 'application/pdf', buffer: Buffer.from(await source.save())
+  });
+  const pdfPage = page.locator('.pdf-page[data-page-number="1"]');
+  await expect(pdfPage.locator('.textLayer')).toHaveAttribute('data-rendered', 'true');
+  await page.locator('.pdf-edit-mode-toggle button').last().click();
+  await page.getByRole('button', { name: '표 추가' }).click();
+  await page.getByRole('button', { name: '2행 4열 선택' }).click();
+  await expect(pdfPage.locator('.pdf-table-object')).toHaveCount(1);
+  await pdfPage.locator('.pdf-table-object').getByRole('textbox', { name: '1행 1열' }).click();
+  await page.locator('.pdf-table-toolbar').getByRole('button', { name: '표 복사' }).click();
+  await pdfPage.click({ button: 'right', position: { x: 120, y: 220 } });
+  await page.getByRole('menuitem', { name: '표 붙여넣기' }).click();
+  await expect(pdfPage.locator('.pdf-table-object')).toHaveCount(2);
+  await expect(pdfPage.locator('.pdf-table-object').last().locator('.pdf-table-cell')).toHaveCount(8);
+});
+
+test('the PDF table picker inserts the custom row and column count directly', async ({ page }) => {
+  const source = await PDFDocument.create();
+  source.addPage([500, 500]);
+  await page.goto('/');
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'table-custom.pdf', mimeType: 'application/pdf', buffer: Buffer.from(await source.save())
+  });
+  const pdfPage = page.locator('.pdf-page[data-page-number="1"]');
+  await expect(pdfPage.locator('.textLayer')).toHaveAttribute('data-rendered', 'true');
+  await page.locator('.pdf-edit-mode-toggle button').last().click();
+  await page.getByRole('button', { name: '표 추가' }).click();
+  const picker = page.getByRole('dialog', { name: 'PDF 표 만들기' });
+  await expect(picker.getByRole('button', { name: '3행 3열 선택' })).toBeVisible();
+  await picker.getByRole('spinbutton', { name: '행' }).fill('4');
+  await picker.getByRole('spinbutton', { name: '열' }).fill('5');
+  await picker.getByRole('button', { name: '삽입' }).click();
+  await expect(pdfPage.locator('.pdf-table-object')).toHaveCount(1);
+  await expect(pdfPage.locator('.pdf-table-cell')).toHaveCount(20);
 });

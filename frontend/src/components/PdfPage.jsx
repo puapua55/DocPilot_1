@@ -1554,6 +1554,18 @@ function PdfPage({
   const handleAreaSelectionPointerDown = useCallback((event) => {
     if ((!areaTextReplaceMode && !textAddMode && !tableAddMode) || event.button !== 0 || !pageRef.current) return;
     if (event.target.closest?.('.movable-text-object, .movable-text-edit-input, .movable-text-format-toolbar, .pdf-image-attachment, .pdf-table-object, button')) return;
+    if (tableAddMode) {
+      event.preventDefault();
+      const rect = pageRef.current.getBoundingClientRect();
+      const pageWidth = pageSize.width / scale;
+      const pageHeight = pageSize.height / scale;
+      const width = Math.min(300, pageWidth);
+      const height = Math.min(108, pageHeight);
+      onCreateTable?.({ pageNumber, sourcePageWidth: pageWidth, sourcePageHeight: pageHeight,
+        currentRect: { x: Math.max(0, Math.min((event.clientX - rect.left) / scale, pageWidth - width)),
+          y: Math.max(0, Math.min((event.clientY - rect.top) / scale, pageHeight - height)), width, height } });
+      return;
+    }
     if (!textAddMode && !tableAddMode && event.target.closest?.('.textLayer span[data-text-item-index]')) return;
     event.preventDefault();
     const pageRect = pageRef.current.getBoundingClientRect();

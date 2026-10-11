@@ -47,6 +47,10 @@
 .chat-action-button { margin-top: 10px; border: 1px solid #b8c8f4; border-radius: 10px; background: #fff; padding: 7px 11px; cursor: pointer; font: inherit; font-size: 0.82rem; }
 .chat-action-group .chat-action-button { margin-top: 0; }
 .chat-action-button:hover { background: #eef3ff; }
+.chat-similar-choice { display: flex; gap: 8px; margin-top: 10px; }
+.chat-similar-choice button { border: 1px solid #b8c8f4; border-radius: 9px; background: #fff; color: #3154a1; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 0.82rem; }
+.chat-similar-choice button:hover:not(:disabled) { background: #eef3ff; }
+.chat-similar-choice button:disabled { opacity: 0.5; cursor: default; }
 
 @media (max-width: 980px) {
   .assistant-grid { grid-template-columns: 1fr; }

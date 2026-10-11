@@ -506,6 +506,8 @@ button:disabled {
 .pdf-view-mode-toggle button { min-width: 54px; }
 .pdf-view-mode-toggle button:nth-child(2) { min-width: 78px; }
 .pdf-edit-mode-toggle button { min-width: 44px; }
+.pdf-edit-mode-toggle button:disabled { opacity: .45; cursor: not-allowed; }
+.pdf-readonly-notice { color: #657292; font-size: .72rem; font-weight: 700; white-space: nowrap; }
 
 .pdf-view-mode-toggle button.active,
 .pdf-edit-mode-toggle button.active {
@@ -1180,6 +1182,14 @@ button:disabled {
   gap: 18px;
 }
 
+.pdf-page-batch-target-offscreen {
+  position: absolute;
+  left: -100000px;
+  top: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .pdf-page {
   position: relative;
   margin: 0 auto 24px;
@@ -1349,7 +1359,7 @@ button:disabled {
 .pdf-table-toolbar-tabs { display: flex; gap: 4px; border-bottom: 1px solid #d8e2f8; }
 .pdf-table-toolbar .pdf-table-toolbar-tabs button { min-height: 27px; padding: 4px 12px; border: 0; border-radius: 6px 6px 0 0; background: transparent; color: #64779d; font-weight: 600; }
 .pdf-table-toolbar .pdf-table-toolbar-tabs button.is-active { background: #e4edff; color: #2455bb; box-shadow: inset 0 -2px #4474ed; }
-.pdf-table-toolbar-content { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 10px; min-height: 37px; padding-top: 7px; }
+.pdf-table-toolbar-content { box-sizing: border-box; display: flex; align-items: center; flex-wrap: wrap; gap: 7px 10px; width: 100%; max-height: min(60vh, 440px); overflow: auto; padding: 10px; border: 1px solid #cbd9ff; border-radius: 9px; background: #f7f9ff; }
 .pdf-table-tool-group { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; padding-right: 10px; border-right: 1px solid #d8e2f8; }
 .pdf-table-tool-group:last-of-type { border-right: 0; }
 .pdf-table-tool-group-label { margin-right: 2px; color: #6c7d9e; font-weight: 600; white-space: nowrap; }
@@ -1411,6 +1421,17 @@ button:disabled {
 .pdf-table-context-menu { position: fixed; z-index: 9999; min-width: 132px; padding: 4px; border: 1px solid #cad8f7; border-radius: 8px; background: #fff; box-shadow: 0 10px 28px rgba(30, 56, 110, .2); }
 .pdf-table-context-menu button { display: block; width: 100%; padding: 7px 10px; border: 0; border-radius: 5px; background: transparent; color: #213d73; text-align: left; cursor: pointer; }
 .pdf-table-context-menu button:hover { background: #ecf2ff; }
+.pdf-table-picker { position: relative; }
+.pdf-table-picker-panel { position: absolute; z-index: 50; top: calc(100% + 6px); left: 0; width: 224px; padding: 10px; border: 1px solid #bdc8df; border-radius: 8px; background: #fff; box-shadow: 0 12px 28px rgba(32, 53, 100, .22); color: #26395e; }
+.pdf-table-picker-panel > strong { display: block; margin-bottom: 7px; text-align: center; font-size: .8rem; }
+.pdf-table-picker-grid { display: grid; grid-template-columns: repeat(10, 17px); gap: 3px; justify-content: center; }
+.pdf-table-picker-grid button { width: 17px; min-width: 17px; height: 17px; min-height: 17px; padding: 0; border: 1px solid #c8cfdb; border-radius: 0; background: #fff; }
+.pdf-table-picker-grid button.is-active { border-color: #7894d4; background: #dce8ff; }
+.pdf-table-picker-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 10px; padding-top: 8px; border-top: 1px solid #e0e6f1; font-size: .73rem; }
+.pdf-table-picker-custom > span { width: 100%; font-weight: 700; }
+.pdf-table-picker-custom label { display: inline-flex; align-items: center; gap: 3px; }
+.pdf-table-picker-custom input { width: 39px; height: 27px; border: 1px solid #cbd9ff; border-radius: 5px; }
+.pdf-table-picker-custom button { min-height: 27px; margin-left: auto; border: 1px solid #cbd9ff; border-radius: 5px; background: #fff; color: #315fc7; }
 
 .textLayer-item::selection {
   background: rgba(80, 120, 255, 0.35);

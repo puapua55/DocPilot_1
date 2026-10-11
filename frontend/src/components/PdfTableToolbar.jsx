@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { tableAutoFit, tableBorderDashArray, tableInsert, tableMerge, tableSetTrackSize, tableSizes, tableSplit, tableStyle, tableVisibleCells } from '../services/pdfTableModel.js';
 
 const TABS = [
@@ -70,7 +70,22 @@ function borderPreview(table, bounds) {
 }
 
 export default function PdfTableToolbar({ table, selection, onChange, onCopy, onDelete, onResizeGrid }) {
-  const [activeTab, setActiveTab] = useState('structure');
+  const [activeTab, setActiveTab] = useState(null);
+  const toolbarRef = useRef(null);
+  useEffect(() => {
+    if (!activeTab) return undefined;
+    const dismiss = (event) => {
+      if (!toolbarRef.current?.contains(event.target)
+        && !event.target.closest?.('.pdf-table-object')) setActiveTab(null);
+    };
+    const escape = (event) => { if (event.key === 'Escape') setActiveTab(null); };
+    document.addEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [activeTab]);
   const [borderBrush, setBorderBrush] = useState(() => ({ style: 'solid', width: table.borderWidth || 1, color: table.borderColor || '#000000' }));
   const cell = selection?.tableId === table.id ? selection.focus : { row: 0, column: 0 };
   const index = cell.row * table.columns + cell.column;
@@ -165,7 +180,7 @@ export default function PdfTableToolbar({ table, selection, onChange, onCopy, on
     if (next !== table) onChange(next);
   };
   const preview = activeTab === 'border' ? borderPreview(table, bounds) : null;
-  return <div className="pdf-table-toolbar document-toolbar" aria-label="표 편집 도구">
+  return <div ref={toolbarRef} className="pdf-table-toolbar document-toolbar" aria-label="표 편집 도구">
     <div className="pdf-table-toolbar-heading">
       <div className="pdf-table-toolbar-heading-text"><strong>표 편집</strong><span>{canMerge ? `선택: ${minRow + 1}~${maxRow + 1}행, ${minColumn + 1}~${maxColumn + 1}열` : `선택: ${cell.row + 1}행 ${cell.column + 1}열`}</span></div>
       <div className="pdf-table-toolbar-actions">
@@ -175,9 +190,10 @@ export default function PdfTableToolbar({ table, selection, onChange, onCopy, on
     </div>
     <div className="pdf-table-toolbar-tabs" role="tablist" aria-label="표 설정 분류">
       {TABS.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id}
-        className={activeTab === tab.id ? 'is-active' : ''} onClick={() => setActiveTab(tab.id)}>{tab.label}</button>)}
+        aria-expanded={activeTab === tab.id} className={activeTab === tab.id ? 'is-active' : ''}
+        onClick={() => setActiveTab((current) => current === tab.id ? null : tab.id)}>{tab.label}</button>)}
     </div>
-    <div className="pdf-table-toolbar-content" role="tabpanel">
+    {activeTab ? <div className="pdf-table-toolbar-content" role="tabpanel">
       {activeTab === 'structure' && <>
         <div className="pdf-table-tool-group"><span className="pdf-table-tool-group-label">표 크기</span>
           <label>행 <input aria-label="표 행 수" type="number" min="1" max="30" value={table.rows} onChange={(event) => onResizeGrid(event.target.value, table.columns)} /></label>
@@ -279,6 +295,6 @@ export default function PdfTableToolbar({ table, selection, onChange, onCopy, on
           </div>
         </div>
       </>}
-    </div>
+    </div> : null}
   </div>;
 }

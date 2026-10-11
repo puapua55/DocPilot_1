@@ -183,17 +183,29 @@
 .docx-image-toolbar label { display: inline-flex; align-items: center; gap: 4px; }
 .docx-image-toolbar input { width: 68px; height: 29px; border: 1px solid #cbd9ff; border-radius: 5px; }
 .docx-image-toolbar button { min-height: 29px; padding: 0 9px; border: 1px solid #eccdd2; border-radius: 6px; background: #fff; color: #a33d49; cursor: pointer; }
-.docx-table-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; flex: none; padding: 5px 8px; border: 1px solid #d7e2ff; border-radius: 9px; background: #f9fbff; color: #364b78; font-size: .76rem; }
-.docx-table-toolbar.is-inactive { visibility: hidden; pointer-events: none; }
-.docx-table-toolbar > span { min-width: 145px; white-space: nowrap; }
+.docx-table-toolbar { display: flex; flex-direction: column; align-items: stretch; gap: 5px; flex: none; padding: 5px 8px; border: 1px solid #d7e2ff; border-radius: 9px; background: #f9fbff; color: #364b78; font-size: .76rem; }
+.docx-table-toolbar.is-inactive { display: none; }
+.docx-table-toolbar-heading { display: flex; align-items: baseline; gap: 10px; }
+.docx-table-toolbar-heading > span { white-space: nowrap; color: #6c7d9e; }
+.docx-table-toolbar-tabs { display: flex; gap: 4px; border-bottom: 1px solid #d8e2f8; }
+.docx-table-toolbar .docx-table-toolbar-tabs button { min-height: 27px; padding: 4px 12px; border: 0; border-radius: 6px 6px 0 0; background: transparent; color: #64779d; font-weight: 600; }
+.docx-table-toolbar .docx-table-toolbar-tabs button.is-active { background: #e4edff; color: #2455bb; box-shadow: inset 0 -2px #4474ed; }
+.docx-table-toolbar-content { box-sizing: border-box; display: flex; align-items: center; flex-wrap: wrap; gap: 7px 10px; width: 100%; max-height: min(60vh, 440px); overflow: auto; padding: 10px; border: 1px solid #cbd9ff; border-radius: 9px; background: #f7f9ff; }
+.docx-table-tool-group { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 31px; padding-right: 10px; border-right: 1px solid #d8e2f8; }
+.docx-table-tool-group:last-child { border-right: 0; }
+.docx-table-tool-group > span:first-child { color: #64779d; font-weight: 700; white-space: nowrap; }
 .docx-table-toolbar strong { color: #213d73; }
 .docx-table-toolbar button { min-height: 28px; padding: 2px 7px; border: 1px solid #cbd9ff; border-radius: 6px; background: #fff; color: #315fc7; cursor: pointer; }
+.docx-table-toolbar .docx-table-action-button { display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 3px 6px; }
+.docx-table-action-icon { width: 20px; height: 20px; }
 .docx-table-toolbar button:disabled { opacity: .45; cursor: default; }
 .docx-table-toolbar label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .docx-table-toolbar input[type="color"] { width: 29px; height: 27px; padding: 1px; }
 .docx-table-toolbar input[type="number"] { width: 52px; height: 27px; border: 1px solid #cbd9ff; border-radius: 5px; }
+.docx-table-toolbar select { height: 28px; border: 1px solid #cbd9ff; border-radius: 5px; background: white; color: #213d73; }
+.docx-table-toolbar button[aria-pressed="true"] { background: #dce7ff; border-color: #6e93ee; }
 .docx-table-toolbar .docx-border-panel-toggle[aria-expanded="true"] { background: #dce7ff; border-color: #6e93ee; }
-.docx-border-panel { position: absolute; z-index: 30; top: calc(100% + 5px); left: 0; width: min(620px, 100%); box-shadow: 0 12px 28px rgba(32, 53, 100, .2); }
+.docx-table-toolbar-content .docx-border-panel { width: min(620px, 100%); padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .docx-content td:has(> .docx-diagonal-border-overlay), .docx-content th:has(> .docx-diagonal-border-overlay) { position: relative; }
 .docx-diagonal-border-overlay { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .docx-exporting .docx-diagonal-border-overlay { pointer-events: none; }

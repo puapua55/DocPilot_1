@@ -5,10 +5,85 @@ import { makeDocxPageBreakPreview, makeEditedDocx, readDocxParagraphs, readDocxT
 import { makeDocxFileWithHighlights } from '../services/docxHighlightService';
 import TextAlignmentIcon from './TextAlignmentIcon';
 import DocxTableBorderEditor from './DocxTableBorderEditor';
+import DocxTableActionIcon from './DocxTableActionIcon';
 import { applyWordTableBorders, readWordCellBorder } from '../services/docxTableBorderModel';
 import './WordViewer.css';
 
 const SEARCH_BLOCK_SELECTOR = 'p, li, td, th, h1, h2, h3, h4, h5, h6, blockquote, pre';
+
+function getTableCellGrid(table) {
+  const occupied = [];
+  const entries = [];
+  Array.from(table?.rows || []).forEach((row, rowIndex) => {
+    occupied[rowIndex] ||= new Set();
+    let column = 0;
+    Array.from(row.cells).forEach((cell) => {
+      if (cell.style.display === 'none' && occupied[rowIndex].has(column)) {
+        entries.push({ cell, row: rowIndex, column, rowSpan: 1, colSpan: Math.max(1, cell.colSpan), hidden: true });
+        column += Math.max(1, cell.colSpan);
+        return;
+      }
+      while (occupied[rowIndex].has(column)) column += 1;
+      const rowSpan = Math.max(1, cell.rowSpan);
+      const colSpan = Math.max(1, cell.colSpan);
+      entries.push({ cell, row: rowIndex, column, rowSpan, colSpan });
+      for (let nextRow = rowIndex; nextRow < rowIndex + rowSpan; nextRow += 1) {
+        occupied[nextRow] ||= new Set();
+        for (let nextColumn = column; nextColumn < column + colSpan; nextColumn += 1) {
+          occupied[nextRow].add(nextColumn);
+        }
+      }
+      column += colSpan;
+    });
+  });
+  return entries;
+}
+
+function getTableStructureActions(table, selectedCell, bounds) {
+  const rows = Array.from(table?.rows || []);
+  const entries = getTableCellGrid(table);
+  const selected = entries.find((entry) => entry.cell === selectedCell);
+  const simpleRows = rows.length > 0 && entries.every((entry) => entry.rowSpan === 1 && !entry.cell.querySelector('table'));
+  const simpleGrid = simpleRows && rows.every((row) => row.cells.length === rows[0].cells.length)
+    && entries.every((entry) => entry.colSpan === 1);
+  const columnEntries = selected && rows.map((_, row) => entries.find((entry) => entry.row === row && entry.column === selected.column && entry.colSpan === 1));
+  const simpleColumn = simpleRows && columnEntries?.every(Boolean);
+  const nextCell = selectedCell?.parentElement?.cells[selectedCell.cellIndex + 1];
+  let canMergeRange = false;
+  if (bounds && (bounds.minRow !== bounds.maxRow || bounds.minColumn !== bounds.maxColumn)) {
+    const first = rows[bounds.minRow]?.cells[bounds.minColumn];
+    const firstColumn = entries.find((entry) => entry.cell === first)?.column;
+    canMergeRange = Number.isInteger(firstColumn);
+    for (let row = bounds.minRow; canMergeRange && row <= bounds.maxRow; row += 1) {
+      for (let column = bounds.minColumn; column <= bounds.maxColumn; column += 1) {
+        const cell = rows[row]?.cells[column];
+        const entry = entries.find((item) => item.cell === cell);
+        if (!entry || entry.rowSpan !== 1 || entry.colSpan !== 1
+          || entry.column !== firstColumn + column - bounds.minColumn || cell.querySelector('table')) {
+          canMergeRange = false;
+          break;
+        }
+      }
+    }
+  }
+  return {
+    insertRow: simpleRows,
+    insertRowAbove: simpleRows,
+    deleteRow: simpleRows && rows.length > 1,
+    insertColumn: Boolean(simpleColumn),
+    insertColumnLeft: Boolean(simpleColumn),
+    deleteColumn: Boolean(simpleColumn && rows[0]?.cells.length > 1),
+    resizeGrid: simpleGrid,
+    mergeRight: Boolean(selected && selected.rowSpan === 1 && selected.colSpan === 1
+      && nextCell && nextCell.rowSpan === 1 && nextCell.colSpan === 1 && !nextCell.querySelector('table')),
+    mergeRange: canMergeRange,
+    splitCell: Boolean(selected && (selected.rowSpan > 1 || selected.colSpan > 1)),
+    splitHorizontal: Boolean(selected && (selected.rowSpan > 1 || selected.colSpan > 1 || simpleGrid && rows[0].cells.length < 20)),
+    splitVertical: Boolean(selected && (selected.rowSpan > 1 || selected.colSpan > 1 || simpleGrid && rows.length < 30)),
+    selected,
+    columnEntries
+  };
+}
 const SEARCH_EXCLUDED_SELECTOR = [
   '[data-docx-measure-root="true"]',
   '[data-docx-page-boundary-layer="true"]',
@@ -356,7 +431,22 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   const suppressTableClickRef = useRef(false);
   const [tableFill, setTableFill] = useState('#ffffff');
   const [tableBorderBrush, setTableBorderBrush] = useState({ style: 'solid', width: 1, color: '#000000' });
-  const [borderPanelOpen, setBorderPanelOpen] = useState(false);
+  const [tableSettingsTab, setTableSettingsTab] = useState(null);
+  const tableToolbarRef = useRef(null);
+  useEffect(() => {
+    if (!tableSettingsTab) return undefined;
+    const dismiss = (event) => {
+      if (!tableToolbarRef.current?.contains(event.target)
+        && !event.target.closest?.('.docx-content table')) setTableSettingsTab(null);
+    };
+    const escape = (event) => { if (event.key === 'Escape') setTableSettingsTab(null); };
+    document.addEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [tableSettingsTab]);
   const [, setBorderRevision] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -370,7 +460,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     setImageWidthDraft('');
     setSelectedTableCell(null);
     setTablePickerOpen(false);
-    setBorderPanelOpen(false);
+    setTableSettingsTab(null);
   }, [file]);
   useEffect(() => {
     if (!tablePickerOpen) return undefined;
@@ -1166,6 +1256,33 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     Array.from(table.rows).forEach((row, rowIndex) => Array.from(row.cells).forEach((cell, columnIndex) => {
       if (rowIndex < bounds.minRow || rowIndex > bounds.maxRow || columnIndex < bounds.minColumn || columnIndex > bounds.maxColumn) return;
       if (change.fill) cell.style.backgroundColor = change.fill;
+      if (change.fontSize) {
+        cell.style.fontSize = `${change.fontSize}px`;
+        cell.dataset.docxCellFontSize = String(change.fontSize);
+      }
+      if (typeof change.bold === 'boolean') {
+        cell.style.fontWeight = change.bold ? '700' : '400';
+        cell.dataset.docxCellBold = String(change.bold);
+      }
+      if (change.color) {
+        cell.style.color = change.color;
+        cell.dataset.docxCellColor = change.color;
+      }
+      if (change.align) {
+        cell.style.textAlign = change.align;
+        cell.dataset.docxCellAlign = change.align;
+      }
+      if (change.verticalAlign) {
+        cell.style.verticalAlign = change.verticalAlign;
+        cell.dataset.docxCellVerticalAlign = change.verticalAlign;
+      }
+      if (change.fontSize || typeof change.bold === 'boolean' || change.color || change.align)
+        cell.querySelectorAll('p, span, strong, em').forEach((part) => {
+          if (change.fontSize) part.style.fontSize = `${change.fontSize}px`;
+          if (typeof change.bold === 'boolean') part.style.fontWeight = change.bold ? '700' : '400';
+          if (change.color) part.style.color = change.color;
+          if (change.align && part.matches('p')) part.style.textAlign = change.align;
+        });
       cell.dataset.docxCellStyleDirty = 'true';
     }));
     if (change.fill) setTableFill(change.fill);
@@ -1181,13 +1298,116 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     commitDocumentChange();
   };
 
+  const updateTableTrackSize = (axis, value) => {
+    const table = selectedTableElement();
+    const selected = selectedCellElement();
+    const pixels = Number(value);
+    if (!table || !selected || !Number.isFinite(pixels) || pixels < 20) return;
+    if (axis === 'row') {
+      selected.parentElement.style.height = `${pixels}px`;
+      selected.parentElement.dataset.docxRowSizeDirty = 'true';
+    } else {
+      const available = getTableStructureActions(table, selected, selectedTableBounds());
+      if (!available.columnEntries?.every(Boolean)) return;
+      available.columnEntries.forEach(({ cell }) => {
+        cell.style.width = `${pixels}px`;
+        cell.dataset.docxCellStyleDirty = 'true';
+      });
+    }
+    table.dataset.docxTableDirty = 'true';
+    commitDocumentChange();
+  };
+
+  const distributeWordTableSizes = (mode) => {
+    const table = selectedTableElement();
+    const available = getTableStructureActions(table, selectedCellElement(), selectedTableBounds());
+    if (!table || !available.resizeGrid) return;
+    const rows = Array.from(table.rows);
+    const columnCount = rows[0].cells.length;
+    const tableWidth = table.getBoundingClientRect().width / actualScale;
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    const widths = Array.from({ length: columnCount }, (_, column) => {
+      if (mode === 'equal' || !context) return Math.max(40, Math.round(tableWidth / columnCount));
+      return Math.max(40, ...rows.map((row) => {
+        const cell = row.cells[column];
+        const style = window.getComputedStyle(cell);
+        context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        return Math.ceil(context.measureText(cell.textContent || '').width + 16);
+      }));
+    });
+    const wantedWidth = widths.reduce((sum, width) => sum + width, 0);
+    if (mode === 'content' && wantedWidth > tableWidth && tableWidth > 0)
+      widths.forEach((width, column) => { widths[column] = Math.max(24, Math.round(width * tableWidth / wantedWidth)); });
+    rows.forEach((row) => {
+      Array.from(row.cells).forEach((cell, column) => {
+        cell.style.width = `${widths[column]}px`;
+        cell.dataset.docxCellStyleDirty = 'true';
+      });
+      const height = mode === 'equal' ? Math.max(24, ...rows.map((item) => item.getBoundingClientRect().height / actualScale))
+        : Math.max(24, ...Array.from(row.cells).map((cell) => cell.scrollHeight));
+      row.style.height = `${Math.round(height)}px`;
+      row.dataset.docxRowSizeDirty = 'true';
+    });
+    table.dataset.docxTableDirty = 'true';
+    commitDocumentChange();
+  };
+
+  const resizeWordTableGrid = (requestedRows, requestedColumns) => {
+    const table = selectedTableElement();
+    const available = getTableStructureActions(table, selectedCellElement(), selectedTableBounds());
+    if (!table || !available.resizeGrid) return;
+    const targetRows = Math.max(1, Math.min(30, Number(requestedRows) || 1));
+    const targetColumns = Math.max(1, Math.min(20, Number(requestedColumns) || 1));
+    const operations = table.dataset.docxAddedTable === 'true' ? []
+      : JSON.parse(table.dataset.docxTableOperations || '[]');
+    const clearCell = (cell) => {
+      cell.innerHTML = '<p><br></p>';
+      cell.dataset.docxNewCell = 'true';
+      cell.removeAttribute('contenteditable');
+      cell.classList.remove('docx-table-cell-selected');
+    };
+    while (table.rows.length < targetRows) {
+      const position = table.rows.length;
+      const added = table.rows[position - 1].cloneNode(true);
+      Array.from(added.cells).forEach(clearCell);
+      table.rows[position - 1].after(added);
+      operations.push({ type: 'insertRow', position, row: position - 1 });
+    }
+    while (table.rows.length > targetRows) {
+      const position = table.rows.length - 1;
+      table.rows[position].remove();
+      operations.push({ type: 'deleteRow', position, row: position });
+    }
+    while (table.rows[0].cells.length < targetColumns) {
+      const position = table.rows[0].cells.length;
+      Array.from(table.rows).forEach((row) => {
+        const added = row.cells[position - 1].cloneNode(true);
+        clearCell(added);
+        row.appendChild(added);
+      });
+      operations.push({ type: 'insertColumn', position, gridColumn: position });
+    }
+    while (table.rows[0].cells.length > targetColumns) {
+      const position = table.rows[0].cells.length - 1;
+      Array.from(table.rows).forEach((row) => row.cells[position].remove());
+      operations.push({ type: 'deleteColumn', position, gridColumn: position });
+    }
+    table.dataset.docxTableDirty = 'true';
+    if (table.dataset.docxAddedTable !== 'true') table.dataset.docxTableOperations = JSON.stringify(operations);
+    setSelectedTableCell((current) => current && ({ ...current,
+      row: Math.min(current.row, targetRows - 1), column: Math.min(current.column, targetColumns - 1),
+      anchor: { row: Math.min(current.row, targetRows - 1), column: Math.min(current.column, targetColumns - 1) } }));
+    commitDocumentChange();
+  };
+
   const editTableStructure = (type) => {
     const table = selectedTableElement();
     if (!table || !selectedTableCell) return;
     const rows = Array.from(table.rows);
-    const regular = rows.length && rows.every((row) => row.cells.length === rows[0].cells.length
-      && Array.from(row.cells).every((cell) => cell.rowSpan === 1 && cell.colSpan === 1 && !cell.querySelector('table')));
-    if (!regular) return;
+    const selectedCell = selectedCellElement();
+    const available = getTableStructureActions(table, selectedCell, selectedTableBounds());
+    if (!available[type]) return;
     const { row, column } = selectedTableCell;
     const blankCell = (cell) => {
       cell.innerHTML = '<p><br></p>';
@@ -1196,31 +1416,108 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       cell.classList.remove('docx-table-cell-selected');
     };
     let position;
-    if (type === 'insertRow') {
-      position = row + 1;
+    if (type === 'splitHorizontal' || type === 'splitVertical') {
+      if (available.selected.rowSpan > 1 || available.selected.colSpan > 1) {
+        editTableStructure('splitCell');
+        return;
+      }
+      const operations = table.dataset.docxAddedTable === 'true' ? []
+        : JSON.parse(table.dataset.docxTableOperations || '[]');
+      if (type === 'splitHorizontal') {
+        position = column + 1;
+        operations.push({ type: 'insertColumn', position, gridColumn: position });
+        Array.from(table.rows).forEach((tableRow, rowIndex) => {
+          const added = tableRow.cells[column].cloneNode(true);
+          blankCell(added);
+          tableRow.cells[column].after(added);
+          if (rowIndex !== row) {
+            tableRow.cells[column].colSpan = 2;
+            added.remove();
+            operations.push({ type: 'mergeRight', row: rowIndex, position: column, gridColumn: column });
+          }
+        });
+      } else {
+        position = row + 1;
+        const added = rows[row].cloneNode(true);
+        Array.from(added.cells).forEach(blankCell);
+        rows[row].after(added);
+        operations.push({ type: 'insertRow', position, row });
+        const addedCells = Array.from(added.cells);
+        Array.from(rows[row].cells).forEach((cell, columnIndex) => {
+          if (columnIndex === column) return;
+          cell.rowSpan = 2;
+          addedCells[columnIndex].remove();
+          operations.push({ type: 'mergeRange', row, position: columnIndex,
+            endRow: row + 1, endColumn: columnIndex,
+            gridColumn: columnIndex, endGridColumn: columnIndex });
+        });
+      }
+      table.dataset.docxTableDirty = 'true';
+      if (table.dataset.docxAddedTable !== 'true') table.dataset.docxTableOperations = JSON.stringify(operations);
+      setSelectedTableCell({ tableId: selectedTableCell.tableId, row, column, anchor: { row, column } });
+      commitDocumentChange();
+      return;
+    }
+    if (type === 'insertRow' || type === 'insertRowAbove') {
+      position = row + (type === 'insertRow' ? 1 : 0);
       const added = rows[row].cloneNode(true);
       Array.from(added.cells).forEach(blankCell);
-      rows[row].after(added);
+      if (type === 'insertRow') rows[row].after(added);
+      else rows[row].before(added);
     } else if (type === 'deleteRow') {
       if (rows.length <= 1) return;
       position = row;
       rows[row].remove();
-    } else if (type === 'insertColumn') {
-      position = column + 1;
-      rows.forEach((entry) => {
-        const added = entry.cells[column].cloneNode(true);
+    } else if (type === 'insertColumn' || type === 'insertColumnLeft') {
+      position = available.selected.column + (type === 'insertColumn' ? 1 : 0);
+      available.columnEntries.forEach(({ cell }) => {
+        const added = cell.cloneNode(true);
         blankCell(added);
-        entry.cells[column].after(added);
+        if (type === 'insertColumn') cell.after(added);
+        else cell.before(added);
       });
     } else if (type === 'deleteColumn') {
-      if (rows[0].cells.length <= 1) return;
-      position = column;
-      rows.forEach((entry) => entry.cells[column]?.remove());
+      position = available.selected.column;
+      available.columnEntries.forEach(({ cell }) => cell.remove());
+    } else if (type === 'splitCell') {
+      const { column: gridColumn, rowSpan, colSpan } = available.selected;
+      const originalGrid = getTableCellGrid(table);
+      selectedCell.colSpan = 1;
+      selectedCell.rowSpan = 1;
+      for (let rowIndex = row; rowIndex < row + rowSpan; rowIndex += 1) {
+        const tableRow = rows[rowIndex];
+        for (let offset = rowIndex === row ? 1 : 0; offset < colSpan; offset += 1) {
+          const nextColumn = gridColumn + offset;
+          const continuation = originalGrid.find((entry) => entry.row === rowIndex
+            && entry.hidden && entry.column === nextColumn);
+          if (continuation) {
+            continuation.cell.style.display = '';
+            continuation.cell.colSpan = 1;
+            blankCell(continuation.cell);
+            continue;
+          }
+          const added = selectedCell.cloneNode(false);
+          blankCell(added);
+          const following = originalGrid.find((entry) => entry.row === rowIndex && entry.column > nextColumn)?.cell;
+          tableRow.insertBefore(added, following || null);
+        }
+      }
+      table.dataset.docxTableDirty = 'true';
+      if (table.dataset.docxAddedTable !== 'true') {
+        const operations = JSON.parse(table.dataset.docxTableOperations || '[]');
+        operations.push({ type, row, position: gridColumn, rowSpan, colSpan });
+        table.dataset.docxTableOperations = JSON.stringify(operations);
+      }
+      setSelectedTableCell({ tableId: selectedTableCell.tableId, row, column,
+        anchor: { row, column } });
+      commitDocumentChange();
+      return;
     } else if (type === 'mergeRange') {
       const bounds = selectedTableBounds();
       if (!bounds || bounds.minRow === bounds.maxRow && bounds.minColumn === bounds.maxColumn) return;
       position = bounds.minColumn;
       const first = rows[bounds.minRow].cells[bounds.minColumn];
+      const firstGridColumn = getTableCellGrid(table).find((entry) => entry.cell === first)?.column;
       const parts = [];
       for (let rowIndex = bounds.minRow; rowIndex <= bounds.maxRow; rowIndex += 1) {
         for (let columnIndex = bounds.minColumn; columnIndex <= bounds.maxColumn; columnIndex += 1) {
@@ -1244,7 +1541,9 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       if (table.dataset.docxAddedTable !== 'true') {
         const operations = JSON.parse(table.dataset.docxTableOperations || '[]');
         operations.push({ type, row: bounds.minRow, position: bounds.minColumn,
-          endRow: bounds.maxRow, endColumn: bounds.maxColumn });
+          endRow: bounds.maxRow, endColumn: bounds.maxColumn,
+          gridColumn: firstGridColumn,
+          endGridColumn: firstGridColumn + bounds.maxColumn - bounds.minColumn });
         table.dataset.docxTableOperations = JSON.stringify(operations);
       }
       commitDocumentChange();
@@ -1260,7 +1559,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     } else return;
     if (table.dataset.docxAddedTable !== 'true') {
       const operations = JSON.parse(table.dataset.docxTableOperations || '[]');
-      operations.push({ type, position, row });
+      operations.push({ type: type === 'insertRowAbove' ? 'insertRow' : type === 'insertColumnLeft' ? 'insertColumn' : type,
+        position, row, ...(type === 'insertColumnLeft' ? { side: 'left' } : {}),
+        ...(['insertColumn', 'insertColumnLeft', 'deleteColumn', 'mergeRight'].includes(type)
+          ? { gridColumn: type === 'mergeRight' ? available.selected.column : position } : {}) });
       table.dataset.docxTableOperations = JSON.stringify(operations);
     }
     table.dataset.docxTableDirty = 'true';
@@ -1632,6 +1934,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     searchDocument(keyword, options) {
       return searchDocxText(keyword, options);
     },
+    getSearchableTextSegments() {
+      return getSearchBlocks(docxContentRef.current)
+        .map((element) => ({ text: String(element.textContent || '').trim() }));
+    },
     scrollToSearchResult(resultOrIndex) {
       return scrollToDocxSearchResult(resultOrIndex);
     },
@@ -1705,10 +2011,12 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   const selectedWordTableBounds = selectedTableBounds();
   const hasSelectedTableRange = selectedWordTableBounds && (selectedWordTableBounds.minRow !== selectedWordTableBounds.maxRow
     || selectedWordTableBounds.minColumn !== selectedWordTableBounds.maxColumn);
-  const selectedTableRows = Array.from(selectedWordTable?.rows || []);
-  const canChangeTableStructure = selectedTableRows.length > 0 && selectedTableRows.every((row) =>
-    row.cells.length === selectedTableRows[0].cells.length && Array.from(row.cells).every((cell) =>
-      cell.rowSpan === 1 && cell.colSpan === 1 && !cell.querySelector('table')));
+  const tableStructureActions = getTableStructureActions(selectedWordTable, selectedCellElement(), selectedWordTableBounds);
+  const selectedWordCell = selectedCellElement();
+  const selectedWordCellStyle = selectedWordCell ? window.getComputedStyle(selectedWordCell) : null;
+  const selectedWordCellBold = selectedWordCell?.dataset.docxCellBold
+    ? selectedWordCell.dataset.docxCellBold === 'true'
+    : Number(selectedWordCellStyle?.fontWeight) >= 600;
   const fontOptions = availableFonts.length ? availableFonts :
     ['Arial', 'Malgun Gothic', '함초롬돋움', '함초롬바탕', 'Calibri', 'Times New Roman']
       .map((name) => ({ candidate: name, label: name }));
@@ -1914,24 +2222,91 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
         </div>
       ) : null}
       {editingEnabled ? (
-        <div className={`docx-table-toolbar document-toolbar${selectedWordTable ? '' : ' is-inactive'}`}
+        <div ref={tableToolbarRef} className={`docx-table-toolbar document-toolbar${selectedWordTable ? '' : ' is-inactive'}`}
           role="toolbar" aria-label="Word 표 편집" aria-hidden={!selectedWordTable}>
-          <strong>표 편집</strong><span>{hasSelectedTableRange
+          <div className="docx-table-toolbar-heading"><strong>표 편집</strong><span>{hasSelectedTableRange
             ? `${selectedWordTableBounds.minRow + 1}~${selectedWordTableBounds.maxRow + 1}행, ${selectedWordTableBounds.minColumn + 1}~${selectedWordTableBounds.maxColumn + 1}열`
-            : `${displayedTableCell.row + 1}행 ${displayedTableCell.column + 1}열`}</span>
-          <button type="button" disabled={!canChangeTableStructure} onClick={() => editTableStructure('insertRow')}>아래 행 추가</button>
-          <button type="button" disabled={!canChangeTableStructure} onClick={() => editTableStructure('insertColumn')}>오른쪽 열 추가</button>
-          <button type="button" disabled={!canChangeTableStructure || selectedTableRows.length <= 1} onClick={() => editTableStructure('deleteRow')}>행 삭제</button>
-          <button type="button" disabled={!canChangeTableStructure || selectedTableRows[0]?.cells.length <= 1} onClick={() => editTableStructure('deleteColumn')}>열 삭제</button>
-          <button type="button" disabled={!canChangeTableStructure || displayedTableCell.column + 1 >= selectedTableRows[0]?.cells.length} onClick={() => editTableStructure('mergeRight')}>오른쪽 셀 병합</button>
-          <button type="button" disabled={!canChangeTableStructure || !hasSelectedTableRange} onClick={() => editTableStructure('mergeRange')}>선택 셀 병합</button>
-          <label>셀 색 <input type="color" value={tableFill} onChange={(event) => updateTableCellStyle({ fill: event.target.value })} /></label>
-          <button type="button" className="docx-border-panel-toggle" aria-expanded={borderPanelOpen}
-            onClick={() => setBorderPanelOpen((open) => !open)}>테두리 설정</button>
-          {selectedWordTable && selectedWordTableBounds && borderPanelOpen ? (
+            : `${displayedTableCell.row + 1}행 ${displayedTableCell.column + 1}열`}</span></div>
+          <div className="docx-table-toolbar-tabs" role="tablist" aria-label="표 설정 분류">
+            {[["structure", "행·열"], ["size", "크기"], ["format", "셀 서식"], ["border", "테두리"]].map(([tab, label]) =>
+              <button key={tab} type="button" role="tab" aria-selected={tableSettingsTab === tab}
+                aria-expanded={tableSettingsTab === tab} className={tableSettingsTab === tab ? 'is-active' : ''}
+                onClick={() => setTableSettingsTab((current) => current === tab ? null : tab)}>{label}</button>)}
+          </div>
+          {tableSettingsTab ? <div className="docx-table-toolbar-content" role="tabpanel">
+          {tableSettingsTab === 'structure' ? <>
+            <div className="docx-table-tool-group"><span>표 크기</span>
+              <label>행 <input type="number" aria-label="표 행 수" min="1" max="30" key={`rows-${selectedTableCell?.tableId}-${selectedWordTable?.rows.length}`}
+                defaultValue={selectedWordTable?.rows.length || 1} disabled={!tableStructureActions.resizeGrid}
+                onBlur={(event) => resizeWordTableGrid(event.target.value, selectedWordTable?.rows[0]?.cells.length)}
+                onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>
+              <label>열 <input type="number" aria-label="표 열 수" min="1" max="20" key={`columns-${selectedTableCell?.tableId}-${selectedWordTable?.rows[0]?.cells.length}`}
+                defaultValue={selectedWordTable?.rows[0]?.cells.length || 1} disabled={!tableStructureActions.resizeGrid}
+                onBlur={(event) => resizeWordTableGrid(selectedWordTable?.rows.length, event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>
+            </div>
+            {[
+              ['행 삽입', [['insertRowAbove', '위에 행'], ['insertRow', '아래에 행']]],
+              ['열 삽입', [['insertColumnLeft', '왼쪽에 열'], ['insertColumn', '오른쪽에 열']]],
+              ['셀', [['mergeRange', '병합'], ['splitHorizontal', '좌우 분할'], ['splitVertical', '상하 분할'], ['splitCell', '셀 분할']]],
+              ['삭제', [['deleteRow', '행 삭제'], ['deleteColumn', '열 삭제']]]
+            ].map(([group, actions]) => <div className="docx-table-tool-group" key={group}><span>{group}</span>
+              {actions.map(([action, label]) => <button key={action} type="button" className="docx-table-action-button"
+                aria-label={label} title={label} disabled={!tableStructureActions[action]}
+                onClick={() => editTableStructure(action)}><DocxTableActionIcon action={action} /><span>{label}</span></button>)}
+              {group === '셀' ? <button type="button" className="docx-table-action-button"
+                aria-label="오른쪽 셀 병합" title="오른쪽 셀 병합" disabled={!tableStructureActions.mergeRight}
+                onClick={() => editTableStructure('mergeRight')}><DocxTableActionIcon action="mergeRight" /><span>오른쪽 셀 병합</span></button> : null}
+            </div>)}
+          </> : null}
+          {tableSettingsTab === 'size' ? <>
+            <div className="docx-table-tool-group"><span>선택한 셀</span>
+            <label>열 너비 <input type="number" aria-label="선택한 열 너비" min="20" key={`width-${selectedTableCell?.tableId}-${selectedTableCell?.row}-${selectedTableCell?.column}`}
+              defaultValue={Math.round(selectedCellElement()?.getBoundingClientRect().width / actualScale || 0)}
+              onBlur={(event) => updateTableTrackSize('column', event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />px</label>
+            <label>행 높이 <input type="number" aria-label="선택한 행 높이" min="20" key={`height-${selectedTableCell?.tableId}-${selectedTableCell?.row}`}
+              defaultValue={Math.round(selectedCellElement()?.parentElement?.getBoundingClientRect().height / actualScale || 0)}
+              onBlur={(event) => updateTableTrackSize('row', event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />px</label>
+            </div>
+            <div className="docx-table-tool-group"><span>자동 조절</span>
+              <button type="button" disabled={!tableStructureActions.resizeGrid} onClick={() => distributeWordTableSizes('content')}>내용에 맞춤</button>
+              <button type="button" disabled={!tableStructureActions.resizeGrid} onClick={() => distributeWordTableSizes('equal')}>균등 분배</button>
+            </div>
+          </> : null}
+          {tableSettingsTab === 'format' ? <>
+            <div className="docx-table-tool-group"><span>글자</span>
+              <label>크기 <input type="number" aria-label="선택한 셀 글자 크기" min="5" max="32" step="0.5"
+                key={`font-size-${selectedTableCell?.tableId}-${selectedTableCell?.row}-${selectedTableCell?.column}`}
+                defaultValue={Math.round((Number.parseFloat(selectedWordCellStyle?.fontSize) || 12) * 10) / 10}
+                onBlur={(event) => updateTableCellStyle({ fontSize: Math.max(5, Math.min(32, Number(event.target.value) || 12)) })}
+                onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>
+              <button type="button" aria-pressed={selectedWordCellBold} onClick={() => updateTableCellStyle({ bold: !selectedWordCellBold })}>굵게</button>
+              <label>글자색 <input type="color" aria-label="셀 글자색"
+                value={cssColorToHex(selectedWordCellStyle?.color, '#000000')}
+                onChange={(event) => updateTableCellStyle({ color: event.target.value })} /></label>
+            </div>
+            <div className="docx-table-tool-group"><span>정렬</span>
+              <label>가로 <select aria-label="셀 가로 정렬" value={selectedWordCell?.dataset.docxCellAlign || selectedWordCellStyle?.textAlign || 'left'}
+                onChange={(event) => updateTableCellStyle({ align: event.target.value })}>
+                <option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option>
+              </select></label>
+              <label>세로 <select aria-label="셀 세로 정렬" value={selectedWordCell?.dataset.docxCellVerticalAlign || selectedWordCellStyle?.verticalAlign || 'top'}
+                onChange={(event) => updateTableCellStyle({ verticalAlign: event.target.value })}>
+                <option value="top">위</option><option value="middle">가운데</option><option value="bottom">아래</option>
+              </select></label>
+            </div>
+            <div className="docx-table-tool-group"><span>배경</span>
+              <label>{hasSelectedTableRange ? '선택 영역 색' : '셀 색'} <input type="color" aria-label="셀 배경색"
+                value={tableFill} onChange={(event) => updateTableCellStyle({ fill: event.target.value })} /></label>
+            </div>
+          </> : null}
+          {selectedWordTable && selectedWordTableBounds && tableSettingsTab === 'border' ? (
             <DocxTableBorderEditor table={selectedWordTable} bounds={selectedWordTableBounds}
               brush={tableBorderBrush} onBrushChange={setTableBorderBrush} onApply={updateTableBorders} />
           ) : null}
+          </div> : null}
         </div>
       ) : null}
       {(fidelityRenderFailed || (!useFidelityRenderer && messages.length > 0)) ? (

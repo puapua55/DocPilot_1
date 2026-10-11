@@ -202,6 +202,16 @@ function clearTableCell(cell) {
   cell.appendChild(create(cell.ownerDocument, 'p'));
 }
 
+function xmlCellAtColumn(row, targetColumn) {
+  let column = 0;
+  for (const cell of children(row, 'tc')) {
+    const span = children(children(cell, 'tcPr')[0], 'gridSpan')[0];
+    if (column === targetColumn) return cell;
+    column += Math.max(1, Number(span?.getAttributeNS(W, 'val')) || 1);
+  }
+  return null;
+}
+
 function applyTableOperation(table, operation) {
   const rows = children(table, 'tr');
   const position = Math.max(0, Math.floor(Number(operation.position) || 0));
@@ -216,11 +226,14 @@ function applyTableOperation(table, operation) {
   } else if (operation.type === 'insertColumn' && rows.length) {
     rows.forEach((row) => {
       const cells = children(row, 'tc');
-      const source = cells[Math.min(position, cells.length - 1)];
+      const source = operation.side === 'left' ? xmlCellAtColumn(row, position) : operation.gridColumn == null
+        ? cells[Math.min(position, cells.length - 1)]
+        : xmlCellAtColumn(row, position - 1);
       if (!source) return;
       const added = source.cloneNode(true);
       clearTableCell(added);
-      row.insertBefore(added, cells[position] || null);
+      row.insertBefore(added, operation.side === 'left' ? source
+        : operation.gridColumn == null ? cells[position] || null : source.nextSibling);
     });
     const grid = children(table, 'tblGrid')[0];
     if (grid) {
@@ -231,16 +244,40 @@ function applyTableOperation(table, operation) {
   } else if (operation.type === 'deleteColumn') {
     rows.forEach((row) => {
       const cells = children(row, 'tc');
-      if (cells.length > 1) cells[position]?.remove();
+      if (cells.length > 1) (operation.gridColumn == null ? cells[position] : xmlCellAtColumn(row, position))?.remove();
     });
     const grid = children(table, 'tblGrid')[0];
     const columns = children(grid, 'gridCol');
     if (columns.length > 1) columns[position]?.remove();
+  } else if (operation.type === 'splitCell') {
+    const startRow = Math.max(0, Math.floor(Number(operation.row) || 0));
+    const rowSpan = Math.max(1, Math.floor(Number(operation.rowSpan) || 1));
+    const colSpan = Math.max(1, Math.floor(Number(operation.colSpan) || 1));
+    for (let rowIndex = startRow; rowIndex < Math.min(rows.length, startRow + rowSpan); rowIndex += 1) {
+      const row = rows[rowIndex];
+      const first = xmlCellAtColumn(row, position);
+      if (!first) continue;
+      const props = children(first, 'tcPr')[0];
+      children(props, 'gridSpan').forEach((span) => span.remove());
+      children(props, 'vMerge').forEach((merge) => merge.remove());
+      const width = children(props, 'tcW')[0];
+      if (width?.getAttributeNS(W, 'type') === 'dxa' && colSpan > 1) {
+        const value = Number(width.getAttributeNS(W, 'w'));
+        if (Number.isFinite(value)) setW(width, 'w', Math.round(value / colSpan));
+      }
+      if (rowIndex !== startRow) clearTableCell(first);
+      const following = first.nextSibling;
+      for (let column = 1; column < colSpan; column += 1) {
+        const added = first.cloneNode(true);
+        clearTableCell(added);
+        row.insertBefore(added, following);
+      }
+    }
   } else if (operation.type === 'mergeRight') {
     const row = rows[Math.max(0, Math.floor(Number(operation.row) || 0))];
     const cells = children(row, 'tc');
-    const first = cells[position];
-    const second = cells[position + 1];
+    const first = operation.gridColumn == null ? cells[position] : xmlCellAtColumn(row, operation.gridColumn);
+    const second = operation.gridColumn == null ? cells[position + 1] : xmlCellAtColumn(row, operation.gridColumn + 1);
     if (!first || !second) return;
     let props = children(first, 'tcPr')[0];
     if (!props) { props = create(table.ownerDocument, 'tcPr'); first.insertBefore(props, first.firstChild); }
@@ -254,12 +291,18 @@ function applyTableOperation(table, operation) {
   } else if (operation.type === 'mergeRange') {
     const startRow = Math.max(0, Math.floor(Number(operation.row) || 0));
     const endRow = Math.min(rows.length - 1, Math.floor(Number(operation.endRow) || 0));
-    const startColumn = position;
-    const endColumn = Math.floor(Number(operation.endColumn) || 0);
+    const startColumn = operation.gridColumn == null ? position : operation.gridColumn;
+    const endColumn = operation.endGridColumn == null
+      ? Math.floor(Number(operation.endColumn) || 0) : operation.endGridColumn;
     for (let rowIndex = startRow; rowIndex <= endRow; rowIndex += 1) {
       const cells = children(rows[rowIndex], 'tc');
-      const first = cells[startColumn];
+      const first = operation.gridColumn == null ? cells[startColumn] : xmlCellAtColumn(rows[rowIndex], startColumn);
       if (!first) continue;
+      const mergedCells = [];
+      for (let columnIndex = endColumn; columnIndex > startColumn; columnIndex -= 1) {
+        mergedCells.push(operation.gridColumn == null ? cells[columnIndex]
+          : xmlCellAtColumn(rows[rowIndex], columnIndex));
+      }
       let props = children(first, 'tcPr')[0];
       if (!props) { props = create(table.ownerDocument, 'tcPr'); first.insertBefore(props, first.firstChild); }
       if (endColumn > startColumn) {
@@ -272,7 +315,7 @@ function applyTableOperation(table, operation) {
         if (!merge) { merge = create(table.ownerDocument, 'vMerge'); props.appendChild(merge); }
         if (rowIndex === startRow) setW(merge, 'val', 'restart');
       }
-      for (let columnIndex = endColumn; columnIndex > startColumn; columnIndex -= 1) cells[columnIndex]?.remove();
+      mergedCells.forEach((cell) => cell?.remove());
       if (rowIndex > startRow) clearTableCell(first);
     }
   }
@@ -316,11 +359,63 @@ function writeCellBorders(props, domCell, includeDefaults = false) {
   });
 }
 
+function applyCellTextStyle(xmlCell, props, domCell) {
+  if (domCell.dataset.docxCellVerticalAlign) {
+    let alignment = children(props, 'vAlign')[0];
+    if (!alignment) { alignment = create(props.ownerDocument, 'vAlign'); props.appendChild(alignment); }
+    setW(alignment, 'val', { middle: 'center', top: 'top', bottom: 'bottom' }[domCell.dataset.docxCellVerticalAlign] || 'top');
+  }
+  const align = domCell.dataset.docxCellAlign;
+  if (align) descendants(xmlCell, 'p').forEach((paragraph) => {
+    let paragraphProps = children(paragraph, 'pPr')[0];
+    if (!paragraphProps) { paragraphProps = create(xmlCell.ownerDocument, 'pPr'); paragraph.insertBefore(paragraphProps, paragraph.firstChild); }
+    let justification = children(paragraphProps, 'jc')[0];
+    if (!justification) { justification = create(xmlCell.ownerDocument, 'jc'); paragraphProps.appendChild(justification); }
+    setW(justification, 'val', align === 'justify' ? 'both' : align);
+  });
+  if (!domCell.dataset.docxCellFontSize && !domCell.dataset.docxCellBold && !domCell.dataset.docxCellColor) return;
+  descendants(xmlCell, 'r').forEach((run) => {
+    let runProps = children(run, 'rPr')[0];
+    if (!runProps) { runProps = create(xmlCell.ownerDocument, 'rPr'); run.insertBefore(runProps, run.firstChild); }
+    if (domCell.dataset.docxCellFontSize) {
+      let size = children(runProps, 'sz')[0];
+      if (!size) { size = create(xmlCell.ownerDocument, 'sz'); runProps.appendChild(size); }
+      setW(size, 'val', Math.round(Number(domCell.dataset.docxCellFontSize) * 1.5));
+      let complexSize = children(runProps, 'szCs')[0];
+      if (!complexSize) { complexSize = create(xmlCell.ownerDocument, 'szCs'); runProps.appendChild(complexSize); }
+      setW(complexSize, 'val', Math.round(Number(domCell.dataset.docxCellFontSize) * 1.5));
+    }
+    if (domCell.dataset.docxCellBold) {
+      let bold = children(runProps, 'b')[0];
+      if (!bold) { bold = create(xmlCell.ownerDocument, 'b'); runProps.appendChild(bold); }
+      setW(bold, 'val', domCell.dataset.docxCellBold === 'true' ? '1' : '0');
+    }
+    if (domCell.dataset.docxCellColor) {
+      let color = children(runProps, 'color')[0];
+      if (!color) { color = create(xmlCell.ownerDocument, 'color'); runProps.appendChild(color); }
+      setW(color, 'val', cssColorHex(domCell.dataset.docxCellColor) || '000000');
+    }
+  });
+}
+
 function applyEditedTable(table, element) {
   const domRows = Array.from(element.rows);
   const xmlRows = children(table, 'tr');
+  const gridColumns = children(children(table, 'tblGrid')[0], 'gridCol');
+  Array.from(domRows[0]?.cells || []).forEach((cell, index) => {
+    if (cell.colSpan === 1 && cell.style.width && gridColumns[index])
+      setW(gridColumns[index], 'w', Math.round(Number.parseFloat(cell.style.width) * 15));
+  });
   const blockedUntil = [];
   domRows.forEach((domRow, rowIndex) => {
+    if (domRow.dataset.docxRowSizeDirty === 'true') {
+      let rowProps = children(xmlRows[rowIndex], 'trPr')[0];
+      if (!rowProps) { rowProps = create(table.ownerDocument, 'trPr'); xmlRows[rowIndex].insertBefore(rowProps, xmlRows[rowIndex].firstChild); }
+      let rowHeight = children(rowProps, 'trHeight')[0];
+      if (!rowHeight) { rowHeight = create(table.ownerDocument, 'trHeight'); rowProps.appendChild(rowHeight); }
+      setW(rowHeight, 'val', Math.round(Number.parseFloat(domRow.style.height) * 15));
+      setW(rowHeight, 'hRule', 'atLeast');
+    }
     const xmlCells = children(xmlRows[rowIndex], 'tc');
     let xmlColumn = 0;
     const xmlByColumn = new Map();
@@ -350,6 +445,12 @@ function applyEditedTable(table, element) {
         props = create(table.ownerDocument, 'tcPr');
         xmlCell.insertBefore(props, xmlCell.firstChild);
       }
+      if (domCell.style.width) {
+        let width = children(props, 'tcW')[0];
+        if (!width) { width = create(table.ownerDocument, 'tcW'); props.appendChild(width); }
+        setW(width, 'w', Math.round(Number.parseFloat(domCell.style.width) * 15));
+        setW(width, 'type', 'dxa');
+      }
       const fill = cssColorHex(domCell.style.backgroundColor);
       if (fill) {
         let shading = children(props, 'shd')[0];
@@ -358,6 +459,7 @@ function applyEditedTable(table, element) {
         setW(shading, 'val', 'clear');
       }
       writeCellBorders(props, domCell);
+      applyCellTextStyle(xmlCell, props, domCell);
     });
   });
 }
@@ -375,13 +477,23 @@ function createAddedTable(doc, element) {
     Array.from(row.cells).reduce((count, cell) => count + cell.colSpan, 0)));
   for (let column = 0; column < columns; column += 1) {
     const gridColumn = create(doc, 'gridCol');
-    setW(gridColumn, 'w', Math.round(9000 / columns));
+    const firstRowCell = Array.from(element.rows[0]?.cells || [])[column];
+    setW(gridColumn, 'w', firstRowCell?.colSpan === 1 && firstRowCell.style.width
+      ? Math.round(Number.parseFloat(firstRowCell.style.width) * 15) : Math.round(9000 / columns));
     grid.appendChild(gridColumn);
   }
   table.appendChild(grid);
   const verticalSpans = new Map();
   Array.from(element.rows).forEach((domRow, rowIndex) => {
     const row = create(doc, 'tr');
+    if (domRow.style.height) {
+      const rowProps = create(doc, 'trPr');
+      const rowHeight = create(doc, 'trHeight');
+      setW(rowHeight, 'val', Math.round(Number.parseFloat(domRow.style.height) * 15));
+      setW(rowHeight, 'hRule', 'atLeast');
+      rowProps.appendChild(rowHeight);
+      row.appendChild(rowProps);
+    }
     let currentColumn = 0;
     const appendContinuation = () => {
       const span = verticalSpans.get(currentColumn);
@@ -405,7 +517,8 @@ function createAddedTable(doc, element) {
       const cell = create(doc, 'tc');
       const props = create(doc, 'tcPr');
       const widthNode = create(doc, 'tcW');
-      setW(widthNode, 'w', Math.round(9000 * domCell.colSpan / columns));
+      setW(widthNode, 'w', domCell.style.width
+        ? Math.round(Number.parseFloat(domCell.style.width) * 15) : Math.round(9000 * domCell.colSpan / columns));
       setW(widthNode, 'type', 'dxa');
       props.appendChild(widthNode);
       if (domCell.colSpan > 1) {
@@ -432,6 +545,7 @@ function createAddedTable(doc, element) {
         replaceParagraph(paragraph, domParagraph);
         cell.appendChild(paragraph);
       }
+      applyCellTextStyle(cell, props, domCell);
       row.appendChild(cell);
       currentColumn += domCell.colSpan;
     });
