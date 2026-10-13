@@ -11,6 +11,16 @@ const defaultDevUrl = 'http://localhost:5173';
 const defaultGeminiModel = 'gemini-3.1-flash-lite';
 const appProtocol = 'docpilot';
 
+// The unpacked no-Gemini variant keeps its profile beside the executable.
+// A fresh extraction starts without credentials from this PC's DocPilot profile.
+if (app.isPackaged && existsSync(path.join(process.resourcesPath, 'gemini-unconfigured.flag'))) {
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_MODEL;
+  const portableUserData = path.join(path.dirname(process.execPath), 'user-data');
+  mkdirSync(portableUserData, { recursive: true });
+  app.setPath('userData', portableUserData);
+}
+
 // PDF.js loads its worker, CMaps and standard fonts separately. A file://
 // renderer gives these resources an opaque origin in Chromium, which lets a
 // document load but can fail while rendering its first page. Use a privileged

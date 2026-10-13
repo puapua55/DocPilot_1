@@ -402,10 +402,28 @@ function applyEditedTable(table, element) {
   const domRows = Array.from(element.rows);
   const xmlRows = children(table, 'tr');
   const gridColumns = children(children(table, 'tblGrid')[0], 'gridCol');
-  Array.from(domRows[0]?.cells || []).forEach((cell, index) => {
-    if (cell.colSpan === 1 && cell.style.width && gridColumns[index])
-      setW(gridColumns[index], 'w', Math.round(Number.parseFloat(cell.style.width) * 15));
-  });
+  const targetWidth = Number(element.dataset.docxTableWidth);
+  if (targetWidth > 0) {
+    let properties = children(table, 'tblPr')[0];
+    if (!properties) { properties = create(table.ownerDocument, 'tblPr'); table.insertBefore(properties, table.firstChild); }
+    let width = children(properties, 'tblW')[0];
+    if (!width) { width = create(table.ownerDocument, 'tblW'); properties.appendChild(width); }
+    const originalGridWidth = gridColumns.reduce((sum, column) => sum + (Number(column.getAttributeNS(W, 'w')) || 0), 0);
+    const originalWidth = originalGridWidth || Number(width.getAttributeNS(W, 'w')) || targetWidth * 15;
+    const ratio = targetWidth * 15 / originalWidth;
+    setW(width, 'w', Math.round(targetWidth * 15));
+    setW(width, 'type', 'dxa');
+    gridColumns.forEach((column) => setW(column, 'w', Math.round((Number(column.getAttributeNS(W, 'w')) || 0) * ratio)));
+    descendants(table, 'tcW').forEach((cellWidth) => {
+      if (cellWidth.getAttributeNS(W, 'type') !== 'pct')
+        setW(cellWidth, 'w', Math.round((Number(cellWidth.getAttributeNS(W, 'w')) || 0) * ratio));
+    });
+  } else {
+    Array.from(domRows[0]?.cells || []).forEach((cell, index) => {
+      if (cell.colSpan === 1 && cell.style.width && gridColumns[index])
+        setW(gridColumns[index], 'w', Math.round(Number.parseFloat(cell.style.width) * 15));
+    });
+  }
   const blockedUntil = [];
   domRows.forEach((domRow, rowIndex) => {
     if (domRow.dataset.docxRowSizeDirty === 'true') {
@@ -468,8 +486,9 @@ function createAddedTable(doc, element) {
   const table = create(doc, 'tbl');
   const properties = create(doc, 'tblPr');
   const width = create(doc, 'tblW');
-  setW(width, 'w', 0);
-  setW(width, 'type', 'auto');
+  const targetWidth = Number(element.dataset.docxTableWidth);
+  setW(width, 'w', targetWidth > 0 ? Math.round(targetWidth * 15) : 0);
+  setW(width, 'type', targetWidth > 0 ? 'dxa' : 'auto');
   properties.appendChild(width);
   table.appendChild(properties);
   const grid = create(doc, 'tblGrid');
@@ -478,8 +497,9 @@ function createAddedTable(doc, element) {
   for (let column = 0; column < columns; column += 1) {
     const gridColumn = create(doc, 'gridCol');
     const firstRowCell = Array.from(element.rows[0]?.cells || [])[column];
-    setW(gridColumn, 'w', firstRowCell?.colSpan === 1 && firstRowCell.style.width
-      ? Math.round(Number.parseFloat(firstRowCell.style.width) * 15) : Math.round(9000 / columns));
+    setW(gridColumn, 'w', targetWidth > 0 ? Math.round(targetWidth * 15 / columns)
+      : firstRowCell?.colSpan === 1 && firstRowCell.style.width
+        ? Math.round(Number.parseFloat(firstRowCell.style.width) * 15) : Math.round(9000 / columns));
     grid.appendChild(gridColumn);
   }
   table.appendChild(grid);
@@ -517,8 +537,9 @@ function createAddedTable(doc, element) {
       const cell = create(doc, 'tc');
       const props = create(doc, 'tcPr');
       const widthNode = create(doc, 'tcW');
-      setW(widthNode, 'w', domCell.style.width
-        ? Math.round(Number.parseFloat(domCell.style.width) * 15) : Math.round(9000 * domCell.colSpan / columns));
+      setW(widthNode, 'w', targetWidth > 0 ? Math.round(targetWidth * 15 * domCell.colSpan / columns)
+        : domCell.style.width
+          ? Math.round(Number.parseFloat(domCell.style.width) * 15) : Math.round(9000 * domCell.colSpan / columns));
       setW(widthNode, 'type', 'dxa');
       props.appendChild(widthNode);
       if (domCell.colSpan > 1) {
@@ -555,7 +576,7 @@ function createAddedTable(doc, element) {
   return table;
 }
 
-export async function makeEditedDocx(file, edits, images, tables = [], addedBlocks = []) {
+export async function makeEditedDocx(file, edits, images, tables = [], addedBlocks = [], tableMoves = []) {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const xml = await zip.file('word/document.xml')?.async('string');
   if (!xml) throw new Error('DOCX 본문을 찾을 수 없습니다.');
@@ -571,6 +592,12 @@ export async function makeEditedDocx(file, edits, images, tables = [], addedBloc
     if (!table) return;
     operations.forEach((operation) => applyTableOperation(table, operation));
     applyEditedTable(table, element);
+  });
+  tableMoves.slice().reverse().forEach(({ index, beforeParagraphIndex, beforeTableIndex }) => {
+    const table = sourceTables[index];
+    const next = beforeParagraphIndex !== null ? paragraphs[beforeParagraphIndex]
+      : beforeTableIndex !== null ? sourceTables[beforeTableIndex] : children(body, 'sectPr')[0];
+    if (table?.parentNode === body && next?.parentNode === body && table !== next) body.insertBefore(table, next);
   });
   const blockAnchors = new Map();
   addedBlocks.forEach(({ afterIndex, afterTableIndex, kind, element }) => {

@@ -55,6 +55,7 @@ export default defineConfig(({ command }) => ({
   server: {
     port: 5173,
     open: false,
+    watch: { ignored: ['**/release/**'] },
     proxy: {
       '/api': {
         target: 'http://localhost:8080',

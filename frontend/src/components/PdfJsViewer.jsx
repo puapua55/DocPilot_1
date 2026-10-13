@@ -98,6 +98,7 @@ function fitMovableTextToBox(value, settings, target) {
 function resizeMovableTextItem(item, currentRect) {
   const resized = {
     ...item,
+    isSelectionDraft: false,
     currentRect,
     movedRect: currentRect,
     displayRect: currentRect,
@@ -494,6 +495,35 @@ function getVerticalBaselineOffset(item, verticalAlign = 'middle') {
   if (verticalAlign === 'top') return topOffset;
   if (verticalAlign === 'bottom') return freeSpace + topOffset;
   return freeSpace / 2 + topOffset;
+}
+
+function materializeMovableTextEdit(item, editing) {
+  const value = String(editing.value || '').trim();
+  const fontRuns = normalizeFontRunsForText(editing.fontRuns, value);
+  return {
+    ...item,
+    isSelectionDraft: false,
+    displayText: value,
+    text: value,
+    editedText: value,
+    fontRuns: fontRuns.length ? fontRuns : (item.fontRuns || []),
+    hasChanges: item.persistedToPdf ? true : item.hasChanges,
+    fontWeight: editing.fontWeight || item.fontWeight || 'normal',
+    fontStyle: editing.fontStyle || item.fontStyle || 'normal',
+    textDecoration: editing.textDecoration || item.textDecoration || 'none',
+    letterSpacing: Number(editing.letterSpacing) || 0,
+    verticalAlign: editing.verticalAlign || item.verticalAlign || 'middle',
+    baselineOffset: Number.isFinite(Number(editing.baselineOffset))
+      ? Number(editing.baselineOffset)
+      : getVerticalBaselineOffset(item, editing.verticalAlign || item.verticalAlign),
+    textAlign: editing.textAlign || item.textAlign || 'left',
+    fontSize: Number(editing.fontSize) || item.fontSize || 10,
+    manualFontSize: editing.manualFontSize === true,
+    autoFitBaseFontSize: Number(editing.baseFontSize) || item.autoFitBaseFontSize || item.fontSize || 10,
+    autoFitBaseLetterSpacing: Number(editing.baseLetterSpacing) || item.autoFitBaseLetterSpacing || 0,
+    selectedFontFamily: item.selectedFontFamily || '',
+    color: editing.color || item.color || '#111111'
+  };
 }
 
 function TextEditFormatToolbar({ editing, onChange, onCommit, fonts = [], onFontChange, onBeforeFormat }) {
@@ -1157,6 +1187,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const fittedSelection = {
       ...selection,
       ...fitted,
+      isSelectionDraft: Boolean(selection.autoEdit && selection.createdFromSelection),
       fontRuns,
       autoFitBaseFontSize: baseFontSize,
       autoFitBaseLetterSpacing: baseLetterSpacing,
@@ -1166,13 +1197,15 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     };
     setMovableTexts((current) => {
       const supersededIds = new Set(selection.supersedesIds || []);
-      const next = [...current.filter((item) => !supersededIds.has(item.id)), { ...fittedSelection, id }];
-      if (selection.type !== 'addedText' || value.trim()) {
+      const next = [...current.filter((item) => fittedSelection.isSelectionDraft
+        || !supersededIds.has(item.id)), { ...fittedSelection, id }];
+      if (!fittedSelection.isSelectionDraft && (selection.type !== 'addedText' || value.trim())) {
         commitPdfChange(userHighlight, appliedReplacePreview, next, id);
       }
       return next;
     });
     setSelectedMovableTextId(id);
+    editingModifiedRef.current = { id: fittedSelection.isSelectionDraft ? id : null, modified: false };
     const initial = fittedSelection.autoEdit ? {
       id,
       value,
@@ -1213,6 +1246,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       return {
         ...selection,
         ...fitted,
+        isSelectionDraft: true,
         fontRuns,
         autoFitBaseFontSize: baseFontSize,
         autoFitBaseLetterSpacing: baseLetterSpacing,
@@ -1225,10 +1259,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const first = entries[0];
     setMovableTexts((current) => {
       const next = [...current, ...entries];
-      commitPdfChange(userHighlight, appliedReplacePreview, next, first.id);
       return next;
     });
     setSelectedMovableTextId(first.id);
+    editingModifiedRef.current = { id: first.id, modified: false };
     const initial = {
       id: first.id,
       value: String(first.displayText ?? first.text ?? ''),
@@ -1284,8 +1318,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         fontFamily: previewFont.selectionValue || item.selectedFontFamily || item.previewFontFamily || ''
       };
       // The rendered text can be wider than PDF.js's invisible selection
-      // layer. Keep room for it before fitting, including text on colored
-      // cards and body-size text.
+      // layer. The editor may need more room, but the PDF replacement must
+      // still fit the original line width when saved.
       if (!item.fitToBoxByLetterSpacing && !item.manuallyResized && item.type !== 'addedText' && !text.includes('\n')
         && item.currentRect && Number(item.sourcePageWidth) > 0) {
         const naturalWidth = measureMovableTextWidth(text, settings, target);
@@ -1300,7 +1334,6 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         if (expandedWidth > Number(item.currentRect.width)) {
           target.currentRect = { ...item.currentRect, width: expandedWidth };
           target.displayRect = { ...(item.displayRect || item.currentRect), width: expandedWidth };
-          target.fitTextWidth = expandedWidth;
         }
       }
       const fitted = fitMovableTextToBox(text, settings, target);
@@ -1401,7 +1434,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const finishMoveMovableText = (id, currentRect) => {
     const next = movableTexts.map((item) => (
       item.id === id
-        ? { ...item, currentRect, movedRect: currentRect, hasChanges: item.persistedToPdf ? true : item.hasChanges }
+        ? { ...item, currentRect, movedRect: currentRect, isSelectionDraft: false,
+          hasChanges: item.persistedToPdf ? true : item.hasChanges }
         : item
     ));
     setMovableTexts(next);
@@ -1741,8 +1775,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const cancelEditMovableText = () => {
     if (editingMovableText?.id) {
       setMovableTexts((current) => current.filter((item) => (
-        item.id !== editingMovableText.id || item.type !== 'addedText'
-        || String(item.displayText ?? item.text ?? '').trim()
+        item.id !== editingMovableText.id || (
+          !item.isSelectionDraft && (item.type !== 'addedText'
+            || String(item.displayText ?? item.text ?? '').trim()))
       )));
     }
     editingSelectionRangeRef.current = { id: null, range: null };
@@ -1756,6 +1791,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     // recalculate its font metrics or mark the saved PDF text for redrawing.
     if (editingModifiedRef.current.id === editingMovableText.id
       && !editingModifiedRef.current.modified) {
+      const draft = movableTexts.find((item) => item.id === editingMovableText.id)?.isSelectionDraft;
+      if (draft) {
+        setMovableTexts((current) => current.filter((item) => item.id !== editingMovableText.id));
+        setSelectedMovableTextId(null);
+      }
       editingModifiedRef.current = { id: null, modified: false };
       editingSelectionRangeRef.current = { id: null, range: null };
       setEditingMovableText(null);
@@ -1763,7 +1803,6 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     }
     editingModifiedRef.current = { id: null, modified: false };
     const value = String(editingMovableText.value || '').trim();
-    const committedFontRuns = normalizeFontRunsForText(editingMovableText.fontRuns, value);
     const target = movableTexts.find((item) => item.id === editingMovableText.id);
     if (target?.type === 'addedText' && !value) {
       setMovableTexts((current) => {
@@ -1785,33 +1824,10 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setMovableTexts((current) => {
       // Use the latest queued text state so a just-selected font candidate is
       // never overwritten by this input's blur/commit handler.
-      const next = current.map((item) => item.id === editingMovableText.id
-        ? {
-          ...item,
-          displayText: value,
-          text: value,
-          editedText: value,
-          fontRuns: committedFontRuns.length ? committedFontRuns : (item.fontRuns || []),
-          hasChanges: item.persistedToPdf ? true : item.hasChanges,
-          fontWeight: editingMovableText.fontWeight || item.fontWeight || 'normal',
-          fontStyle: editingMovableText.fontStyle || item.fontStyle || 'normal',
-          textDecoration: editingMovableText.textDecoration || item.textDecoration || 'none',
-          letterSpacing: Number(editingMovableText.letterSpacing) || 0,
-          verticalAlign: editingMovableText.verticalAlign || item.verticalAlign || 'middle',
-          baselineOffset: Number.isFinite(Number(editingMovableText.baselineOffset))
-            ? Number(editingMovableText.baselineOffset)
-            : getVerticalBaselineOffset(item, editingMovableText.verticalAlign || item.verticalAlign),
-          textAlign: editingMovableText.textAlign || item.textAlign || 'left',
-          fontSize: Number(editingMovableText.fontSize) || item.fontSize || 10,
-          manualFontSize: editingMovableText.manualFontSize === true,
-          autoFitBaseFontSize: Number(editingMovableText.baseFontSize) || item.autoFitBaseFontSize || item.fontSize || 10,
-          autoFitBaseLetterSpacing: Number(editingMovableText.baseLetterSpacing) || item.autoFitBaseLetterSpacing || 0,
-          // Whole-box user font changes are persisted by changeEditingMovableTextFont.
-          // The editing toolbar's current run/font is only a display value and
-          // must not become a global override on commit.
-          selectedFontFamily: item.selectedFontFamily || '',
-          color: editingMovableText.color || item.color || '#111111'
-        }
+      const targetDraft = current.find((item) => item.id === editingMovableText.id);
+      const supersededIds = new Set(targetDraft?.isSelectionDraft ? targetDraft.supersedesIds || [] : []);
+      const next = current.filter((item) => !supersededIds.has(item.id)).map((item) => item.id === editingMovableText.id
+        ? materializeMovableTextEdit(item, editingMovableText)
         : item);
       commitPdfChange(userHighlight, appliedReplacePreview, next, editingMovableText.id);
       return next;
@@ -2058,7 +2074,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const getPendingPdfChanges = () => {
     // Review selections from an instant replacement already exist in the
     // reloaded PDF. They are UI affordances only until edited or moved.
-    const pendingMovableTexts = movableTexts.filter((item) => !item.persistedToPdf || item.hasChanges);
+    const activeEditedId = editingModifiedRef.current.modified ? editingModifiedRef.current.id : null;
+    const activeItem = movableTexts.find((item) => item.id === activeEditedId);
+    const supersededIds = new Set(activeItem?.isSelectionDraft ? activeItem.supersedesIds || [] : []);
+    const pendingMovableTexts = movableTexts.filter((item) => !supersededIds.has(item.id))
+      .map((item) => item.id === activeEditedId && editingMovableText?.id === item.id
+        ? materializeMovableTextEdit(item, editingMovableText) : item)
+      .filter((item) => !item.isSelectionDraft
+      && (!item.persistedToPdf || item.hasChanges));
     const highlights = Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
         const pageWidth = pageElement.clientWidth || pageElement.getBoundingClientRect().width;
         const pageHeight = pageElement.clientHeight || pageElement.getBoundingClientRect().height;
@@ -2705,12 +2728,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   }, [pdfDocument, replacePreview]);
 
   const handleVisualConvert = async () => {
-    if ((!appliedReplacePreview?.originalText || appliedReplacePreview?.newText == null) && movableTexts.length === 0) return;
+    const pendingTexts = movableTexts.filter((item) => !item.isSelectionDraft);
+    if ((!appliedReplacePreview?.originalText || appliedReplacePreview?.newText == null) && pendingTexts.length === 0) return;
 
     setVisualConvertStatus('running');
     setVisualConvertMessage('');
     try {
-      const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts });
+      const result = await onVisualConvert?.({ replacement: appliedReplacePreview, movableTexts: pendingTexts });
       setVisualConvertStatus('success');
       setVisualConvertMessage(`${result?.replaceCount ?? 0}건 변환 완료`);
     } catch (error) {

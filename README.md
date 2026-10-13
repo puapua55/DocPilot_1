@@ -1,10 +1,52 @@
 # DocPilot
 
-DocPilot은 React 기반 문서 작업 화면을 중심으로 정리 중이며, 최종 목표는 Electron 기반 Windows 실행 프로그램입니다.
+DocPilot은 PDF와 DOCX 문서를 열어 검색하고, 화면에서 편집한 뒤 파일로 저장하는 Windows 문서 작업 앱입니다. 화면은 React로 구현했으며 무설치 배포본은 Electron으로 실행합니다.
 
-현재 Spring Boot는 React 개발 서버의 백엔드 API와 정적 리소스 제공 역할을 담당합니다. React 화면은 추후 Electron API로 전환하기 쉽도록 서비스 계층을 분리해 유지합니다.
+## 주요 기능
 
-## React 실행 방법
+### 문서 검색과 AI 채팅
+
+- 문서에서 정확한 문구를 검색하고 결과의 페이지와 위치로 이동합니다.
+- 검색 결과를 선택해 하이라이트하거나 텍스트를 일괄 변경합니다. 변경 대상은 전체 또는 개별 결과로 지정할 수 있습니다.
+- 오른쪽 채팅 패널에서 문서 검색, 하이라이트, 텍스트 변경을 요청할 수 있습니다.
+- 채팅 검색 결과가 0건이면 문서 안의 비슷한 문구를 차례로 제안합니다. 사용자가 맞다고 확인한 문구로 정확한 검색을 다시 실행합니다.
+- AI 채팅에는 Gemini를 사용하며 기본 모델은 `gemini-3.1-flash-lite`입니다. AI 기능을 사용하려면 API 키가 필요하지만, 화면의 문서 검색은 키 없이 사용할 수 있습니다.
+
+### PDF 보기와 편집
+
+- 스크롤 모드와 페이지 이동 모드, 현재 페이지 번호 입력, 확대·축소, 너비 맞춤·페이지 맞춤을 지원합니다.
+- 문서의 텍스트를 선택해 수정하거나 이동하고, 새 텍스트 상자와 이미지를 추가할 수 있습니다. 글꼴, 크기, 색, 정렬 등의 서식을 조절할 수 있습니다.
+- 행·열 수를 골라 표를 삽입하고, 표의 크기·셀 서식·테두리를 설정할 수 있습니다. 표 복사 후 페이지에서 오른쪽 클릭으로 붙여넣을 수 있습니다.
+- 편집 작업을 실행 취소·다시 실행하거나 전체 초기화할 수 있습니다.
+- **페이지 작업**에서 `2, 4-5`처럼 번호와 범위를 입력해 페이지를 추출하거나 삭제할 수 있습니다. 다른 PDF는 맨 앞, 맨 뒤 또는 지정한 페이지 뒤에 삽입할 수 있습니다. 삽입·삭제 후 변경된 페이지 번호가 이후 작업과 다운로드에 반영됩니다.
+- 전체 PDF 다운로드와 페이지 추출은 스크롤 미리보기에서 확인한 뒤 저장합니다.
+- 비밀번호가 필요한 PDF를 열거나 삽입할 때 비밀번호 입력창을 표시합니다. 암호화된 PDF를 합칠 때는 저장 파일에 적용할 암호화 설정을 선택할 수 있습니다.
+
+### DOCX 보기와 편집
+
+- 원본의 페이지 크기와 여백을 반영해 표시하며, 스크롤·페이지 이동 모드를 지원합니다.
+- 본문 텍스트와 글꼴, 크기, 자간, 색, 강조 서식, 정렬을 편집하고 이미지를 추가할 수 있습니다.
+- 표를 삽입하고 행·열, 전체 크기, 셀 서식, 테두리를 설정할 수 있습니다. 행·열 추가·삭제, 셀 병합·분할, 문단 사이 표 이동과 크기 조절을 지원합니다.
+- 실행 취소·다시 실행·전체 초기화가 가능하며, 작업 결과를 DOCX 또는 PDF로 다운로드할 수 있습니다.
+
+## 사용 방법
+
+1. Windows에서 `frontend/release/DocPilot 0.1.0.exe`를 실행합니다. 폴더형 배포본은 `frontend/release/win-unpacked/DocPilot.exe`를 실행합니다.
+2. PDF 또는 DOCX 파일을 선택합니다.
+3. 뷰어에서 페이지를 확인하거나 검색합니다. 내용을 바꾸려면 **편집** 모드로 전환합니다.
+4. 작업 후 **다운로드**를 눌러 결과를 저장합니다. PDF는 저장 전에 미리보기를 확인할 수 있습니다.
+
+파일 선택창에는 `.doc`도 표시되지만 구형 DOC 형식은 현재 미리보기를 지원하지 않습니다. DOCX로 변환한 뒤 열어 주세요. 업로드 가능한 파일 크기는 50MB 이하입니다.
+
+### 암호화된 PDF
+
+- 열 때 비밀번호가 필요한 문서는 비밀번호 입력 후 볼 수 있습니다.
+- 비밀번호 없이 열리지만 내부가 암호화된 PDF는 편집 기능이 제한됩니다.
+- 일부 암호화된 페이지의 추출·삽입·삭제 처리에는 이미지 변환이 사용됩니다. 변환된 페이지에서는 기존 텍스트 선택과 검색이 제한될 수 있습니다.
+
+## 개발 및 빌드
+
+### React 개발 서버
 
 ```bash
 cd frontend
@@ -12,37 +54,26 @@ npm install
 npm run dev
 ```
 
-실행 후 Codespaces의 PORTS 탭에서 5173 포트를 Open in Browser로 열면 React 화면을 확인할 수 있습니다.
+브라우저에서 `http://localhost:5173`을 엽니다. 개발 서버의 `/api/*` 요청은 Vite 프록시를 통해 `http://localhost:8080`으로 전달됩니다. 브라우저 개발 환경에서 Gemini 채팅을 사용하려면 Spring Boot 서버를 별도로 실행해야 합니다.
 
-## Spring Boot 실행 방법
+### Spring Boot 개발 서버
 
-Gemini API Key는 프론트엔드에 넣지 말고 Spring Boot를 실행하는 터미널의 환경변수로만 설정합니다.
-
-```bash
-export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
-# 선택: 기본 모델을 바꾸고 싶을 때만 지정
-export GEMINI_MODEL="gemini-3.1-flash-lite"
-mvn spring-boot:run
-```
-
-React 개발 서버의 `/api/*` 요청은 `frontend/vite.config.js` 프록시를 통해 `http://localhost:8080`으로 전달됩니다.
-
-Windows PowerShell에서는 다음처럼 설정할 수 있습니다.
+PowerShell에서는 다음처럼 API 키를 서버 환경변수에 설정합니다.
 
 ```powershell
 $env:GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
-$env:GEMINI_MODEL="gemini-3.1-flash-lite"
+$env:GEMINI_MODEL="gemini-3.1-flash-lite" # 선택 사항
 mvn spring-boot:run
 ```
 
-API Key를 `frontend/.env`, React 소스, Vite 환경변수(`VITE_*`)에 저장하지 마세요.
+Electron 무설치 배포본은 Spring Boot와 JRE 없이 실행되며 Gemini 요청을 Electron 메인 프로세스에서 처리합니다. 앱의 Gemini 설정 화면에서 API 키를 입력할 수 있습니다. 키를 React 소스, `frontend/.env` 또는 `VITE_*` 환경변수에 넣지 마세요.
 
-## 현재 포함 기능
+### Windows 무설치 배포본 만들기
 
-- PDF / DOCX 문서 선택 및 뷰어
-- 정확한 문서 검색
-- 위치 하이라이트
-- 즉시 텍스트 교체
-- 오른쪽 DocPilot AI 문서 작업 패널 (검색·하이라이트·텍스트 교체 요청만 허용)
-- React `/api/chat` → Spring Boot → Gemini `generateContent` API 연결
-- Electron 전환을 고려한 서비스 분리 구조
+```powershell
+cd frontend
+npm install
+npm run electron:build:portable
+```
+
+결과 파일은 `frontend/release/DocPilot 0.1.0.exe`입니다. 폴더형 배포본은 `npm run electron:build:unpacked`, ZIP 배포본은 `npm run electron:zip:unpacked`로 생성할 수 있습니다. 자세한 내용은 [무설치 빌드 안내](docs/electron-portable-build.md)를 참고하세요.

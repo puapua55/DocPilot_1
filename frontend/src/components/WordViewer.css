@@ -187,6 +187,7 @@
 .docx-table-toolbar.is-inactive { display: none; }
 .docx-table-toolbar-heading { display: flex; align-items: baseline; gap: 10px; }
 .docx-table-toolbar-heading > span { white-space: nowrap; color: #6c7d9e; }
+.docx-table-toolbar-heading .docx-table-gesture-hint { margin-left: auto; font-size: .7rem; }
 .docx-table-toolbar-tabs { display: flex; gap: 4px; border-bottom: 1px solid #d8e2f8; }
 .docx-table-toolbar .docx-table-toolbar-tabs button { min-height: 27px; padding: 4px 12px; border: 0; border-radius: 6px 6px 0 0; background: transparent; color: #64779d; font-weight: 600; }
 .docx-table-toolbar .docx-table-toolbar-tabs button.is-active { background: #e4edff; color: #2455bb; box-shadow: inset 0 -2px #4474ed; }
@@ -210,6 +211,16 @@
 .docx-diagonal-border-overlay { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .docx-exporting .docx-diagonal-border-overlay { pointer-events: none; }
 .docx-content .docx-table-cell-selected { outline: 2px solid #4e7cff; outline-offset: -2px; }
+.docx-content table.docx-table-selected { position: relative; outline: 2px solid #4e7cff; outline-offset: 3px; }
+.docx-content table.docx-table-selected::before,
+.docx-content table.docx-table-selected::after { position: absolute; z-index: 5; display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid #315fc7; border-radius: 5px; background: #fff; color: #315fc7; font: 700 13px/1 sans-serif; user-select: none; }
+.docx-content table.docx-table-selected::before { content: '↕'; top: -12px; left: -12px; cursor: grab; }
+.docx-content table.docx-table-selected::after { content: '↘'; right: -12px; bottom: -12px; cursor: nwse-resize; }
+.docx-content .docx-table-drop-before { border-top: 3px solid #315fc7 !important; }
+.docx-content .docx-table-drop-after { border-bottom: 3px solid #315fc7 !important; }
+.docx-content.docx-exporting table.docx-table-selected { outline: 0; }
+.docx-content.docx-exporting table.docx-table-selected::before,
+.docx-content.docx-exporting table.docx-table-selected::after { display: none; }
 .docx-content .docx-added-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 8px 0; }
 .docx-content .docx-added-table td { min-width: 36px; min-height: 24px; padding: 4px; vertical-align: top; }
 .docx-content .docx-added-table p { margin: 0; min-height: 1.2em; }

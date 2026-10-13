@@ -428,6 +428,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   const [customTableColumns, setCustomTableColumns] = useState('3');
   const tablePickerRef = useRef(null);
   const tableDragRef = useRef(null);
+  const tableGestureRef = useRef(null);
   const suppressTableClickRef = useRef(false);
   const [tableFill, setTableFill] = useState('#ffffff');
   const [tableBorderBrush, setTableBorderBrush] = useState({ style: 'solid', width: 1, color: '#000000' });
@@ -575,6 +576,8 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     const clone = page.cloneNode(true);
     clone.querySelectorAll('.docx-added-image.is-selected').forEach((image) => image.classList.remove('is-selected'));
     clone.querySelectorAll('.docx-table-cell-selected').forEach((cell) => cell.classList.remove('docx-table-cell-selected'));
+    clone.querySelectorAll('.docx-table-selected, .docx-table-drop-before, .docx-table-drop-after').forEach((element) =>
+      element.classList.remove('docx-table-selected', 'docx-table-drop-before', 'docx-table-drop-after'));
     return clone.innerHTML;
   });
 
@@ -1224,10 +1227,164 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', end); };
   }, []);
 
+  useEffect(() => () => tableGestureRef.current?.abort(), []);
+
+  const recordMovedTable = (table) => {
+    if (table.dataset.docxTableIndex !== undefined) {
+      table.dataset.docxTableMoved = 'true';
+      return;
+    }
+    const siblings = Array.from(table.parentElement.children);
+    const previous = siblings.slice(0, siblings.indexOf(table)).reverse().find((block) =>
+      block.dataset.docxParagraphIndex !== undefined || block.dataset.docxTableIndex !== undefined);
+    table.dataset.docxInsertAfter = previous?.dataset.docxParagraphIndex ?? '-1';
+    if (previous?.dataset.docxTableIndex !== undefined) table.dataset.docxInsertAfterTable = previous.dataset.docxTableIndex;
+    else delete table.dataset.docxInsertAfterTable;
+  };
+
+  const moveSelectedWordTable = (direction) => {
+    const table = selectedTableElement();
+    const adjacent = direction < 0 ? table?.previousElementSibling : table?.nextElementSibling;
+    if (!table || !adjacent || !adjacent.matches('p, h1, h2, h3, h4, h5, h6, table')) return;
+    if (direction < 0) adjacent.before(table);
+    else adjacent.after(table);
+    recordMovedTable(table);
+    commitDocumentChange();
+  };
+
+  const tableSizeLimits = (table, currentHeight) => {
+    const containerWidth = table.parentElement?.getBoundingClientRect().width / actualScale;
+    const pageWidth = pageLayout
+      ? pageLayout.width - pageLayout.left - pageLayout.right
+      : containerWidth;
+    const maxWidth = Math.max(80, Math.floor(
+      Number.isFinite(pageWidth) && pageWidth > 0 ? pageWidth : containerWidth
+    ));
+    const pageHeight = pageLayout?.height - pageLayout?.top - pageLayout?.bottom;
+    const maxHeight = Math.max(currentHeight, Number.isFinite(pageHeight) && pageHeight > 0 ? pageHeight : currentHeight);
+    return { maxWidth, maxHeight };
+  };
+
+  const resizeWholeWordTable = (axis, value) => {
+    const table = selectedTableElement();
+    const requested = Number(value);
+    if (!table || !Number.isFinite(requested) || requested < 40) return;
+    const rect = table.getBoundingClientRect();
+    const { maxWidth, maxHeight } = tableSizeLimits(table, rect.height / actualScale);
+    if (axis === 'width') {
+      const currentWidth = rect.width / actualScale;
+      const width = Math.min(requested, maxWidth);
+      const columns = Array.from(table.querySelectorAll('colgroup > col'));
+      const widths = columns.map((column) => column.getBoundingClientRect().width / actualScale);
+      table.style.width = `${width}px`;
+      table.style.maxWidth = 'none';
+      table.style.tableLayout = 'fixed';
+      columns.forEach((column, index) => {
+        column.style.width = `${widths[index] * width / currentWidth}px`;
+      });
+      table.dataset.docxTableWidth = String(Math.round(width));
+    } else {
+      const currentHeight = rect.height / actualScale;
+      const height = Math.min(requested, maxHeight);
+      const rows = Array.from(table.rows);
+      const heights = rows.map((row) => row.getBoundingClientRect().height / actualScale);
+      rows.forEach((row, index) => {
+        row.style.height = `${Math.max(24, heights[index] * height / currentHeight)}px`;
+        row.dataset.docxRowSizeDirty = 'true';
+      });
+    }
+    table.dataset.docxTableDirty = 'true';
+    commitDocumentChange();
+  };
+
+  const startTableGesture = (event, table, mode) => {
+    event.preventDefault();
+    event.stopPropagation();
+    tableGestureRef.current?.abort();
+    const controller = new AbortController();
+    tableGestureRef.current = controller;
+    const rect = table.getBoundingClientRect();
+    const startWidth = rect.width / actualScale;
+    const startHeight = rect.height / actualScale;
+    const { maxWidth, maxHeight } = tableSizeLimits(table, startHeight);
+    const rowHeights = Array.from(table.rows).map((row) => row.getBoundingClientRect().height / actualScale);
+    const columns = Array.from(table.querySelectorAll('colgroup > col'));
+    const columnWidths = columns.map((column) => column.getBoundingClientRect().width / actualScale);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let target = null;
+    let after = false;
+    let changed = false;
+    const clearTarget = () => {
+      target?.classList.remove('docx-table-drop-before', 'docx-table-drop-after');
+      target = null;
+    };
+    const move = (pointerEvent) => {
+      if (mode === 'resize') {
+        const width = Math.min(maxWidth, Math.max(80,
+          Math.round((startWidth + (pointerEvent.clientX - startX) / actualScale) / 8) * 8));
+        const height = Math.min(maxHeight, Math.max(table.rows.length * 24,
+          Math.round((startHeight + (pointerEvent.clientY - startY) / actualScale) / 8) * 8));
+        table.style.width = `${width}px`;
+        table.style.maxWidth = 'none';
+        table.style.tableLayout = 'fixed';
+        columns.forEach((column, index) => { column.style.width = `${columnWidths[index] * width / startWidth}px`; });
+        Array.from(table.rows).forEach((row, index) => { row.style.height = `${Math.max(24, rowHeights[index] * height / startHeight)}px`; });
+        changed = true;
+        return;
+      }
+      clearTarget();
+      const blocks = Array.from(table.parentElement?.children || []).filter((block) => block !== table
+        && (block.dataset.docxParagraphIndex !== undefined || block.dataset.docxTableIndex !== undefined
+          || block.dataset.docxAddedParagraph === 'true' || block.dataset.docxAddedTable === 'true'));
+      if (!blocks.length) return;
+      target = blocks.reduce((nearest, block) => {
+        const rect = block.getBoundingClientRect();
+        const distance = Math.abs(rect.top + rect.height / 2 - pointerEvent.clientY);
+        return !nearest || distance < nearest.distance ? { element: block, distance } : nearest;
+      }, null)?.element;
+      if (!target) return;
+      const targetRect = target.getBoundingClientRect();
+      after = pointerEvent.clientY >= targetRect.top + targetRect.height / 2;
+      target.classList.add(after ? 'docx-table-drop-after' : 'docx-table-drop-before');
+      changed = true;
+    };
+    const end = () => {
+      controller.abort();
+      tableGestureRef.current = null;
+      if (mode === 'move' && target && changed) {
+        if (after) target.after(table);
+        else target.before(table);
+        recordMovedTable(table);
+      }
+      if (mode === 'resize' && changed) {
+        table.dataset.docxTableWidth = String(Math.round(table.getBoundingClientRect().width / actualScale));
+        table.dataset.docxTableDirty = 'true';
+        Array.from(table.rows).forEach((row) => { row.dataset.docxRowSizeDirty = 'true'; });
+      }
+      clearTarget();
+      if (changed) commitDocumentChange();
+    };
+    window.addEventListener('pointermove', move, { signal: controller.signal });
+    window.addEventListener('pointerup', end, { signal: controller.signal, once: true });
+  };
+
   const handleTableCellPointerDown = (event) => {
-    const cell = event.target.closest?.('td, th');
-    const table = cell?.closest('table[data-docx-table-id]');
+    const table = event.target.closest?.('table[data-docx-table-id]');
     if (!editingEnabled || event.button !== 0 || !table || !docxContentRef.current?.contains(table)) return;
+    if (table.dataset.docxTableId === selectedTableCell?.tableId) {
+      const rect = table.getBoundingClientRect();
+      if (event.clientX <= rect.left + 8 && event.clientY <= rect.top + 8) {
+        startTableGesture(event, table, 'move');
+        return;
+      }
+      if (event.clientX >= rect.right - 8 && event.clientY >= rect.bottom - 8) {
+        startTableGesture(event, table, 'resize');
+        return;
+      }
+    }
+    const cell = event.target.closest?.('td, th');
+    if (!cell) return;
     const row = cell.parentElement?.rowIndex ?? -1;
     const column = cell.cellIndex;
     const anchor = event.shiftKey && selectedTableCell?.tableId === table.dataset.docxTableId
@@ -1239,8 +1396,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
 
   useEffect(() => {
     docxContentRef.current?.querySelectorAll('.docx-table-cell-selected').forEach((cell) => cell.classList.remove('docx-table-cell-selected'));
+    docxContentRef.current?.querySelectorAll('.docx-table-selected').forEach((table) => table.classList.remove('docx-table-selected'));
     const table = selectedTableElement();
     const bounds = selectedTableBounds();
+    if (editingEnabled && table) table.classList.add('docx-table-selected');
     if (editingEnabled && table && bounds) Array.from(table.rows).forEach((row, rowIndex) => {
       Array.from(row.cells).forEach((cell, columnIndex) => {
         if (rowIndex >= bounds.minRow && rowIndex <= bounds.maxRow
@@ -1617,7 +1776,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     }
     if (editingEnabled && event.target.closest?.('table')) return;
     setSelectedTableCell(null);
-    setBorderPanelOpen(false);
+    setTableSettingsTab(null);
     if (editingEnabled && !event.target.closest?.('p, h1, h2, h3, h4, h5, h6, table, img, header, footer, .docx-added-image')) {
       const page = event.target.closest?.('section.docx, .word-document');
       if (page && docxContentRef.current?.contains(page)) {
@@ -1905,12 +2064,21 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     const tables = Array.from(root?.querySelectorAll('table[data-docx-table-index][data-docx-table-dirty="true"]') || [])
       .map((element) => ({ index: Number(element.dataset.docxTableIndex), element,
         operations: JSON.parse(element.dataset.docxTableOperations || '[]') }));
+    const tableMoves = Array.from(root?.querySelectorAll('table[data-docx-table-index][data-docx-table-moved="true"]') || [])
+      .map((element) => {
+        let next = element.nextElementSibling;
+        while (next && next.dataset.docxParagraphIndex === undefined && next.dataset.docxTableIndex === undefined)
+          next = next.nextElementSibling;
+        return { index: Number(element.dataset.docxTableIndex),
+          beforeParagraphIndex: next?.dataset.docxParagraphIndex === undefined ? null : Number(next.dataset.docxParagraphIndex),
+          beforeTableIndex: next?.dataset.docxTableIndex === undefined ? null : Number(next.dataset.docxTableIndex) };
+      });
     const addedBlocks = Array.from(root?.querySelectorAll('[data-docx-added-paragraph="true"], table[data-docx-added-table="true"]') || [])
       .map((element) => ({ afterIndex: Number(element.dataset.docxInsertAfter),
         afterTableIndex: element.dataset.docxInsertAfterTable === undefined ? null : Number(element.dataset.docxInsertAfterTable),
         kind: element.dataset.docxAddedTable === 'true' ? 'table' : 'paragraph', element }));
-    if (!edits.length && !images.length && !tables.length && !addedBlocks.length) return false;
-    let blob = await makeEditedDocx(file, edits, images, tables, addedBlocks);
+    if (!edits.length && !images.length && !tables.length && !addedBlocks.length && !tableMoves.length) return false;
+    let blob = await makeEditedDocx(file, edits, images, tables, addedBlocks, tableMoves);
     const highlights = Array.from(root.querySelectorAll('.docx-highlight')).map((element) => ({ text: element.textContent || '', color: element.dataset.highlightColor || 'yellow' }));
     if (highlights.length) blob = await makeDocxFileWithHighlights(blob, highlights);
     const url = URL.createObjectURL(blob);
@@ -2029,7 +2197,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       setSelectedImageId(null);
       setSelectedTableCell(null);
       setTablePickerOpen(false);
-      setBorderPanelOpen(false);
+      setTableSettingsTab(null);
     }
     setEditingEnabled(nextEditing);
   };
@@ -2226,7 +2394,13 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
           role="toolbar" aria-label="Word 표 편집" aria-hidden={!selectedWordTable}>
           <div className="docx-table-toolbar-heading"><strong>표 편집</strong><span>{hasSelectedTableRange
             ? `${selectedWordTableBounds.minRow + 1}~${selectedWordTableBounds.maxRow + 1}행, ${selectedWordTableBounds.minColumn + 1}~${selectedWordTableBounds.maxColumn + 1}열`
-            : `${displayedTableCell.row + 1}행 ${displayedTableCell.column + 1}열`}</span></div>
+            : `${displayedTableCell.row + 1}행 ${displayedTableCell.column + 1}열`}</span>
+            <button type="button" onClick={() => moveSelectedWordTable(-1)} disabled={!selectedWordTable?.previousElementSibling}
+              title="표를 앞 문단 위로 이동">표 위로</button>
+            <button type="button" onClick={() => moveSelectedWordTable(1)} disabled={!selectedWordTable?.nextElementSibling}
+              title="표를 다음 문단 아래로 이동">표 아래로</button>
+            <span className="docx-table-gesture-hint">표 모서리 ↕ 이동 · ↘ 크기 조절</span>
+          </div>
           <div className="docx-table-toolbar-tabs" role="tablist" aria-label="표 설정 분류">
             {[["structure", "행·열"], ["size", "크기"], ["format", "셀 서식"], ["border", "테두리"]].map(([tab, label]) =>
               <button key={tab} type="button" role="tab" aria-selected={tableSettingsTab === tab}
@@ -2260,6 +2434,16 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
             </div>)}
           </> : null}
           {tableSettingsTab === 'size' ? <>
+            <div className="docx-table-tool-group"><span>표 전체</span>
+              <label>너비 <input type="number" aria-label="표 전체 너비" min="80" key={`table-width-${selectedTableCell?.tableId}-${historyState.index}`}
+                defaultValue={Math.round(selectedWordTable?.getBoundingClientRect().width / actualScale || 0)}
+                onBlur={(event) => resizeWholeWordTable('width', event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />px</label>
+              <label>높이 <input type="number" aria-label="표 전체 높이" min="40" key={`table-height-${selectedTableCell?.tableId}-${historyState.index}`}
+                defaultValue={Math.round(selectedWordTable?.getBoundingClientRect().height / actualScale || 0)}
+                onBlur={(event) => resizeWholeWordTable('height', event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />px</label>
+            </div>
             <div className="docx-table-tool-group"><span>선택한 셀</span>
             <label>열 너비 <input type="number" aria-label="선택한 열 너비" min="20" key={`width-${selectedTableCell?.tableId}-${selectedTableCell?.row}-${selectedTableCell?.column}`}
               defaultValue={Math.round(selectedCellElement()?.getBoundingClientRect().width / actualScale || 0)}

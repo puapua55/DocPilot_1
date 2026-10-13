@@ -247,9 +247,10 @@ function getDocxWidth(value, type) {
   return '';
 }
 
-function getTwipsInPixels(value, fallback) {
+function getTwipsInPixels(value, fallback, allowZero = false) {
   const numericValue = Number(value);
-  return Number.isFinite(numericValue) && numericValue > 0
+  return value != null && value !== '' && Number.isFinite(numericValue)
+    && (numericValue > 0 || allowZero && numericValue === 0)
     ? numericValue * TWIPS_TO_PIXELS
     : fallback;
 }
@@ -272,10 +273,10 @@ function getDocxPageLayout(documentXml) {
   return {
     width: getTwipsInPixels(getWordAttribute(pageSize, 'w'), 794),
     height: getTwipsInPixels(getWordAttribute(pageSize, 'h'), 1123),
-    top: getTwipsInPixels(getWordAttribute(pageMargins, 'top'), 72),
-    right: getTwipsInPixels(getWordAttribute(pageMargins, 'right'), 68),
-    bottom: getTwipsInPixels(getWordAttribute(pageMargins, 'bottom'), 72),
-    left: getTwipsInPixels(getWordAttribute(pageMargins, 'left'), 68),
+    top: getTwipsInPixels(getWordAttribute(pageMargins, 'top'), 72, true),
+    right: getTwipsInPixels(getWordAttribute(pageMargins, 'right'), 68, true),
+    bottom: getTwipsInPixels(getWordAttribute(pageMargins, 'bottom'), 72, true),
+    left: getTwipsInPixels(getWordAttribute(pageMargins, 'left'), 68, true),
     lineHeight,
     // Mammoth omits empty paragraphs. In this DOCX layout an empty paragraph
     // advances the Word line grid, paragraph mark, and paragraph-after gap.

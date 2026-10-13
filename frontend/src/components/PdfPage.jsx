@@ -168,21 +168,10 @@ function getPdfLineBaselineOffset(sourceInfo, textContent, viewport, scale, rect
   const sourceTransform = sourceInfo?.transform;
   const sourceY = Number(sourceTransform?.[5]);
   if (!Array.isArray(sourceTransform) || !Number.isFinite(sourceY) || !viewport || !rect) return null;
-
-  // A moved/replaced item can have a slightly different baseline from the
-  // other glyphs on the same visual line. Use the line's nearby PDF text
-  // transforms as a consensus baseline so a second edit does not preserve an
-  // earlier overlay's small vertical drift.
-  const tolerance = Math.max(2, (Number(fallbackFontSize) || 10) * 0.45);
-  const lineBaselines = (Array.isArray(textContent?.items) ? textContent.items : [])
-    .filter((item) => typeof item?.str === 'string' && item.str.trim())
-    .map((item) => Number(item?.transform?.[5]))
-    .filter((y) => Number.isFinite(y) && Math.abs(y - sourceY) <= tolerance)
-    .sort((a, b) => a - b);
-  const baselineY = lineBaselines.length
-    ? lineBaselines[Math.floor(lineBaselines.length / 2)]
-    : sourceY;
-  const point = viewport.convertToViewportPoint(Number(sourceTransform[4]) || 0, baselineY);
+  // Nearby text can belong to another column with a baseline a few points
+  // away. Its median would move this paragraph even when only one word is
+  // edited. Anchor the replacement to the selected PDF text transform.
+  const point = viewport.convertToViewportPoint(Number(sourceTransform[4]) || 0, sourceY);
   return Number.isFinite(point?.[1]) ? point[1] / scale - Number(rect.y) : null;
 }
 
@@ -315,6 +304,7 @@ function tableAlignmentGuides(textContent, viewport, scale, movableTexts, tables
 function getMovedSourceCoverRects(movableTexts = []) {
   return movableTexts.flatMap((item) => {
     if (item.type === 'addedText') return [];
+    if (item.isSelectionDraft) return [];
     // A saved item with no pending edits is already represented in the PDF.
     // It has no live cover in MovableTextLayer, so it should not block text.
     if (item.persistedToPdf && !item.hasChanges) return [];
@@ -739,6 +729,7 @@ function getAreaTextLineGroups(
     const pageRect = pageElement.getBoundingClientRect();
     movableTexts.filter((item) => (
       Number(item.pageNumber) === Number(pageElement.dataset.pageNumber)
+      && !item.isSelectionDraft
       && (!item.persistedToPdf || item.hasChanges)
       && item.type === 'replacementText'
       && Math.abs(Number(item.currentRect?.x) - Number(item.originalRect?.x)) <= 0.5
@@ -2582,7 +2573,8 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
     <div className={`movable-text-layer${textMoveMode ? ' is-move-mode' : ''}`} aria-hidden="true">
       {items.map((item) => (
         <div key={item.id}>
-          {(item.type === 'addedText' || (item.persistedToPdf && !item.hasChanges)
+          {(item.type === 'addedText' || (item.isSelectionDraft && editingMovableText?.id !== item.id)
+            || (item.persistedToPdf && !item.hasChanges)
             ? []
             : (item.persistedToPdf && item.hasChanges
               ? [item.originalRect]
@@ -2607,7 +2599,7 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
             })()
           ))}
           <div
-            className={`movable-text-object ${selectedId === item.id ? 'is-selected' : ''} ${item.persistedToPdf && !item.hasChanges ? 'is-review-selection' : ''} ${item.type === 'addedText' ? 'is-added-text' : ''}`}
+            className={`movable-text-object ${selectedId === item.id ? 'is-selected' : ''} ${item.isSelectionDraft && editingMovableText?.id !== item.id ? 'is-selection-draft' : ''} ${item.persistedToPdf && !item.hasChanges ? 'is-review-selection' : ''} ${item.type === 'addedText' ? 'is-added-text' : ''}`}
             data-movable-text-id={item.id}
             style={{
               left: `${item.currentRect.x * scale}px`,

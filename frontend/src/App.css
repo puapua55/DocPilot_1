@@ -1518,6 +1518,10 @@ button:disabled {
   outline-offset: 2px;
 }
 
+.movable-text-object.is-selection-draft {
+  opacity: 0;
+}
+
 .movable-text-object.is-added-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

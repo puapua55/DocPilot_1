@@ -283,6 +283,7 @@ function drawFallbackTextOutlines(page, font, text, mapped, color, letterSpacing
 
 function collectMovableTextReplacements(movableTexts = []) {
   return movableTexts
+    .filter((item) => !item?.isSelectionDraft)
     // An instant replacement has already been written to the reloaded PDF.
     // Keep its selected editor region out of later saves until the user moves
     // it or changes its text/style.
