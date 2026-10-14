@@ -1052,7 +1052,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setTextAddMode(false);
     setTableAddMode(false);
     setTextReplaceMode(false);
-    setAreaTextReplaceMode(Boolean(isEditMode));
+    setAreaTextReplaceMode(false);
     setSelectedMovableTextId(null);
     setEditingMovableText(null);
   }, [isEditMode]);
@@ -1940,7 +1940,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setSelectedTableId(null);
     setSelectedTableCell(null);
     setTableAddMode(false);
-    setAreaTextReplaceMode(true);
+    setAreaTextReplaceMode(false);
     commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId, next, null);
   };
   const insertPickedTable = (rows, columns) => {
@@ -2971,6 +2971,27 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           <span className="pdf-toolbar-divider" aria-hidden="true" />
           <button
             type="button"
+            className={`pdf-text-move-button ${areaTextReplaceMode ? 'active' : ''}`}
+            onClick={() => {
+              if (editingMovableText) commitEditMovableText();
+              const next = !areaTextReplaceMode;
+              setAreaTextReplaceMode(next);
+              setTextMoveMode(false);
+              setTextAddMode(false);
+              setTableAddMode(false);
+              setTextReplaceMode(false);
+              setTablePickerOpen(false);
+              setSelectedMovableTextId(null);
+              setEditingMovableText(null);
+            }}
+            disabled={!isEditMode}
+            aria-pressed={areaTextReplaceMode}
+            title={areaTextReplaceMode ? '영역 지정을 종료합니다.' : '마우스로 PDF 페이지의 편집 영역을 지정합니다.'}
+          >
+            영역지정
+          </button>
+          <button
+            type="button"
             className={`pdf-text-move-button ${textMoveMode ? 'active' : ''}`}
             onClick={() => {
               if (editingMovableText) commitEditMovableText();
@@ -2979,7 +3000,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
               setTextAddMode(false);
               setTableAddMode(false);
               setTextReplaceMode(false);
-              setAreaTextReplaceMode(!next);
+              setAreaTextReplaceMode(false);
               setSelectedMovableTextId(null);
               setEditingMovableText(null);
             }}
@@ -2999,7 +3020,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
               setTextMoveMode(false);
               setTableAddMode(false);
               setTextReplaceMode(false);
-              setAreaTextReplaceMode(!next);
+              setAreaTextReplaceMode(false);
               setSelectedMovableTextId(null);
               setEditingMovableText(null);
             }}
@@ -3023,7 +3044,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
               setTextAddMode(false);
               setTextMoveMode(false);
               setTextReplaceMode(false);
-              setAreaTextReplaceMode(true);
+              setAreaTextReplaceMode(false);
               setSelectedMovableTextId(null);
               setSelectedImageId(null);
             }}
