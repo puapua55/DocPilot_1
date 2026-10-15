@@ -2,6 +2,9 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, useCallback } f
 import { createPortal } from 'react-dom';
 import HighlightLayer from './HighlightLayer';
 import PdfTextLayer from './PdfTextLayer';
+import PdfHyperlinkLayer from './PdfHyperlinkLayer';
+import HyperlinkContextMenu from './HyperlinkContextMenu';
+import { autoLinkFontRuns, removeHyperlinkFromRuns, safeHyperlink } from '../services/hyperlinkService.js';
 import { tableBorderDashArray, tableBorderSegments, tableCellAt, tablePaste, tableResizeBoundary, tableSizes, tableStyle, tableVisibleCells } from '../services/pdfTableModel.js';
 import { ensureReplacementFont, resolveReplacementPreviewFont } from '../services/pdfReplacementFont';
 import { describePdfTextFonts } from '../services/pdfFontPreview';
@@ -968,6 +971,7 @@ function PdfPage({
   onCommitEditMovableText,
   onCancelEditMovableText,
   onDeleteMovableText,
+  onRemoveTextHyperlink,
   selectedImageId = null,
   onSelectImage,
   onMoveImage,
@@ -2333,6 +2337,7 @@ function PdfPage({
         height={pageSize.height}
         onRendered={handleTextLayerRendered}
       />
+      <PdfHyperlinkLayer pdf={pdf} pageNumber={pageNumber} viewport={viewport} editingEnabled={editingEnabled} />
       {areaSelectionBox ? <div className="pdf-area-text-selection-box" style={{ left: `${areaSelectionBox.x}px`, top: `${areaSelectionBox.y}px`, width: `${areaSelectionBox.width}px`, height: `${areaSelectionBox.height}px` }} /> : null}
       <HighlightLayer boxes={selectionBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
       {!textAddMode && (textReplaceMode || (editingEnabled && !textMoveMode)) && hoveredReplacementLine ? (
@@ -2354,6 +2359,7 @@ function PdfPage({
         onEditSelectionChange={onEditSelectionChange}
         onEditCommit={onCommitEditMovableText}
         onEditCancel={onCancelEditMovableText}
+        onRemoveHyperlink={onRemoveTextHyperlink}
       />
       <ImageAttachmentLayer items={imageAttachments} scale={scale} selectedId={selectedImageId} onPointerDown={handleImagePointerDown} />
       <TableLayer items={tables} removedItems={removedTables} scale={scale} selectedId={selectedTableId} selectedCell={selectedTableCell} editingEnabled={editingEnabled} onPointerDown={handleTablePointerDown} onSelect={onSelectTable} onSelectCell={onSelectTableCell} onCopy={onCopyTable} onDelete={onDeleteTable} onUpdate={onUpdateTable} />
@@ -2566,11 +2572,16 @@ function getMovableRunWeight(run, item) {
     ? 'normal' : weight;
 }
 
-function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMoveMode, editingEnabled, onPointerDown, onResizePointerDown, onDoubleClick, onEditChange, onEditStyleChange, onEditSelectionChange, onEditCommit, onEditCancel }) {
+function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMoveMode, editingEnabled, onPointerDown, onResizePointerDown, onDoubleClick, onEditChange, onEditStyleChange, onEditSelectionChange, onEditCommit, onEditCancel, onRemoveHyperlink }) {
+  const [linkMenu, setLinkMenu] = useState(null);
   if (!items.length) return null;
 
   return (
-    <div className={`movable-text-layer${textMoveMode ? ' is-move-mode' : ''}`} aria-hidden="true">
+    <div className={`movable-text-layer${textMoveMode ? ' is-move-mode' : ''}${editingEnabled ? '' : ' is-view-mode'}`} aria-hidden="true">
+      <HyperlinkContextMenu position={linkMenu} onClose={() => setLinkMenu(null)} onRemove={() => {
+        onRemoveHyperlink?.(linkMenu.itemId, linkMenu.linkId);
+        setLinkMenu(null);
+      }} />
       {items.map((item) => (
         <div key={item.id}>
           {(item.type === 'addedText' || (item.isSelectionDraft && editingMovableText?.id !== item.id)
@@ -2632,6 +2643,13 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
               textShadow: 'none'
             }}
             onPointerDown={(event) => onPointerDown(event, item)}
+            onContextMenu={(event) => {
+              const link = event.target.closest?.('a[data-hyperlink-id]');
+              if (!editingEnabled || !link) return;
+              event.preventDefault();
+              event.stopPropagation();
+              setLinkMenu({ x: event.clientX, y: event.clientY, itemId: item.id, linkId: link.dataset.hyperlinkId });
+            }}
             onDoubleClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -2701,9 +2719,16 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
               </div>
             ) : (item.persistedToPdf && !item.hasChanges ? null : (
               Array.isArray(item.fontRuns) && item.fontRuns.length > 0
-                ? item.fontRuns.map((run, index) => (
-                  <span
+                ? item.fontRuns.map((run, index) => {
+                  const Tag = safeHyperlink(run.hyperlink) ? 'a' : 'span';
+                  return <Tag
                     key={`${item.id}-font-run-${index}`}
+                    href={Tag === 'a' ? safeHyperlink(run.hyperlink) : undefined}
+                    data-hyperlink-id={run.hyperlinkId || undefined}
+                    target={Tag === 'a' ? '_blank' : undefined}
+                    rel={Tag === 'a' ? 'noopener noreferrer' : undefined}
+                    title={Tag === 'a' ? `${run.hyperlink}${editingEnabled ? ' (Ctrl+클릭하여 열기)' : ''}` : undefined}
+                    onClick={(event) => { if (editingEnabled && !event.ctrlKey && !event.metaKey) event.preventDefault(); }}
                     style={{
                       fontFamily: item.selectedFontFamily
                         ? (item.renderFontFamily || 'DocPilotReplacement')
@@ -2720,8 +2745,8 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
                     }}
                   >
                     {run.text}
-                  </span>
-                ))
+                  </Tag>;
+                })
                 : (item.displayText || item.text)
             ))}
             {editingEnabled && !textMoveMode && selectedId === item.id
@@ -2749,7 +2774,9 @@ function readEditableFontRuns(root, baseRuns) {
     const run = { ...base, ...overrides, sourceRunIndex: base.sourceRunIndex ?? baseIndex, text };
     const key = JSON.stringify([
       baseIndex, run.fontCandidates, run.fontFamily, run.fontSize, run.fontWeight,
-      run.fontStyle, run.textDecoration, run.color, run.selectedFontFamily
+      run.fontStyle, run.textDecoration, run.color, run.selectedFontFamily,
+      run.hyperlink, run.hyperlinkId, run.hyperlinkAuto, run.hyperlinkSuppressed,
+      run.hyperlinkOriginalColor, run.hyperlinkOriginalDecoration
     ]);
     const last = collected[collected.length - 1];
     if (last?.key === key) last.text += text;
@@ -2768,6 +2795,13 @@ function readEditableFontRuns(root, baseRuns) {
     const index = Number.isInteger(Number(node.dataset?.fontRunIndex))
       ? Number(node.dataset.fontRunIndex) : baseIndex;
     const next = { ...overrides };
+    if (node.dataset?.hyperlinkSuppressed) next.hyperlinkSuppressed = node.dataset.hyperlinkSuppressed;
+    if (node.tagName === 'A' && safeHyperlink(node.getAttribute('href'))) {
+      next.hyperlink = safeHyperlink(node.getAttribute('href'));
+      next.hyperlinkId = node.dataset.hyperlinkId || (node.dataset.hyperlinkId = `pasted-link-${Date.now()}-${Math.random()}`);
+      next.hyperlinkAuto = node.dataset.hyperlinkAuto === 'true';
+      next.hyperlinkSuppressed = null;
+    }
     if (node.tagName === 'B' || node.tagName === 'STRONG') next.fontWeight = 'bold';
     if (node.tagName === 'I' || node.tagName === 'EM') next.fontStyle = 'italic';
     if (node.tagName === 'U') next.textDecoration = 'underline';
@@ -2778,7 +2812,9 @@ function readEditableFontRuns(root, baseRuns) {
     if (node.style?.color) next.color = node.style.color;
     Array.from(node.childNodes).forEach((child) => visit(child, index, next));
   };
-  Array.from(root.childNodes).forEach((child) => visit(child));
+  Array.from(root.childNodes).forEach((child) => visit(child, 0, {
+    hyperlink: null, hyperlinkId: null, hyperlinkAuto: false, hyperlinkSuppressed: null
+  }));
   return collected.map(({ key, ...run }) => run);
 }
 
@@ -2807,22 +2843,45 @@ function restoreEditableSelection(root, savedRange) {
   selection?.addRange(range);
 }
 
+function editableSelectionOffsets(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection?.rangeCount || !editor.contains(selection.anchorNode)
+    || (!selection.isCollapsed && !editor.contains(selection.focusNode))) return null;
+  const range = selection.getRangeAt(0);
+  const before = range.cloneRange();
+  before.selectNodeContents(editor);
+  before.setEnd(range.startContainer, range.startOffset);
+  const start = before.toString().length;
+  return { start, end: start + range.toString().length };
+}
+
 function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChange, onCommit, onCancel }) {
   const editorRef = useRef(null);
   const baseRunsRef = useRef([]);
+  const composingRef = useRef(false);
+  const [linkMenu, setLinkMenu] = useState(null);
   const runPreviewKey = (item.fontRuns || []).map((run) => run.renderFontFamily || '').join('\u0000');
 
-  useLayoutEffect(() => {
+  const paintRuns = (runs) => {
     const editor = editorRef.current;
     if (!editor) return;
     editor.replaceChildren();
-    const runs = editing.fontRuns || [];
     baseRunsRef.current = runs.map((run, index) => ({ ...run, sourceRunIndex: run.sourceRunIndex ?? index }));
     const sizeRatio = Number(editing.fontSize || item.fontSize || 10)
       / Math.max(1, Number(item.autoFitBaseFontSize || item.fontSize) || 10);
     runs.forEach((run, index) => {
-      const span = document.createElement('span');
+      const href = safeHyperlink(run.hyperlink);
+      const span = document.createElement(href ? 'a' : 'span');
       span.dataset.fontRunIndex = String(index);
+      if (href) {
+        span.setAttribute('href', href);
+        span.setAttribute('target', '_blank');
+        span.setAttribute('rel', 'noopener noreferrer');
+        span.dataset.hyperlinkId = run.hyperlinkId;
+        span.dataset.hyperlinkAuto = String(run.hyperlinkAuto === true);
+        span.title = `${href} (Ctrl+클릭하여 열기)`;
+      }
+      if (run.hyperlinkSuppressed) span.dataset.hyperlinkSuppressed = run.hyperlinkSuppressed;
       span.textContent = String(run.text || '');
       span.style.fontFamily = item.selectedFontFamily
         ? (item.renderFontFamily || 'DocPilotReplacement')
@@ -2835,53 +2894,60 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
       span.style.color = run.color || editing.color || '#111111';
       editor.append(span);
     });
+  };
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
     const hadEditorFocus = editor.contains(document.activeElement);
+    const savedRange = editing.selectionRange || editableSelectionOffsets(editor);
+    paintRuns(editing.fontRuns || []);
     const isNewEditor = editor.dataset.editingId !== String(editing.id);
     editor.dataset.editingId = String(editing.id);
     if (isNewEditor || hadEditorFocus || document.activeElement === document.body) editor.focus();
-    const selection = window.getSelection();
-    if (selection) {
+    if (savedRange) restoreEditableSelection(editor, savedRange);
+    else {
       const range = document.createRange();
       range.selectNodeContents(editor);
       range.collapse(false);
-      selection.removeAllRanges();
-      selection.addRange(range);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
     }
-    restoreEditableSelection(editor, editing.selectionRange);
-    const restoredSelection = window.getSelection();
-    if (restoredSelection?.rangeCount && editor.contains(restoredSelection.anchorNode)
-      && (restoredSelection.isCollapsed || editor.contains(restoredSelection.focusNode))) {
-      const range = restoredSelection.getRangeAt(0);
-      const before = range.cloneRange();
-      before.selectNodeContents(editor);
-      before.setEnd(range.startContainer, range.startOffset);
-      const start = before.toString().length;
-      onSelectionChange?.({ start, end: start + range.toString().length });
-    }
+    const selection = editableSelectionOffsets(editor);
+    if (selection) onSelectionChange?.(selection);
   }, [editing.id, editing.fontRunsRevision, item.renderFontFamily, runPreviewKey]);
 
   const reportSelection = () => {
-    const editor = editorRef.current;
-    const selection = window.getSelection();
-    if (!editor || !selection?.rangeCount || !editor.contains(selection.anchorNode)
-      || (!selection.isCollapsed && !editor.contains(selection.focusNode))) return;
-    const range = selection.getRangeAt(0);
-    const before = range.cloneRange();
-    before.selectNodeContents(editor);
-    before.setEnd(range.startContainer, range.startOffset);
-    const start = before.toString().length;
-    onSelectionChange?.({ start, end: start + range.toString().length });
+    const selection = editableSelectionOffsets(editorRef.current);
+    if (selection) onSelectionChange?.(selection);
   };
 
   const handleInput = () => {
     const editor = editorRef.current;
-    if (!editor) return;
-    const fontRuns = readEditableFontRuns(editor, baseRunsRef.current);
-    const value = fontRuns.map((run) => run.text).join('');
-    onChange?.(value, fontRuns);
+    if (!editor || composingRef.current) return;
+    const selection = editableSelectionOffsets(editor);
+    const input = readEditableFontRuns(editor, baseRunsRef.current);
+    const fontRuns = autoLinkFontRuns(input);
+    if (JSON.stringify(input) !== JSON.stringify(fontRuns)) {
+      paintRuns(fontRuns);
+      restoreEditableSelection(editor, selection);
+    }
+    onChange?.(fontRuns.map((run) => run.text).join(''), fontRuns);
+    if (selection) onSelectionChange?.(selection);
   };
 
-  return (
+  const removeLink = () => {
+    const editor = editorRef.current;
+    const selection = editableSelectionOffsets(editor);
+    const runs = removeHyperlinkFromRuns(readEditableFontRuns(editor, baseRunsRef.current), linkMenu.linkId);
+    paintRuns(runs);
+    editor.focus();
+    restoreEditableSelection(editor, selection);
+    onChange?.(runs.map((run) => run.text).join(''), runs);
+    setLinkMenu(null);
+  };
+
+  return <>
     <div
       ref={editorRef}
       className="movable-text-edit-input movable-text-edit-rich"
@@ -2893,21 +2959,33 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
       aria-label="혼합 글꼴 PDF 텍스트 편집"
       spellCheck={false}
       onInput={handleInput}
+      onCompositionStart={() => { composingRef.current = true; }}
+      onCompositionEnd={() => { composingRef.current = false; handleInput(); }}
       onMouseUp={reportSelection}
       onKeyUp={reportSelection}
       onDoubleClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        if (event.target.closest?.('a') && !event.ctrlKey && !event.metaKey) event.preventDefault();
+      }}
+      onContextMenu={(event) => {
+        const link = event.target.closest?.('a[data-hyperlink-id]');
+        if (!link) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setLinkMenu({ x: event.clientX, y: event.clientY, linkId: link.dataset.hyperlinkId });
+      }}
       onKeyDown={(event) => {
+        if (event.isComposing || event.nativeEvent.isComposing) return;
         if (event.key === 'Enter') {
           event.preventDefault();
           if (item.type === 'addedText' && !event.ctrlKey && !event.metaKey) {
             document.execCommand('insertLineBreak');
             handleInput();
-          } else {
-            onCommit?.();
-          }
+          } else onCommit?.();
         } else if (event.key === 'Escape') {
           event.preventDefault();
-          onCancel?.();
+          if (linkMenu) setLinkMenu(null);
+          else onCancel?.();
         } else if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
           event.preventDefault();
           document.execCommand(event.key.toLowerCase() === 'b' ? 'bold' : event.key.toLowerCase() === 'i' ? 'italic' : 'underline');
@@ -2916,11 +2994,12 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
       }}
       onBlur={() => {
         window.setTimeout(() => {
-          if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar')) onCommit?.();
+          if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar, .docpilot-hyperlink-menu')) onCommit?.();
         }, 0);
       }}
     />
-  );
+    <HyperlinkContextMenu position={linkMenu} onClose={() => setLinkMenu(null)} onRemove={removeLink} />
+  </>;
 }
 
 function ReplacementPreviewLayer({ items, width, height }) {

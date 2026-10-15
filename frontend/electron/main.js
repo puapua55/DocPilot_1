@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, net, protocol } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, net, protocol, shell } from 'electron';
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -289,7 +289,15 @@ function createMainWindow() {
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
 
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const target = new URL(url);
+      if (['http:', 'https:', 'ftp:', 'mailto:'].includes(target.protocol)) {
+        void shell.openExternal(target.href).catch((error) => console.warn('하이퍼링크를 열지 못했습니다.', error));
+      }
+    } catch { /* Invalid document links must not navigate the app. */ }
+    return { action: 'deny' };
+  });
   mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
     const isLocalDevUrl = navigationUrl.startsWith(defaultDevUrl);
     const isPackagedAppUrl = navigationUrl.startsWith(`${appProtocol}://`);

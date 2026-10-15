@@ -1,7 +1,8 @@
 import fontkit from '@pdf-lib/fontkit';
 // Keep these classes from the same public module instance as PDFDocument;
 // importing internal CommonJS classes makes PDFPage reject them at save time.
-import { PDFDocument, PDFOperator, PDFOperatorNames, PDFNumber, degrees, rgb } from 'pdf-lib';
+import { PDFDocument, PDFOperator, PDFOperatorNames, PDFNumber, PDFName, PDFString, degrees, rgb } from 'pdf-lib';
+import { safeHyperlink } from './hyperlinkService.js';
 import {
   capturePageDrawingStream, insertDrawingCommandsAtContentAnchors,
   moveTextWithOriginalFont, removeSimpleMovedText, replacePdfTextInContentStream, resetPageDrawingStream
@@ -132,6 +133,34 @@ function getNextLineVector(rotation, distance) {
   return { x: 0, y: -distance };
 }
 
+function removePreviousTextLinks(page, itemId) {
+  if (!itemId) return;
+  const annots = page.node.Annots();
+  for (let index = (annots?.size() || 0) - 1; index >= 0; index -= 1) {
+    const annotation = page.doc.context.lookup(annots.get(index));
+    const name = annotation?.get?.(PDFName.of('NM'))?.decodeText?.();
+    if (name?.startsWith(`DocPilotHyperlink:${itemId}:`)) annots.remove(index);
+  }
+}
+
+function writeTextLink(page, replacement, run, mapped, x, y, width, size) {
+  const href = safeHyperlink(run.hyperlink);
+  if (!href || width <= 0) return;
+  const advance = getTextAdvanceVector(mapped.rotation, width);
+  const top = getNextLineVector(mapped.rotation, -size * 0.85);
+  const bottom = getNextLineVector(mapped.rotation, size * 0.25);
+  const xs = [x + top.x, x + bottom.x, x + advance.x + top.x, x + advance.x + bottom.x];
+  const ys = [y + top.y, y + bottom.y, y + advance.y + top.y, y + advance.y + bottom.y];
+  const annotation = page.doc.context.obj({
+    Type: 'Annot', Subtype: 'Link',
+    Rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+    Border: [0, 0, 0],
+    NM: PDFString.of(`DocPilotHyperlink:${replacement.id || ''}:${run.hyperlinkId || ''}`),
+    A: { Type: 'Action', S: 'URI', URI: PDFString.of(href) }
+  });
+  page.node.addAnnot(page.doc.context.register(annotation));
+}
+
 function drawPdfFontRuns(page, replacement, mapped) {
   if (replacement.fitToBoxByLetterSpacing && replacement.fontRuns?.length === 1
     && !String(replacement.text || '').includes('\n')) {
@@ -206,6 +235,7 @@ function drawPdfFontRuns(page, replacement, mapped) {
     let cursorY = aligned.textY;
     line.forEach((run) => {
       const metrics = measureRun(run);
+      writeTextLink(page, replacement, run, mapped, cursorX, cursorY, metrics.width * horizontalScale, metrics.size);
       const runColor = toPdfColor(parseCssColor(run.color, replacement.textColor));
       const runMapped = { ...mapped, textX: cursorX, textY: cursorY, fontSize: metrics.size };
       drawPdfTextWithLetterSpacing(page, run.text, {
@@ -976,6 +1006,7 @@ export async function buildPdfWithTextEdits({
   if (replacements.some((item) => !Number.isInteger(item.pageNumber) || !pages[item.pageNumber - 1])) {
     throw new Error('편집 대상 PDF 페이지를 찾을 수 없습니다.');
   }
+  replacements.forEach((item) => removePreviousTextLinks(pages[item.pageNumber - 1], item.id));
   let replacementFont;
   let replacementOutlineFont;
   let fontSource = { source: 'none', family: '' };

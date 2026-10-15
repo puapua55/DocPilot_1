@@ -12,6 +12,7 @@ import { isPdfFile } from '../utils/fileUtils';
 import { resolveReplacementPreviewFont } from '../services/pdfReplacementFont';
 import { createHighlightBoxesFromTextLayer } from '../services/highlightService';
 import { duplicateTable, tableSizes, tableToTsv } from '../services/pdfTableModel.js';
+import { removeHyperlinkFromRuns } from '../services/hyperlinkService.js';
 
 let copiedPdfTable = null;
 
@@ -1845,6 +1846,16 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     commitPdfChange(userHighlight, appliedReplacePreview, next, null);
   };
 
+  const removeTextHyperlink = (itemId, linkId) => {
+    const next = movableTexts.map((item) => item.id === itemId ? {
+      ...item,
+      fontRuns: removeHyperlinkFromRuns(item.fontRuns || [], linkId),
+      hasChanges: item.persistedToPdf ? true : item.hasChanges
+    } : item);
+    setMovableTexts(next);
+    commitPdfChange(userHighlight, appliedReplacePreview, next, selectedMovableTextId);
+  };
+
   const addImageAttachment = async (event) => {
     const fileToAdd = event.target.files?.[0];
     event.target.value = '';
@@ -3329,6 +3340,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 onCommitEditMovableText={commitEditMovableText}
                 onCancelEditMovableText={cancelEditMovableText}
                 onDeleteMovableText={deleteMovableText}
+                onRemoveTextHyperlink={removeTextHyperlink}
                 selectedImageId={selectedImageId}
                 onSelectImage={setSelectedImageId}
                 onMoveImage={moveImageAttachment}

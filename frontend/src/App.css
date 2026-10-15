@@ -1490,6 +1490,14 @@ button:disabled {
   pointer-events: none;
 }
 
+.pdf-hyperlink-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+.pdf-hyperlink-layer a { position: absolute; display: block; pointer-events: auto; cursor: pointer; }
+.pdf-hyperlink-layer a:hover { outline: 1px solid #8aa8ff; background: rgba(78, 124, 255, 0.08); }
+.movable-text-layer.is-view-mode .movable-text-object.is-review-selection { pointer-events: none; }
+.docpilot-hyperlink-menu { position: fixed; z-index: 1200; min-width: 172px; padding: 5px; border: 1px solid #cad8f3; border-radius: 9px; background: white; box-shadow: 0 8px 24px rgba(32, 53, 100, .2); }
+.docpilot-hyperlink-menu button { display: block; width: 100%; padding: 9px 12px; border: 0; border-radius: 5px; background: white; color: #26375b; text-align: left; cursor: pointer; font: inherit; font-size: .84rem; }
+.docpilot-hyperlink-menu button:hover, .docpilot-hyperlink-menu button:focus-visible { background: #edf3ff; }
+
 .movable-text-cover {
   position: absolute;
   /* Prevent selecting the original source glyph while it is represented by
