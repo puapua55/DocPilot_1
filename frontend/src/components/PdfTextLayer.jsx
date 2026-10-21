@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { TextLayer } from 'pdfjs-dist';
+import { visibleTextItemIndices } from '../services/pdfTextVisibility.js';
 
 // PDF.js measures at scale * DPR, while DOM glyphs are laid out at CSS font
 // size. Font hinting/fallback can give those two sizes different advances.
@@ -50,25 +51,29 @@ function PdfTextLayer({ pageNumber, textContent, viewport, width, height, onRend
     container.dataset.rendered = 'false';
     container.style.setProperty('--total-scale-factor', String(viewport.scale));
     container.style.setProperty('--scale-factor', String(viewport.scale));
-    const task = new TextLayer({ textContentSource: textContent, container, viewport });
+    const visibleIndices = visibleTextItemIndices(textContent.items);
+    const visibleContent = { ...textContent, items: visibleIndices.map((index) => textContent.items[index]) };
+    const task = new TextLayer({ textContentSource: visibleContent, container, viewport });
     // PDF.js positions spans in the unrotated page box; CSS rotates that box.
     container.style.width = `${viewport.rawDims.pageWidth * viewport.scale}px`;
     container.style.height = `${viewport.rawDims.pageHeight * viewport.scale}px`;
     task.render().then(async () => {
       await document.fonts.ready;
       if (cancelled) return;
-      alignTextWidths(task, textContent, viewport, container);
-      const items = textContent.items.filter((item) => typeof item.str === 'string');
+      alignTextWidths(task, visibleContent, viewport, container);
+      const items = visibleIndices.map((index) => ({ item: textContent.items[index], index }))
+        .filter(({ item }) => typeof item.str === 'string');
       task.textDivs.forEach((span, index) => {
-        const item = items[index];
-        if (item) {
+        const entry = items[index];
+        if (entry) {
+          const { item, index: sourceIndex } = entry;
           span.dataset.pageNumber = String(pageNumber || '');
-          span.dataset.textItemIndex = String(index);
+          span.dataset.textItemIndex = String(sourceIndex);
           span.dataset.unicodeText = item.str;
           span.dataset.pdfSource = JSON.stringify({
-          text: item.str, unicodeText: item.str, textItemIndex: index,
+          text: item.str, unicodeText: item.str, textItemIndex: sourceIndex,
           transform: item.transform, width: item.width, pdfFontName: item.fontName,
-          sourceFont: textContent.fontPreviews?.[index] || null
+          sourceFont: textContent.fontPreviews?.[sourceIndex] || null
           });
         }
       });

@@ -5,7 +5,7 @@ const HIGHLIGHT_COLORS = {
   pink: 'rgba(236, 72, 153, 0.30)'
 };
 
-function HighlightLayer({ boxes, width, height, color = 'yellow' }) {
+function HighlightLayer({ boxes, width, height, color = 'yellow', persistent = false }) {
   console.log('[HighlightLayer] render boxes:', boxes);
 
   const backgroundColor = HIGHLIGHT_COLORS[color] || HIGHLIGHT_COLORS.yellow;
@@ -15,6 +15,7 @@ function HighlightLayer({ boxes, width, height, color = 'yellow' }) {
       className="highlight-layer"
       aria-hidden="true"
       data-highlight-color={color}
+      data-pdf-persistent-highlight={persistent ? 'true' : 'false'}
       style={{
         width: `${width}px`,
         height: `${height}px`

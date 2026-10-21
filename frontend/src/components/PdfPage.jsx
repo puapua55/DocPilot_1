@@ -519,14 +519,14 @@ function getSelectionSourceFont(sourceInfo, textContent, selectedText) {
 }
 
 function buildSelectionFontRuns(parts, range, textContent, scale, useWholeSpans = false) {
-  const orderedParts = sortByVisualTextRows(parts.filter((part) => part.span));
+  const orderedParts = sortByVisualTextRows(parts.filter((part) => part.span || part.item));
   const runs = [];
   let previous = null;
   orderedParts.forEach((part) => {
     const span = part.span;
-    const rect = part.rect || span.getBoundingClientRect();
-    let text = String(part.text || span.dataset.unicodeText || span.textContent || '');
-    if (range && !useWholeSpans) {
+    const rect = part.rect || span?.getBoundingClientRect();
+    let text = String(part.text || span?.dataset.unicodeText || span?.textContent || '');
+    if (range && !useWholeSpans && span) {
       try {
         const clipped = document.createRange();
         clipped.selectNodeContents(span);
@@ -555,10 +555,10 @@ function buildSelectionFontRuns(parts, range, textContent, scale, useWholeSpans 
     }
 
     let sourceInfo = null;
-    try { sourceInfo = JSON.parse(span.dataset.pdfSource || '{}'); } catch { sourceInfo = null; }
-    const index = Number(sourceInfo?.textItemIndex ?? span.dataset.textItemIndex);
-    const sourceFont = sourceInfo?.sourceFont || textContent?.fontPreviews?.[index] || {};
-    const computedStyle = window.getComputedStyle(span);
+    try { sourceInfo = span ? JSON.parse(span.dataset.pdfSource || '{}') : null; } catch { sourceInfo = null; }
+    const index = Number(sourceInfo?.textItemIndex ?? span?.dataset.textItemIndex);
+    const sourceFont = sourceInfo?.sourceFont || part.item?.sourceFont || textContent?.fontPreviews?.[index] || {};
+    const computedStyle = window.getComputedStyle(span || part.element);
     const fontSize = Math.max(1, Number(sourceFont.fontSize)
       || (Number.parseFloat(computedStyle.fontSize) / Math.max(scale, 0.01)) || 10);
     const fontCandidates = collectFontCandidates(sourceFont);
@@ -566,13 +566,13 @@ function buildSelectionFontRuns(parts, range, textContent, scale, useWholeSpans 
       text: `${separator}${text}`,
       fontCandidates,
       originalFontCandidates: fontCandidates,
-      fontFamily: computedStyle.fontFamily || sourceFont.fontFamily || 'DocPilotReplacement',
-      originalFontFamily: computedStyle.fontFamily || sourceFont.fontFamily || 'DocPilotReplacement',
+      fontFamily: part.item?.renderFontFamily || computedStyle.fontFamily || sourceFont.fontFamily || 'DocPilotReplacement',
+      originalFontFamily: part.item?.renderFontFamily || computedStyle.fontFamily || sourceFont.fontFamily || 'DocPilotReplacement',
       fontSize,
       fontWeight: sourceFont.fontWeight || computedStyle.fontWeight || 'normal',
       fontStyle: sourceFont.fontStyle || computedStyle.fontStyle || 'normal',
       textDecoration: computedStyle.textDecorationLine || 'none',
-      color: sourceFont.textColor || computedStyle.color || '#111111',
+      color: part.item?.color || sourceFont.textColor || computedStyle.color || '#111111',
       preferBoldFont: sourceFont.preferBoldFont === true,
       originalPreferBoldFont: sourceFont.preferBoldFont === true
     };
@@ -701,35 +701,90 @@ function getSelectionGeometry(range, pageElement, scale, textLayer, movableTexts
   );
 }
 
+function getTextSpanPartsInArea(span, area, excludedRects = []) {
+  const text = span.textContent || '';
+  const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let offset = 0;
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    nodes.push({ node, start: offset, end: offset + node.length });
+    offset += node.length;
+  }
+  const locate = (position, end = false) => nodes.find((entry) => end
+    ? position > entry.start && position <= entry.end
+    : position >= entry.start && position < entry.end);
+  const makeRange = (start, end) => {
+    const first = locate(start);
+    const last = locate(end, true);
+    if (!first || !last) return null;
+    const range = document.createRange();
+    range.setStart(first.node, start - first.start);
+    range.setEnd(last.node, end - last.start);
+    return range;
+  };
+  // DOM ranges include PDF.js's font and horizontal transforms. Measuring
+  // graphemes avoids assuming equal glyph widths or splitting combined text.
+  const segments = typeof Intl.Segmenter === 'function'
+    ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)]
+    : Array.from(text).map((segment, index, characters) => ({ segment, index: characters.slice(0, index).join('').length }));
+  const selected = [];
+  for (const { segment, index } of segments) {
+    const rect = makeRange(index, index + segment.length)?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+    const x = (rect.left + rect.right) / 2;
+    const y = (rect.top + rect.bottom) / 2;
+    if (x < area.left || x > area.right || y < area.top || y > area.bottom
+      || excludedRects.some((cover) => x >= cover.left && x <= cover.right && y >= cover.top && y <= cover.bottom)) continue;
+    const previous = selected[selected.length - 1];
+    if (previous?.end === index) previous.end = index + segment.length;
+    else selected.push({ start: index, end: index + segment.length });
+  }
+  return selected.map(({ start, end }) => {
+    const range = makeRange(start, end);
+    return { span, range, rect: range.getBoundingClientRect(), text: range.toString(), sourceText: range.toString(), startOffset: start, endOffset: end };
+  });
+}
+
 function getAreaTextLineGroups(
-  textLayer, area, pageElement, scale, movableTexts = [], splitOnWideGaps = false, includeVisibleEdits = false
+  textLayer, area, pageElement, scale, movableTexts = [], splitOnWideGaps = false, includeVisibleEdits = false, clipToCharacters = false
 ) {
   if (!textLayer || !area || !pageElement) return [];
   const movedSourceRects = getMovedSourceCoverRects(movableTexts);
+  const pageRect = pageElement.getBoundingClientRect();
+  const screenCovers = movedSourceRects.map((rect) => ({
+    left: pageRect.left + rect.left * scale, top: pageRect.top + rect.top * scale,
+    right: pageRect.left + rect.right * scale, bottom: pageRect.top + rect.bottom * scale
+  }));
   const lines = [];
   Array.from(textLayer.querySelectorAll('span[data-text-item-index]')).forEach((span) => {
     const rect = span.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
-    if (isSpanCoveredByMovedText(span, pageElement, scale, movedSourceRects)) return;
-    const centerX = (rect.left + rect.right) / 2;
-    const centerY = (rect.top + rect.bottom) / 2;
-    if (centerX < area.left || centerX > area.right || centerY < area.top || centerY > area.bottom) return;
+    if (rect.right < area.left || rect.left > area.right || rect.bottom < area.top || rect.top > area.bottom) return;
     const text = span.dataset.unicodeText ?? span.textContent ?? '';
-    if (text === '') return;
-    const line = lines.find((entry) => Math.abs(entry.centerY - centerY) <= Math.max(3, Math.min(entry.height, rect.height) * 0.7));
-    const part = { span, rect, text, sourceText: text };
-    if (line) {
-      line.parts.push(part);
-      line.top = Math.min(line.top, rect.top);
-      line.bottom = Math.max(line.bottom, rect.bottom);
-      line.centerY = (line.top + line.bottom) / 2;
-      line.height = line.bottom - line.top;
-    } else {
-      lines.push({ centerY, top: rect.top, bottom: rect.bottom, height: rect.height, parts: [part] });
-    }
+    const covered = screenCovers.some((cover) => rect.left < cover.right && rect.right > cover.left
+      && rect.top < cover.bottom && rect.bottom > cover.top);
+    const parts = clipToCharacters || covered
+      ? getTextSpanPartsInArea(span, area, screenCovers)
+      : [{ span, rect, text, sourceText: text }];
+    parts.forEach((part) => {
+      const { rect, text } = part;
+      const centerX = (rect.left + rect.right) / 2;
+      const centerY = (rect.top + rect.bottom) / 2;
+      if (text === '' || centerX < area.left || centerX > area.right || centerY < area.top || centerY > area.bottom) return;
+      const line = lines.find((entry) => Math.abs(entry.centerY - centerY) <= Math.max(3, Math.min(entry.height, rect.height) * 0.7));
+      if (line) {
+        line.parts.push(part);
+        line.top = Math.min(line.top, rect.top);
+        line.bottom = Math.max(line.bottom, rect.bottom);
+        line.centerY = (line.top + line.bottom) / 2;
+        line.height = line.bottom - line.top;
+      } else {
+        lines.push({ centerY, top: rect.top, bottom: rect.bottom, height: rect.height, parts: [part] });
+      }
+    });
   });
   if (includeVisibleEdits) {
-    const pageRect = pageElement.getBoundingClientRect();
     movableTexts.filter((item) => (
       Number(item.pageNumber) === Number(pageElement.dataset.pageNumber)
       && !item.isSelectionDraft
@@ -740,7 +795,7 @@ function getAreaTextLineGroups(
       && Number.isFinite(Number(item.currentRect?.x))
       && Number.isFinite(Number(item.currentRect?.y))
       && Number(item.currentRect?.width) > 0
-    )).forEach((item) => {
+    )).forEach((item, itemIndex, visibleItems) => {
       const text = String(item.displayText ?? item.text ?? '').trim();
       const fontSize = Math.max(1, Number(item.fontSize) || 10);
       const baselineOffset = Number.isFinite(Number(item.baselineOffset))
@@ -750,27 +805,35 @@ function getAreaTextLineGroups(
       const width = Number(item.currentRect.width) * scale;
       const height = Math.max(fontSize, Math.min(Number(item.currentRect.height) || fontSize, fontSize * 1.25)) * scale;
       const rect = { left: x, top, right: x + width, bottom: top + height, width, height };
-      const centerX = (rect.left + rect.right) / 2;
-      const centerY = (rect.top + rect.bottom) / 2;
-      if (!text || centerX < area.left || centerX > area.right || centerY < area.top || centerY > area.bottom) return;
-      const part = {
-        span: null,
-        rect,
-        text,
-        sourceText: String(item.sourceText || item.originalText || item.originalUnicodeText || text).trim(),
-        item
-      };
-      const line = lines.find((entry) => Math.abs(entry.centerY - centerY)
-        <= Math.max(3, Math.min(entry.height, rect.height) * 0.7));
-      if (line) {
-        line.parts.push(part);
-        line.top = Math.min(line.top, rect.top);
-        line.bottom = Math.max(line.bottom, rect.bottom);
-        line.centerY = (line.top + line.bottom) / 2;
-        line.height = line.bottom - line.top;
-      } else {
-        lines.push({ centerY, top: rect.top, bottom: rect.bottom, height: rect.height, parts: [part] });
-      }
+      if (!text || rect.right < area.left || rect.left > area.right || rect.bottom < area.top || rect.top > area.bottom) return;
+      const element = Array.from(pageElement.querySelectorAll('.movable-text-object[data-movable-text-id]'))
+        .find((node) => node.dataset.movableTextId === item.id);
+      if (!element) return;
+      const laterCovers = visibleItems.slice(itemIndex + 1).flatMap((later) => (
+        later.coverRects?.length ? later.coverRects : [later.originalRect]
+      )).filter((cover) => Number.isFinite(Number(cover?.x)) && Number.isFinite(Number(cover?.y)))
+        .map((cover) => ({ left: pageRect.left + Number(cover.x) * scale,
+          top: pageRect.top + Number(cover.y) * scale,
+          right: pageRect.left + (Number(cover.x) + Number(cover.width)) * scale,
+          bottom: pageRect.top + (Number(cover.y) + Number(cover.height)) * scale }));
+      const parts = getTextSpanPartsInArea(element, area, laterCovers).map((part) => ({
+        ...part, span: null, element, item, sourceText: part.text
+      }));
+      parts.forEach((part) => {
+        const partRect = part.rect;
+        const centerY = (partRect.top + partRect.bottom) / 2;
+        const line = lines.find((entry) => Math.abs(entry.centerY - centerY)
+          <= Math.max(3, Math.min(entry.height, partRect.height) * 0.7));
+        if (line) {
+          line.parts.push(part);
+          line.top = Math.min(line.top, partRect.top);
+          line.bottom = Math.max(line.bottom, partRect.bottom);
+          line.centerY = (line.top + line.bottom) / 2;
+          line.height = line.bottom - line.top;
+        } else {
+          lines.push({ centerY, top: partRect.top, bottom: partRect.bottom, height: partRect.height, parts: [part] });
+        }
+      });
     });
   }
   return lines.sort((first, second) => first.top - second.top).map((line) => {
@@ -789,6 +852,10 @@ function getAreaTextLineGroups(
       const text = joinVisualTextParts(parts, 'text');
       const sourceText = joinVisualTextParts(parts.map((part) => ({ ...part, sourceText: part.sourceText || part.text })), 'sourceText');
       const supersedesIds = parts.map((part) => part.item?.id).filter(Boolean);
+      if (includeVisibleEdits && supersedesIds.length) {
+        geometry.coverRects = [...geometry.coverRects, ...parts.flatMap((part) => part.item
+          ? (part.item.coverRects?.length ? part.item.coverRects : [part.item.originalRect]) : [])];
+      }
       return geometry && text
         ? { text, sourceText, geometry, parts, supersedesIds, sourceElement: parts.find((part) => part.span)?.span || null }
         : null;
@@ -972,6 +1039,9 @@ function PdfPage({
   onCancelEditMovableText,
   onDeleteMovableText,
   onRemoveTextHyperlink,
+  internalLinkEdits = [],
+  onChangeInternalLink,
+  onNavigateInternalLink,
   selectedImageId = null,
   onSelectImage,
   onMoveImage,
@@ -1290,6 +1360,7 @@ function PdfPage({
       // A browser selection is represented by PDF.js Unicode text. Preserve
       // that exact text for export rather than replaying the source glyph run.
       forceUnicodeFallback: true,
+      coverSourceOnFallback: Boolean(lineSelection?.supersedesIds?.length),
       sourceSelection,
       sourceFont: sourceFont || null,
       // Preserve the original PDF font name for partial search selections as
@@ -1432,7 +1503,7 @@ function PdfPage({
     const pageElement = pageRef.current;
     const textLayer = pageElement?.querySelector('.textLayer');
     if (!pageElement || !textLayer || !textContent) return;
-    const groups = getAreaTextLineGroups(textLayer, area, pageElement, scale, movableTexts);
+    const groups = getAreaTextLineGroups(textLayer, area, pageElement, scale, movableTexts, false, true, true);
     if (!groups.length) return;
 
     const selections = groups.map((group, index) => {
@@ -1441,15 +1512,22 @@ function PdfPage({
       const fontRuns = buildSelectionFontRuns(group.parts, null, textContent, scale, true)?.runs || [];
       let sourceInfo = null;
       try { sourceInfo = sourceElement?.dataset.pdfSource ? JSON.parse(sourceElement.dataset.pdfSource) : null; } catch { sourceInfo = null; }
+      const selectedPart = group.parts.length === 1 ? group.parts[0] : null;
+      const wholeItem = selectedPart?.startOffset === 0 && selectedPart?.endOffset === selectedPart?.span?.textContent?.length;
+      const sourceSelection = sourceInfo && selectedPart
+        ? { ...sourceInfo, wholeItem, partialSelection: !wholeItem, selectedText: text }
+        : null;
+      const overlaySource = selectedPart?.item || null;
       const computedStyle = sourceElement ? window.getComputedStyle(sourceElement) : null;
       const computedFontSize = Number.parseFloat(computedStyle?.fontSize);
       const fontSize = Math.max(1, (Number.isFinite(computedFontSize) && computedFontSize > 1
-        ? computedFontSize : currentRect.height * scale * 0.82) / scale);
+        ? computedFontSize : overlaySource?.fontSize ? Number(overlaySource.fontSize) * scale
+          : currentRect.height * scale * 0.82) / scale);
       const sourceBaselineOffset = getPdfLineBaselineOffset(sourceInfo, textContent, viewport, scale, currentRect, fontSize);
-      const sourceFont = getSelectionSourceFont(sourceInfo, textContent, text);
+      const sourceFont = getSelectionSourceFont(sourceInfo, textContent, text) || overlaySource?.sourceFont;
       const fontCandidates = collectFontCandidates(sourceFont, sourceInfo?.sourceFont,
-        textContent?.fontPreviews?.[Number(sourceInfo?.textItemIndex)]);
-      const sourceFontWeight = sourceFont?.fontWeight || computedStyle?.fontWeight || 'normal';
+        textContent?.fontPreviews?.[Number(sourceInfo?.textItemIndex)], overlaySource);
+      const sourceFontWeight = sourceFont?.fontWeight || overlaySource?.fontWeight || computedStyle?.fontWeight || 'normal';
       const measuredText = measureDisplayText(text, fontSize, { ...computedStyle, fontWeight: sourceFontWeight });
       const displayRect = {
         ...currentRect,
@@ -1476,15 +1554,17 @@ function PdfPage({
         sourcePageWidth: pageSize.width / scale, sourcePageHeight: pageSize.height / scale,
         backgroundColor, backgroundRightEdge: Number.isFinite(backgroundRightEdge) ? backgroundRightEdge / scale : null,
         coverPadding: Math.max(1 / scale, fontSize * 0.06), color, renderFontFamily: 'DocPilotReplacement', fontSize,
-        fontFamily: computedStyle?.fontFamily || 'Helvetica, Arial, sans-serif', fontWeight: 'normal',
+        fontFamily: overlaySource?.renderFontFamily || computedStyle?.fontFamily || 'Helvetica, Arial, sans-serif', fontWeight: 'normal',
         preferBoldFont, fontStyle: computedStyle?.fontStyle || 'normal', letterSpacing: 0,
         verticalAlign: 'middle', textAlign: 'left', allowMove: false, autoEdit: index === 0,
-        forceUnicodeFallback: true, sourceSelection: null, sourceFont: sourceFont || null,
+        forceUnicodeFallback: true, sourceSelection, coverSourceOnFallback: true, sourceFont: sourceFont || null,
         fontCandidates, originalFontCandidates: fontCandidates, fontRuns, originalPreferBoldFont: preferBoldFont,
         originalGlyphText: sourceFont?.glyphText || null, originalEncodedText: sourceInfo?.encodedText || null,
         fontAnalysis: sourceInfo?.sourceFont || null,
         baselineOffset: Number.isFinite(sourceBaselineOffset)
-          ? sourceBaselineOffset : Math.max(0, (currentRect.height - fontSize) / 2) + fontSize * 0.88,
+          ? sourceBaselineOffset : overlaySource && Number.isFinite(Number(overlaySource.baselineOffset))
+            ? Number(overlaySource.currentRect.y) + Number(overlaySource.baselineOffset) - currentRect.y
+            : Math.max(0, (currentRect.height - fontSize) / 2) + fontSize * 0.88,
         baselineFromPdfLine: Number.isFinite(sourceBaselineOffset),
         canDirectEdit: false, fallbackReason: '영역 선택으로 만든 줄별 텍스트 교체 항목입니다.'
       };
@@ -1548,7 +1628,8 @@ function PdfPage({
 
   const handleAreaSelectionPointerDown = useCallback((event) => {
     if ((!areaTextReplaceMode && !textAddMode && !tableAddMode) || event.button !== 0 || !pageRef.current) return;
-    if (event.target.closest?.('.movable-text-object, .movable-text-edit-input, .movable-text-format-toolbar, .pdf-image-attachment, .pdf-table-object, button')) return;
+    if (event.target.closest?.('.movable-text-edit-input, .movable-text-format-toolbar, .movable-text-resize-handle, .pdf-image-attachment, .pdf-table-object, button')) return;
+    if (!areaTextReplaceMode && event.target.closest?.('.movable-text-object')) return;
     if (tableAddMode) {
       event.preventDefault();
       const rect = pageRef.current.getBoundingClientRect();
@@ -1561,8 +1642,8 @@ function PdfPage({
           y: Math.max(0, Math.min((event.clientY - rect.top) / scale, pageHeight - height)), width, height } });
       return;
     }
-    if (!textAddMode && !tableAddMode && event.target.closest?.('.textLayer span[data-text-item-index]')) return;
     event.preventDefault();
+    window.getSelection()?.removeAllRanges();
     const pageRect = pageRef.current.getBoundingClientRect();
     const startX = Math.max(0, Math.min(pageRect.width, event.clientX - pageRect.left));
     const startY = Math.max(0, Math.min(pageRect.height, event.clientY - pageRect.top));
@@ -1585,6 +1666,7 @@ function PdfPage({
       window.removeEventListener('pointerup', finish);
       setAreaSelectionBox(null);
       if (!box || box.width < 6 || box.height < 6 || !active) return;
+      suppressReplacementClickRef.current = { x: pointerEvent.clientX, y: pointerEvent.clientY, expiresAt: Date.now() + 250 };
       const selectedArea = {
         left: active.pageRect.left + box.x, top: active.pageRect.top + box.y,
         right: active.pageRect.left + box.x + box.width, bottom: active.pageRect.top + box.y + box.height
@@ -1689,6 +1771,7 @@ function PdfPage({
   const handleMovableTextPointerDown = (event, item) => {
     if (!editingEnabled) return;
     if (event.button !== 0) return;
+    if (areaTextReplaceMode) return;
     event.stopPropagation();
     event.preventDefault();
     onSelectMovableText?.(item.id);
@@ -2320,7 +2403,7 @@ function PdfPage({
       onMouseMove={handleReplacementLineHover}
       onMouseLeave={clearHoveredReplacementLine}
       onClick={handleReplacementLineClick}
-      onPointerDown={handleAreaSelectionPointerDown}
+      onPointerDownCapture={handleAreaSelectionPointerDown}
       style={{
         width: pageSize.width ? `${pageSize.width}px` : undefined,
         height: pageSize.height ? `${pageSize.height}px` : undefined,
@@ -2337,7 +2420,20 @@ function PdfPage({
         height={pageSize.height}
         onRendered={handleTextLayerRendered}
       />
-      <PdfHyperlinkLayer pdf={pdf} pageNumber={pageNumber} viewport={viewport} editingEnabled={editingEnabled} />
+      <PdfHyperlinkLayer pdf={pdf} pageNumber={pageNumber} viewport={viewport} editingEnabled={editingEnabled}
+        edits={internalLinkEdits} onChange={onChangeInternalLink} onNavigate={onNavigateInternalLink}
+        getTextBoxAtTarget={(target) => {
+          if (textAddMode || tableAddMode || textMoveMode) return null;
+          const editedBox = target.closest?.('.movable-text-object[data-movable-text-id]');
+          if (editedBox) {
+            const pageBounds = pageRef.current.getBoundingClientRect();
+            const boxBounds = editedBox.getBoundingClientRect();
+            return { left: boxBounds.left - pageBounds.left, top: boxBounds.top - pageBounds.top,
+              width: boxBounds.width, height: boxBounds.height };
+          }
+          const rect = getReplacementLineAtTarget(target)?.geometry.currentRect;
+          return rect ? { left: rect.x * scale, top: rect.y * scale, width: rect.width * scale, height: rect.height * scale } : null;
+        }} />
       {areaSelectionBox ? <div className="pdf-area-text-selection-box" style={{ left: `${areaSelectionBox.x}px`, top: `${areaSelectionBox.y}px`, width: `${areaSelectionBox.width}px`, height: `${areaSelectionBox.height}px` }} /> : null}
       <HighlightLayer boxes={selectionBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
       {!textAddMode && (textReplaceMode || (editingEnabled && !textMoveMode)) && hoveredReplacementLine ? (
@@ -2363,7 +2459,7 @@ function PdfPage({
       />
       <ImageAttachmentLayer items={imageAttachments} scale={scale} selectedId={selectedImageId} onPointerDown={handleImagePointerDown} />
       <TableLayer items={tables} removedItems={removedTables} scale={scale} selectedId={selectedTableId} selectedCell={selectedTableCell} editingEnabled={editingEnabled} onPointerDown={handleTablePointerDown} onSelect={onSelectTable} onSelectCell={onSelectTableCell} onCopy={onCopyTable} onDelete={onDeleteTable} onUpdate={onUpdateTable} />
-      <HighlightLayer boxes={highlightBoxes} width={pageSize.width} height={pageSize.height} color={highlightOptions.color} />
+      <HighlightLayer boxes={highlightBoxes} width={pageSize.width} height={pageSize.height} color={highlightOptions.color} persistent />
       <HighlightLayer boxes={findBoxes} width={pageSize.width} height={pageSize.height} color="blue" />
     </div>
   );

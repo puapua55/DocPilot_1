@@ -1493,10 +1493,18 @@ button:disabled {
 .pdf-hyperlink-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
 .pdf-hyperlink-layer a { position: absolute; display: block; pointer-events: auto; cursor: pointer; }
 .pdf-hyperlink-layer a:hover { outline: 1px solid #8aa8ff; background: rgba(78, 124, 255, 0.08); }
-.movable-text-layer.is-view-mode .movable-text-object.is-review-selection { pointer-events: none; }
+.movable-text-layer.is-view-mode .movable-text-object { pointer-events: none; }
+.movable-text-layer.is-view-mode .movable-text-cover { pointer-events: none; }
 .docpilot-hyperlink-menu { position: fixed; z-index: 1200; min-width: 172px; padding: 5px; border: 1px solid #cad8f3; border-radius: 9px; background: white; box-shadow: 0 8px 24px rgba(32, 53, 100, .2); }
 .docpilot-hyperlink-menu button { display: block; width: 100%; padding: 9px 12px; border: 0; border-radius: 5px; background: white; color: #26375b; text-align: left; cursor: pointer; font: inherit; font-size: .84rem; }
 .docpilot-hyperlink-menu button:hover, .docpilot-hyperlink-menu button:focus-visible { background: #edf3ff; }
+.pdf-internal-link-backdrop { position: fixed; inset: 0; z-index: 1300; background: #26375b44; display: grid; place-items: center; }
+.pdf-internal-link-dialog { display: grid; gap: 16px; width: min(360px, 90vw); padding: 24px; background: #f8faff; color: #26375b; border: 1px solid #cad8f3; border-radius: 12px; box-shadow: 0 12px 40px #26375b33; }
+.pdf-internal-link-dialog label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pdf-internal-link-dialog input { width: 85px; padding: 6px; border: 1px solid #b9cbef; border-radius: 6px; }
+.pdf-internal-link-dialog span { font-size: .85rem; color: #61739b; }
+.pdf-internal-link-dialog > div { display: flex; justify-content: flex-end; gap: 8px; }
+.pdf-internal-link-dialog button { border: 1px solid #b9cbef; background: white; color: #315ed6; padding: 7px 16px; border-radius: 6px; cursor: pointer; }
 
 .movable-text-cover {
   position: absolute;
@@ -1616,6 +1624,13 @@ button:disabled {
   line-height: 1;
   white-space: pre-wrap;
   overflow: visible;
+}
+
+.movable-text-object:not(.is-added-text) .movable-text-edit-rich {
+  height: 1.15em;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .movable-text-editor {

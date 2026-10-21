@@ -1,4 +1,6 @@
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString } from 'pdf-lib';
+import { remapInternalLinks, resolvePdfJsDestination } from './pdfInternalLinks.js';
+import { safeHyperlink } from './hyperlinkService.js';
 
 function isEncryptedPdfError(error) {
   return /Input document to `PDFDocument\.load` is encrypted/.test(error?.message || '');
@@ -13,6 +15,7 @@ async function renderSelectedPages(sourceBytes, pageSelection, { onProgress } = 
     : new Uint8Array(sourceBytes).slice();
   const { loadingTask, pdf } = await loadPdfDocument(input.buffer);
   const output = await PDFDocument.create();
+  const renderedLinks = [];
   try {
     const pageNumbers = typeof pageSelection === 'function'
       ? pageSelection(pdf.numPages)
@@ -37,12 +40,36 @@ async function renderSelectedPages(sourceBytes, pageSelection, { onProgress } = 
         const embedded = await output.embedJpg(await image.arrayBuffer());
         const outputPage = output.addPage([original.width, original.height]);
         outputPage.drawImage(embedded, { x: 0, y: 0, width: original.width, height: original.height });
+        for (const annotation of await sourcePage.getAnnotations({ intent: 'display' })) {
+          if (annotation.subtype !== 'Link') continue;
+          const destination = annotation.dest ? await resolvePdfJsDestination(pdf, annotation.dest).catch(() => null) : null;
+          const url = safeHyperlink(annotation.url);
+          if (!destination && !url) continue;
+          const points = [...original.convertToViewportPoint(annotation.rect[0], annotation.rect[1]), ...original.convertToViewportPoint(annotation.rect[2], annotation.rect[3])];
+          renderedLinks.push({ index, destination, url, rect: [Math.min(points[0], points[2]), original.height - Math.max(points[1], points[3]), Math.max(points[0], points[2]), original.height - Math.min(points[1], points[3])] });
+        }
       } finally {
         canvas.width = 0;
         canvas.height = 0;
         sourcePage.cleanup();
       }
       onProgress?.(index + 1, pageNumbers.length);
+    }
+    for (const link of renderedLinks) {
+      let action;
+      if (link.destination) {
+        const targetIndex = pageNumbers.indexOf(link.destination.pageNumber);
+        if (targetIndex < 0) continue;
+        const targetPage = await pdf.getPage(link.destination.pageNumber);
+        const targetViewport = targetPage.getViewport({ scale: 1 });
+        const explicit = link.destination.explicit;
+        const kind = explicit[1]?.name;
+        const x = kind === 'XYZ' || kind === 'FitV' || kind === 'FitBV' || kind === 'FitR' ? explicit[2] : null;
+        const y = kind === 'XYZ' ? explicit[3] : kind === 'FitH' || kind === 'FitBH' ? explicit[2] : kind === 'FitR' ? explicit[5] : null;
+        const point = targetViewport.convertToViewportPoint(x ?? targetPage.view[0], y ?? targetPage.view[3]);
+        action = { Dest: [output.getPage(targetIndex).ref, PDFName.of('XYZ'), point[0], targetViewport.height - point[1], null] };
+      } else action = { A: { S: 'URI', URI: PDFString.of(link.url) } };
+      output.getPage(link.index).node.addAnnot(output.context.register(output.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: link.rect, Border: [0, 0, 0], ...action })));
     }
     return output.save();
   } finally {
@@ -81,6 +108,7 @@ export async function extractPdfPages(sourceBytes, pageNumbers, { onRasterized }
     const output = await PDFDocument.create();
     const copied = await output.copyPages(source, pageNumbers.map((page) => page - 1));
     copied.forEach((page) => output.addPage(page));
+    remapInternalLinks(source, output, pageNumbers.map((page) => page - 1), copied);
     return output.save();
   } catch (error) {
     if (!isEncryptedPdfError(error)) throw error;
@@ -96,6 +124,8 @@ export async function deletePdfPages(sourceBytes, pageNumbers, { onRasterized, o
     if (pageNumbers.length >= pdf.getPageCount()) {
       throw new Error('PDF에는 최소 한 페이지가 남아 있어야 합니다.');
     }
+    const retained = pdf.getPages().map((_, index) => index).filter((index) => !pageNumbers.includes(index + 1));
+    remapInternalLinks(pdf, pdf, retained, retained.map((index) => pdf.getPage(index)));
     [...pageNumbers].sort((left, right) => right - left).forEach((page) => pdf.removePage(page - 1));
     return pdf.save();
   } catch (error) {
@@ -133,7 +163,11 @@ export async function insertPdfPages(sourceBytes, insertedBytes, afterPage, { on
   }
   const pageCount = inserted.getPageCount();
   if (pageCount < 1) throw new Error('삽입할 PDF에 페이지가 없습니다.');
-  const pages = await pdf.copyPages(inserted, Array.from({ length: pageCount }, (_, index) => index));
+  const currentIndices = pdf.getPages().map((_, index) => index);
+  remapInternalLinks(pdf, pdf, currentIndices, pdf.getPages());
+  const insertedIndices = Array.from({ length: pageCount }, (_, index) => index);
+  const pages = await pdf.copyPages(inserted, insertedIndices);
   pages.forEach((page, index) => pdf.insertPage(afterPage + index, page));
+  remapInternalLinks(inserted, pdf, insertedIndices, pages);
   return { outputBytes: await pdf.save(), insertedPageCount: pageCount };
 }

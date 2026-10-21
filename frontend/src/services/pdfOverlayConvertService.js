@@ -340,6 +340,9 @@ function collectMovableTextReplacements(movableTexts = []) {
       return {
       id: item.id,
       sourceSelection: item.sourceSelection,
+      coverSourceOnFallback: item.coverSourceOnFallback === true
+        && Math.abs(Number(item.currentRect.x) - Number(item.originalRect.x)) < 0.5
+        && Math.abs(Number(item.currentRect.y) - Number(item.originalRect.y)) < 0.5,
       sourceText: item.type === 'addedText' ? ''
         : String(item.sourceSelection?.selectedText || item.sourceText || item.originalText || item.originalUnicodeText || text).trim(),
       originalText: item.type === 'addedText' ? ''
@@ -1147,7 +1150,7 @@ export async function buildPdfWithTextEdits({
     // command matching fails, do not paint a background rectangle. The new
     // text is still inserted below; the report exposes unresolved items so
     // callers can detect that the original may remain in the PDF.
-    if (!replacement.canDirectEdit && replacement.type !== 'movable-text' && replacement.type !== 'added-text'
+    if (!replacement.canDirectEdit && (replacement.type !== 'movable-text' || replacement.coverSourceOnFallback) && replacement.type !== 'added-text'
       && Number(replacement.coverWidth) > 0 && Number(replacement.coverHeight) > 0) page.drawRectangle({
       x: mapped.rectX,
       y: mapped.rectY,

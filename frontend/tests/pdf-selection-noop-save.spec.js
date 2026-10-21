@@ -45,6 +45,7 @@ test('area-selecting several original lines without edits does not rewrite them'
   const pdfPage = page.locator('.pdf-page[data-page-number="2"]');
   await expect(pdfPage.locator('.textLayer')).toHaveAttribute('data-rendered', 'true');
   await page.locator('.pdf-edit-mode-toggle button').last().click();
+  await page.getByRole('button', { name: '영역지정', exact: true }).click();
   const target = pdfPage.locator('.textLayer span[data-text-item-index]')
     .filter({ hasText: '문서 내 특정 내용을 빠르게' }).first();
   const line = await target.boundingBox();
@@ -158,6 +159,7 @@ test('editing one line from an area selection leaves the other paragraph lines u
   const pdfPage = page.locator('.pdf-page[data-page-number="2"]');
   await expect(pdfPage.locator('.textLayer')).toHaveAttribute('data-rendered', 'true');
   await page.locator('.pdf-edit-mode-toggle button').last().click();
+  await page.getByRole('button', { name: '영역지정', exact: true }).click();
   const line = await pdfPage.locator('.textLayer span[data-text-item-index]')
     .filter({ hasText: '문서 내 특정 내용을 빠르게' }).first().boundingBox();
   const pageBox = await pdfPage.boundingBox();

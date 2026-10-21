@@ -13,6 +13,7 @@ import { resolveReplacementPreviewFont } from '../services/pdfReplacementFont';
 import { createHighlightBoxesFromTextLayer } from '../services/highlightService';
 import { duplicateTable, tableSizes, tableToTsv } from '../services/pdfTableModel.js';
 import { removeHyperlinkFromRuns } from '../services/hyperlinkService.js';
+import { applyInternalLinkEdits } from '../services/pdfInternalLinks.js';
 
 let copiedPdfTable = null;
 
@@ -826,6 +827,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false, canReset: false });
   const [viewMode, setViewMode] = useState('scroll');
   const [currentPage, setCurrentPage] = useState(1);
+  const [internalLinkEdits, setInternalLinkEdits] = useState([]);
+  const [linkNavigation, setLinkNavigation] = useState(null);
   const [pageNumberInput, setPageNumberInput] = useState('1');
   const [pdfPageSize, setPdfPageSize] = useState({ width: 0, height: 0 });
   const [fitScale, setFitScale] = useState(1);
@@ -909,6 +912,50 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         viewer.scrollTop += target.getBoundingClientRect().top - viewer.getBoundingClientRect().top - 18;
       }
     }
+  };
+
+  const navigateInternalLink = (destination) => {
+    setCurrentPage(destination.pageNumber);
+    setPageNumberInput(String(destination.pageNumber));
+    setLinkNavigation({ ...destination, requestId: Date.now() });
+  };
+  useEffect(() => {
+    if (!linkNavigation || !pdfDocument) return undefined;
+    let cancelled = false;
+    let frame;
+    const navigate = async () => {
+      const page = await pdfDocument.getPage(linkNavigation.pageNumber);
+      const viewport = page.getViewport({ scale: effectiveScale });
+      const explicit = linkNavigation.explicit;
+      const kind = explicit?.[1]?.name;
+      const x = linkNavigation.x ?? (kind === 'XYZ' || kind === 'FitV' || kind === 'FitBV' ? explicit[2] : kind === 'FitR' ? explicit[2] : null);
+      const y = linkNavigation.y ?? (kind === 'XYZ' ? explicit[3] : kind === 'FitH' || kind === 'FitBH' ? explicit[2] : kind === 'FitR' ? explicit[5] : null);
+      const point = viewport.convertToViewportPoint(x ?? page.view[0], y ?? page.view[3]);
+      let attempts = 0;
+      const scroll = () => {
+        if (cancelled) return;
+        const viewer = viewerRef.current;
+        const target = pageRefs.current[linkNavigation.pageNumber];
+        if (!viewer || !target) {
+          if (++attempts < 120) frame = requestAnimationFrame(scroll);
+          return;
+        }
+        viewer.scrollTop += target.getBoundingClientRect().top - viewer.getBoundingClientRect().top + point[1] - 24;
+        if (x != null) viewer.scrollLeft += target.getBoundingClientRect().left - viewer.getBoundingClientRect().left + point[0] - 24;
+        setLinkNavigation(null);
+      };
+      // Wait for page mode and its dimensions to commit before scrolling.
+      frame = requestAnimationFrame(() => { frame = requestAnimationFrame(scroll); });
+    };
+    navigate().catch((error) => { console.warn('[PdfJsViewer] 내부 링크 이동 실패', error); setLinkNavigation(null); });
+    return () => { cancelled = true; cancelAnimationFrame(frame); };
+  }, [linkNavigation, pdfDocument, effectiveScale, viewMode]);
+
+  const changeInternalLink = (edit) => {
+    const next = [...internalLinkEdits.filter((item) => item.id !== edit.id), edit];
+    setInternalLinkEdits(next);
+    commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId,
+      imageAttachments, selectedImageId, tables, selectedTableId, next);
   };
 
   const getVisiblePageNumber = () => {
@@ -1069,9 +1116,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setHistoryState({ canUndo: index > 0, canRedo: index >= 0 && index < snapshots.length - 1, canReset: index > 0 });
   };
 
-  const commitPdfChange = (highlight, replace, nextMovableTexts = movableTexts, selectedMovableTextId = null, nextImages = imageAttachments, nextSelectedImageId = selectedImageId, nextTables = tables, nextSelectedTableId = selectedTableId) => {
+  const commitPdfChange = (highlight, replace, nextMovableTexts = movableTexts, selectedMovableTextId = null, nextImages = imageAttachments, nextSelectedImageId = selectedImageId, nextTables = tables, nextSelectedTableId = selectedTableId, nextInternalLinks = internalLinkEdits) => {
     const history = historyRef.current;
-    const snapshot = { highlight, replace, movableTexts: nextMovableTexts, selectedMovableTextId, imageAttachments: nextImages, selectedImageId: nextSelectedImageId, tables: nextTables, selectedTableId: nextSelectedTableId };
+    const snapshot = { highlight, replace, movableTexts: nextMovableTexts, selectedMovableTextId, imageAttachments: nextImages, selectedImageId: nextSelectedImageId, tables: nextTables, selectedTableId: nextSelectedTableId, internalLinkEdits: nextInternalLinks };
     const current = history.snapshots[history.index];
     if (current && JSON.stringify(current) === JSON.stringify(snapshot)) return;
     historyRef.current = history.index < 0
@@ -1094,6 +1141,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setMovableTexts(snapshot.movableTexts || []);
     setImageAttachments(snapshot.imageAttachments || []);
     setTables(snapshot.tables || []);
+    setInternalLinkEdits(snapshot.internalLinkEdits || []);
     setSelectedTableId(snapshot.selectedTableId || null);
     setSelectedMovableTextId(snapshot.selectedMovableTextId || null);
     setSelectedImageId(snapshot.selectedImageId || null);
@@ -1146,7 +1194,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const resetAllDocumentChanges = () => {
     const history = historyRef.current;
     let reset = false;
-    if (history.index > 0 || movableTexts.length || imageAttachments.length || JSON.stringify(tables) !== JSON.stringify(persistedTablesRef.current) || batchReplaceRequest) {
+    if (history.index > 0 || internalLinkEdits.length || movableTexts.length || imageAttachments.length || JSON.stringify(tables) !== JSON.stringify(persistedTablesRef.current) || batchReplaceRequest) {
       history.index = 0;
       restorePdfSnapshot(history.snapshots[0] || {
         highlight: { keyword: '', color: 'yellow', matchMode: 'contains' },
@@ -2097,7 +2145,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         const pageWidth = pageElement.clientWidth || pageElement.getBoundingClientRect().width;
         const pageHeight = pageElement.clientHeight || pageElement.getBoundingClientRect().height;
         const pageNumber = Number(pageElement.dataset.pageNumber);
-        return Array.from(pageElement.querySelectorAll('.highlight-box')).map((box) => ({
+        return Array.from(pageElement.querySelectorAll('.highlight-layer[data-pdf-persistent-highlight="true"] .highlight-box')).map((box) => ({
           pageNumber,
           sourcePageWidth: pageWidth,
           sourcePageHeight: pageHeight,
@@ -2173,6 +2221,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         }
         if (tablesChanged && !result?.movableTextCount) successMessage = `PDF 저장 완료 · 표 ${result?.tableCount ?? tables.length}개 반영`;
       }
+      sourceBytes = await applyInternalLinkEdits(sourceBytes, internalLinkEdits);
       if (selectedPages) {
         const { extractPdfPages } = await import('../services/pdfPageExtract.js');
         sourceBytes = await extractPdfPages(sourceBytes, selectedPages, {
@@ -2241,6 +2290,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         sourceBytes = result.outputBytes;
       }
       const { deletePdfPages } = await import('../services/pdfPageExtract.js');
+      sourceBytes = await applyInternalLinkEdits(sourceBytes, internalLinkEdits);
       let rasterized = false;
       const outputBytes = await deletePdfPages(sourceBytes, selectedPages, {
         onRasterized: () => { rasterized = true; },
@@ -2307,6 +2357,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         sourceBytes = result.outputBytes;
       }
       const { insertPdfPages } = await import('../services/pdfPageExtract.js');
+      sourceBytes = await applyInternalLinkEdits(sourceBytes, internalLinkEdits);
       const rasterizedParts = new Set();
       const { outputBytes } = await insertPdfPages(sourceBytes, await fileToInsert.arrayBuffer(), afterPage, {
         onRasterized: (part) => rasterizedParts.add(part),
@@ -2791,6 +2842,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       setPdfDocument(null);
       setPageNumbers([]);
       setCurrentPage(1);
+      setInternalLinkEdits([]);
+      setLinkNavigation(null);
       setViewMode('scroll');
       setTextMoveMode(false);
       setTextAddMode(false);
@@ -3341,6 +3394,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 onCancelEditMovableText={cancelEditMovableText}
                 onDeleteMovableText={deleteMovableText}
                 onRemoveTextHyperlink={removeTextHyperlink}
+                internalLinkEdits={internalLinkEdits}
+                onChangeInternalLink={changeInternalLink}
+                onNavigateInternalLink={navigateInternalLink}
                 selectedImageId={selectedImageId}
                 onSelectImage={setSelectedImageId}
                 onMoveImage={moveImageAttachment}
