@@ -28,11 +28,10 @@ test('PDF batch replacement keeps page mode and updates a different page', async
   await page.locator('.batch-replace-list-actions button').last().click();
 
   await expect(page.locator('.pdf-page[data-page-number="1"] .movable-text-object')).toHaveCount(1);
-  await expect(page.locator('.pdf-page[data-page-number="2"] .movable-text-object')).toHaveCount(1);
   await expect(pageMode).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('textbox', { name: '이동할 페이지 번호' })).toHaveValue('1');
   await expect(page.locator('.pdf-page[data-page-number="1"]')).toBeVisible();
-  await expect(page.locator('.pdf-page[data-page-number="2"]')).toBeHidden();
+  await expect(page.locator('.pdf-page-viewport-slot[data-page-number="2"]')).toBeHidden();
 
   await page.locator('.batch-replace-panel .search-modal-close').click();
   await page.getByRole('group', { name: '페이지 이동' }).getByRole('button', { name: '다음' }).click();

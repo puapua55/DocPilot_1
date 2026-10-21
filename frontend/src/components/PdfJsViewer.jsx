@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import PdfPage from './PdfPage';
 import PdfDownloadPreview from './PdfDownloadPreview';
@@ -16,6 +16,14 @@ import { removeHyperlinkFromRuns } from '../services/hyperlinkService.js';
 import { applyInternalLinkEdits } from '../services/pdfInternalLinks.js';
 
 let copiedPdfTable = null;
+const PAGE_RENDER_RADIUS = 2;
+const BACKGROUND_PAGE_BATCH_SIZE = 2;
+const HIGHLIGHT_EXPORT_COLORS = {
+  yellow: 'rgba(255, 235, 59, 0.45)',
+  green: 'rgba(34, 197, 94, 0.30)',
+  blue: 'rgba(59, 130, 246, 0.30)',
+  pink: 'rgba(236, 72, 153, 0.30)'
+};
 
 function measureMovableTextWidth(value, settings, target) {
   const text = String(value ?? '');
@@ -831,6 +839,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [linkNavigation, setLinkNavigation] = useState(null);
   const [pageNumberInput, setPageNumberInput] = useState('1');
   const [pdfPageSize, setPdfPageSize] = useState({ width: 0, height: 0 });
+  const [pdfPageSizes, setPdfPageSizes] = useState({});
   const [fitScale, setFitScale] = useState(1);
   const [fitMode, setFitMode] = useState('width');
   const [textMoveMode, setTextMoveMode] = useState(false);
@@ -868,6 +877,12 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const persistedTablesRef = useRef([]);
   const [batchReplaceRequest, setBatchReplaceRequest] = useState(null);
   const batchHandledPagesRef = useRef(new Map());
+  const batchCompletionRef = useRef(new Map());
+  const [batchRenderRevision, setBatchRenderRevision] = useState(0);
+  const [highlightRevision, setHighlightRevision] = useState(0);
+  const [highlightCacheRevision, setHighlightCacheRevision] = useState(0);
+  const highlightGeometryRef = useRef(new Map());
+  const highlightCompletionRef = useRef(new Map());
   const [selectedMovableTextId, setSelectedMovableTextId] = useState(null);
   const [editingMovableText, setEditingMovableText] = useState(null);
   const editingSelectionRangeRef = useRef({ id: null, range: null });
@@ -1072,6 +1087,29 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   }, [pdfDocument]);
 
   useEffect(() => {
+    let cancelled = false;
+    if (!pdfDocument) {
+      setPdfPageSizes({});
+      return undefined;
+    }
+    const loadPageSizes = async () => {
+      const sizes = {};
+      for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+        const page = await pdfDocument.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1 });
+        sizes[pageNumber] = { width: viewport.width, height: viewport.height };
+        if (!cancelled && (pageNumber === 1 || pageNumber % 20 === 0 || pageNumber === pdfDocument.numPages)) {
+          setPdfPageSizes((current) => ({ ...current, ...sizes }));
+        }
+      }
+    };
+    loadPageSizes().catch((error) => {
+      if (!cancelled) console.warn('[PdfJsViewer] page size cache failed:', error);
+    });
+    return () => { cancelled = true; };
+  }, [pdfDocument]);
+
+  useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !pdfPageSize.width) return undefined;
 
@@ -1135,6 +1173,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     // after zooming) promote the same ranges again even after Undo/Reset.
     batchHandledPagesRef.current.clear();
     setBatchReplaceRequest(null);
+    highlightGeometryRef.current = new Map();
+    setHighlightRevision((revision) => revision + 1);
+    setHighlightCacheRevision((revision) => revision + 1);
     setUserHighlight(snapshot.highlight);
     setUserHighlights(Array.isArray(snapshot.highlightEntries) ? snapshot.highlightEntries : (snapshot.highlight?.keyword ? [snapshot.highlight] : []));
     setAppliedReplacePreview(snapshot.replace);
@@ -1815,11 +1856,51 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const handledPages = batchHandledPagesRef.current.get(requestId) || new Set();
     handledPages.add(Number(pageNumber));
     batchHandledPagesRef.current.set(requestId, handledPages);
+    setBatchRenderRevision((revision) => revision + 1);
     if (targetPages.length && targetPages.every((page) => handledPages.has(page))) {
       batchHandledPagesRef.current.delete(requestId);
       setBatchReplaceRequest((current) => current?.id === requestId ? null : current);
+      const completion = batchCompletionRef.current.get(requestId);
+      if (completion) {
+        window.clearTimeout(completion.timeoutId);
+        batchCompletionRef.current.delete(requestId);
+        completion.resolve();
+      }
     }
   };
+
+  const cachePageHighlights = useCallback((payload) => {
+    if (!payload || payload.revision !== highlightRevision) return;
+    const pageNumber = Number(payload.pageNumber);
+    if (!Number.isInteger(pageNumber) || pageNumber < 1) return;
+    const entries = (Array.isArray(payload.boxes) ? payload.boxes : []).map((box) => ({
+      pageNumber,
+      sourcePageWidth: Number(payload.sourcePageWidth),
+      sourcePageHeight: Number(payload.sourcePageHeight),
+      left: Number(box.x),
+      top: Number(box.y),
+      width: Number(box.width),
+      height: Number(box.height),
+      color: HIGHLIGHT_EXPORT_COLORS[box.color] || HIGHLIGHT_EXPORT_COLORS.yellow
+    })).filter((box) => box.sourcePageWidth > 0 && box.sourcePageHeight > 0
+      && Number.isFinite(box.left) && Number.isFinite(box.top)
+      && box.width > 0 && box.height > 0);
+    const existing = highlightGeometryRef.current.get(pageNumber);
+    if (existing?.revision === highlightRevision) return;
+    const next = new Map(highlightGeometryRef.current);
+    next.set(pageNumber, { revision: highlightRevision, entries });
+    highlightGeometryRef.current = next;
+    const completion = highlightCompletionRef.current.get(highlightRevision);
+    if (completion) {
+      completion.pendingPages.delete(pageNumber);
+      if (!completion.pendingPages.size) {
+        window.clearTimeout(completion.timeoutId);
+        highlightCompletionRef.current.delete(highlightRevision);
+        completion.resolve();
+      }
+    }
+    setHighlightCacheRevision((revision) => revision + 1);
+  }, [highlightRevision]);
 
   const cancelEditMovableText = () => {
     if (editingMovableText?.id) {
@@ -2141,21 +2222,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         ? materializeMovableTextEdit(item, editingMovableText) : item)
       .filter((item) => !item.isSelectionDraft
       && (!item.persistedToPdf || item.hasChanges));
-    const highlights = Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
-        const pageWidth = pageElement.clientWidth || pageElement.getBoundingClientRect().width;
-        const pageHeight = pageElement.clientHeight || pageElement.getBoundingClientRect().height;
-        const pageNumber = Number(pageElement.dataset.pageNumber);
-        return Array.from(pageElement.querySelectorAll('.highlight-layer[data-pdf-persistent-highlight="true"] .highlight-box')).map((box) => ({
-          pageNumber,
-          sourcePageWidth: pageWidth,
-          sourcePageHeight: pageHeight,
-          left: Number.parseFloat(box.style.left),
-          top: Number.parseFloat(box.style.top),
-          width: Number.parseFloat(box.style.width),
-          height: Number.parseFloat(box.style.height),
-          color: window.getComputedStyle(box).backgroundColor
-        }));
-    });
+    const highlights = getStoredPdfHighlights();
     const tablesChanged = JSON.stringify(tables) !== JSON.stringify(persistedTablesRef.current);
     return {
       replacement: appliedReplacePreview,
@@ -2191,6 +2258,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     setDownloadMessage('');
     setDownloadFailed(false);
     try {
+      await waitForHighlightGeometry();
       const changes = getPendingPdfChanges();
       const { tablesChanged } = changes;
       let sourceBytes = changes.hasChanges ? null : await file.arrayBuffer();
@@ -2399,6 +2467,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     const clearedHighlight = { keyword: '', color: 'yellow', matchMode: 'contains', selectedTargets: [] };
     setUserHighlight(clearedHighlight);
     setUserHighlights([]);
+    highlightGeometryRef.current = new Map();
+    setHighlightRevision((revision) => revision + 1);
+    setHighlightCacheRevision((revision) => revision + 1);
     commitPdfChange(clearedHighlight, appliedReplacePreview);
     setDownloadMessage('하이라이트를 제거했습니다.');
     setDownloadFailed(false);
@@ -2408,6 +2479,29 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const hasAppliedHighlights = Array.isArray(userHighlight.selectedTargets)
     ? userHighlight.selectedTargets.length > 0
     : Boolean(userHighlight.keyword);
+
+  const getHighlightTargetPages = () => [...new Set(userHighlights.flatMap((entry) => (
+    Array.isArray(entry?.selectedTargets) ? entry.selectedTargets : []
+  )).map((target) => Number(target?.pageNumber ?? target?.page))
+    .filter((page) => Number.isInteger(page) && page > 0))];
+
+  const getPendingHighlightPages = () => getHighlightTargetPages().filter((pageNumber) => (
+    highlightGeometryRef.current.get(pageNumber)?.revision !== highlightRevision
+  ));
+
+  const waitForHighlightGeometry = async () => {
+    if (!userHighlights.length) return;
+    const deadline = Date.now() + 120000;
+    while (Date.now() < deadline) {
+      if (!getPendingHighlightPages().length) return;
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+    throw new Error('모든 페이지의 하이라이트 위치를 준비하지 못했습니다. 잠시 후 다시 시도해주세요.');
+  };
+
+  const getStoredPdfHighlights = () => Array.from(highlightGeometryRef.current.values())
+    .filter((entry) => entry.revision === highlightRevision)
+    .flatMap((entry) => entry.entries);
 
 
   const ensurePdfTextPages = async () => {
@@ -2501,21 +2595,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       ];
     },
     getPdfHighlights() {
-      return Array.from(document.querySelectorAll('.pdf-viewer .pdf-page[data-page-number]')).flatMap((pageElement) => {
-        const pageWidth = pageElement.clientWidth || pageElement.getBoundingClientRect().width;
-        const pageHeight = pageElement.clientHeight || pageElement.getBoundingClientRect().height;
-        const pageNumber = Number(pageElement.dataset.pageNumber);
-        return Array.from(pageElement.querySelectorAll('.highlight-box')).map((box) => ({
-          pageNumber,
-          sourcePageWidth: pageWidth,
-          sourcePageHeight: pageHeight,
-          left: Number.parseFloat(box.style.left),
-          top: Number.parseFloat(box.style.top),
-          width: Number.parseFloat(box.style.width),
-          height: Number.parseFloat(box.style.height),
-          color: window.getComputedStyle(box).backgroundColor
-        }));
-      });
+      return getStoredPdfHighlights();
     },
     getMovableTexts() {
       return movableTexts;
@@ -2597,9 +2677,28 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         selectedTargets: results,
         replacementTargets: results.filter((result) => result.isReplacement)
       };
+      const nextHighlightRevision = highlightRevision + 1;
+      const targetPages = [...new Set([
+        ...userHighlights.flatMap((entry) => Array.isArray(entry?.selectedTargets) ? entry.selectedTargets : []),
+        ...results
+      ].map((result) => Number(result.pageNumber ?? result.page))
+        .filter((page) => Number.isInteger(page) && page > 0))];
+      const highlightReady = targetPages.length ? new Promise((resolve, reject) => {
+        const timeoutId = window.setTimeout(() => {
+          highlightCompletionRef.current.delete(nextHighlightRevision);
+          reject(new Error('모든 페이지의 하이라이트 위치를 준비하지 못했습니다. 잠시 후 다시 시도해주세요.'));
+        }, 120000);
+        highlightCompletionRef.current.set(nextHighlightRevision, {
+          pendingPages: new Set(targetPages), resolve, reject, timeoutId
+        });
+      }) : Promise.resolve();
+      highlightGeometryRef.current = new Map();
+      setHighlightRevision(nextHighlightRevision);
+      setHighlightCacheRevision((revision) => revision + 1);
       setUserHighlight(nextHighlight);
       setUserHighlights((current) => [...current, nextHighlight]);
       commitPdfChange({ keyword: normalizedKeyword, color, matchMode, selectedTargets: results }, appliedReplacePreview);
+      await highlightReady;
       return { count: results.length, results };
     },
     async replaceText(originalText, newText, options = {}) {
@@ -2697,6 +2796,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
           originalText,
           newText,
           targets: sourceResults
+        });
+        await new Promise((resolve, reject) => {
+          const timeoutId = window.setTimeout(() => {
+            batchCompletionRef.current.delete(requestId);
+            reject(new Error('모든 페이지의 텍스트 변경 위치를 준비하지 못했습니다. 잠시 후 다시 시도해주세요.'));
+          }, 120000);
+          batchCompletionRef.current.set(requestId, { resolve, reject, timeoutId });
         });
         return {
           count: sourceResults.length + replacementResults.length,
@@ -2868,6 +2974,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       if (insertFileInputRef.current) insertFileInputRef.current.value = '';
       setUserHighlight({ keyword: '', color: 'yellow', matchMode: 'contains', selectedTargets: [] });
       setUserHighlights([]);
+      highlightGeometryRef.current = new Map();
+      setHighlightRevision((revision) => revision + 1);
+      setHighlightCacheRevision((revision) => revision + 1);
 
       if (!file || !isPdfFile(file)) {
         setPdfDocument(null);
@@ -2987,8 +3096,29 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     return <div className="pdf-loading" role="alert">{errorMessage}</div>;
   }
 
-  const batchTargetPageNumbers = new Set((batchReplaceRequest?.targets || [])
-    .map((target) => Number(target.pageNumber ?? target.page)));
+  // Batch replacement keeps the existing DOM Range/canvas sampling path for
+  // font, baseline and background fidelity, but hydrates only a small page
+  // batch at a time. Completed pages can immediately release their canvas.
+  const handledBatchPages = batchReplaceRequest
+    ? (batchHandledPagesRef.current.get(batchReplaceRequest.id) || new Set())
+    : new Set();
+  const batchTargetPageNumbers = new Set([...new Set((batchReplaceRequest?.targets || [])
+    .map((target) => Number(target.pageNumber ?? target.page))
+    .filter((page) => Number.isInteger(page) && page > 0))]
+    .filter((page) => !handledBatchPages.has(page))
+    .slice(0, BACKGROUND_PAGE_BATCH_SIZE));
+  const highlightTargetPageNumbers = new Set(getPendingHighlightPages()
+    .slice(0, BACKGROUND_PAGE_BATCH_SIZE));
+  // These revisions intentionally participate in render calculation. They
+  // advance the two-page background queues after each completed page.
+  void batchRenderRevision;
+  void highlightCacheRevision;
+
+  const shouldRenderPage = (pageNumber) => {
+    if (batchTargetPageNumbers.has(pageNumber) || highlightTargetPageNumbers.has(pageNumber)) return true;
+    if (viewMode === 'page') return currentPage === pageNumber;
+    return Math.abs(pageNumber - currentPage) <= PAGE_RENDER_RADIUS;
+  };
 
   if (!pdfDocument) {
     return <div className="pdf-loading">PDF 미리보기를 준비 중입니다...</div>;
@@ -3338,14 +3468,29 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         </div>
       <div ref={viewerRef} className="document-body-scroll pdf-viewer pdf-viewer-scroll" onScroll={scheduleScrollPageUpdate}>
         <div className="pdf-viewer-stack">
-          {pageNumbers.map((pageNumber) => (
+          {pageNumbers.map((pageNumber) => {
+            const size = pdfPageSizes[pageNumber] || pdfPageSize;
+            const renderPage = shouldRenderPage(pageNumber);
+            const backgroundTarget = batchTargetPageNumbers.has(pageNumber)
+              || highlightTargetPageNumbers.has(pageNumber);
+            return (
             <div
               key={pageNumber}
-              className={viewMode === 'page' && currentPage !== pageNumber && batchTargetPageNumbers.has(pageNumber)
-                ? 'pdf-page-batch-target-offscreen' : undefined}
-              hidden={viewMode === 'page' && currentPage !== pageNumber && !batchTargetPageNumbers.has(pageNumber)}
+              ref={(element) => {
+                if (element) pageRefs.current[pageNumber] = element;
+                else delete pageRefs.current[pageNumber];
+              }}
+              data-page-number={pageNumber}
+              className={`pdf-page-viewport-slot${viewMode === 'page' && currentPage !== pageNumber && backgroundTarget
+                ? ' pdf-page-batch-target-offscreen' : ''}`}
+              hidden={viewMode === 'page' && currentPage !== pageNumber && !backgroundTarget}
+              style={{
+                width: size.width ? `${size.width * effectiveScale}px` : undefined,
+                height: size.height ? `${size.height * effectiveScale}px` : undefined,
+                minHeight: size.height ? `${size.height * effectiveScale}px` : '320px'
+              }}
             >
-              <PdfPage
+              {renderPage ? <PdfPage
                 pdf={pdfDocument}
                 pageNumber={pageNumber}
                 scale={effectiveScale}
@@ -3402,16 +3547,13 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 onMoveImage={moveImageAttachment}
                 onMoveImageEnd={finishImageAttachmentMove}
                 onDeleteImage={deleteImageAttachment}
-                onPageReady={(element) => {
-                  if (element) {
-                    pageRefs.current[pageNumber] = element;
-                    scheduleScrollPageUpdate();
-                  }
-                  else delete pageRefs.current[pageNumber];
-                }}
-              />
+                highlightRevision={highlightRevision}
+                onHighlightsReady={cachePageHighlights}
+              /> : <div className="pdf-page-placeholder" aria-label={`${pageNumber}페이지 렌더링 대기`}>
+                <span>{pageNumber}페이지</span>
+              </div>}
             </div>
-          ))}
+          );})}
         </div>
       </div>
       </div>

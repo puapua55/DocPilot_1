@@ -1,4 +1,4 @@
-import { ALLOWED_EXTENSIONS, MAX_FILE_SIZE } from './constants';
+import { ALLOWED_EXTENSIONS } from './constants';
 
 export function getFileExtension(fileName = '') {
   const parts = fileName.split('.');
@@ -129,14 +129,7 @@ export function validateFile(file) {
     };
   }
 
-  if (file.size > MAX_FILE_SIZE) {
-    return {
-      valid: false,
-      message: '문서 크기는 50MB 이하만 허용됩니다.'
-    };
-  }
-
   return { valid: true, message: '' };
 }
 
-export { ALLOWED_EXTENSIONS, MAX_FILE_SIZE };
+export { ALLOWED_EXTENSIONS };

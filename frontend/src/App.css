@@ -1183,6 +1183,26 @@ button:disabled {
   gap: 18px;
 }
 
+.pdf-page-viewport-slot {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.pdf-page-viewport-slot > .pdf-page {
+  margin-bottom: 0;
+}
+
+.pdf-page-placeholder {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background: #ffffff;
+  box-shadow: 0 16px 36px rgba(51, 71, 132, 0.08);
+  color: #9aa6bd;
+  font-size: .78rem;
+}
+
 .pdf-page-batch-target-offscreen {
   position: absolute;
   left: -100000px;

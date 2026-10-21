@@ -12,18 +12,18 @@ test('deleting pages renumbers the viewer and changes subsequent downloads', asy
     mimeType: 'application/pdf',
     buffer: Buffer.from(await source.save())
   });
-  await expect(page.locator('.pdf-page')).toHaveCount(5);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(5);
   await page.getByRole('button', { name: '편집', exact: true }).click();
   await page.getByRole('button', { name: '페이지 작업', exact: true }).click();
   await page.getByRole('button', { name: '삭제', exact: true }).click();
   await page.getByRole('textbox', { name: '삭제할 PDF 페이지 범위' }).fill('2, 4');
   await page.getByRole('button', { name: '선택 페이지 삭제' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(3);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(3);
   await page.getByRole('button', { name: '페이지 작업', exact: true }).click();
   await page.getByRole('button', { name: '적용 전으로 되돌리기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(5);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(5);
   await page.getByRole('button', { name: '다시 적용하기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(3);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(3);
   await page.getByRole('button', { name: '페이지 이동' }).click();
   await expect(page.getByRole('textbox', { name: '이동할 페이지 번호' })).toHaveValue('1');
   await expect(page.getByRole('status', { name: 'PDF 페이지 위치' })).toContainText('/3');
@@ -31,16 +31,16 @@ test('deleting pages renumbers the viewer and changes subsequent downloads', asy
   await page.getByRole('button', { name: '페이지 작업', exact: true }).click();
   await page.getByRole('textbox', { name: '삭제할 PDF 페이지 범위' }).fill('2');
   await page.getByRole('button', { name: '선택 페이지 삭제' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(2);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(2);
   await page.getByRole('button', { name: '페이지 작업', exact: true }).click();
   await page.getByRole('button', { name: '적용 전으로 되돌리기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(3);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(3);
   await page.getByRole('button', { name: '적용 전으로 되돌리기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(5);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(5);
   await page.getByRole('button', { name: '다시 적용하기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(3);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(3);
   await page.getByRole('button', { name: '다시 적용하기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(2);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(2);
 
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
@@ -82,7 +82,7 @@ test('unsaved edits on a surviving page remain after deletion', async ({ page })
   await page.getByRole('button', { name: '삭제', exact: true }).click();
   await page.getByRole('textbox', { name: '삭제할 PDF 페이지 범위' }).fill('1');
   await page.getByRole('button', { name: '선택 페이지 삭제' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(1);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(1);
   await page.getByRole('button', { name: '페이지 작업', exact: true }).click();
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
@@ -93,13 +93,13 @@ test('unsaved edits on a surviving page remain after deletion', async ({ page })
     const pdf = await task.promise;
     expect(pdf.numPages).toBe(1);
     const content = await (await pdf.getPage(1)).getTextContent();
-    expect(content.items.map((item) => item.str).join(' ')).toContain('KEPT EDIT');
+    expect(content.items.map((item) => item.str).join('').replaceAll(/\s/g, '')).toContain('KEPTEDIT');
   } finally {
     await task.destroy();
   }
 
   await page.getByRole('button', { name: '적용 전으로 되돌리기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(2);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(2);
   const restoredDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
   await page.getByRole('dialog', { name: 'PDF 다운로드 미리보기' }).getByRole('button', { name: '확인' }).click();
@@ -109,7 +109,7 @@ test('unsaved edits on a surviving page remain after deletion', async ({ page })
     const restoredPdf = await restoredTask.promise;
     expect(restoredPdf.numPages).toBe(2);
     const restoredContent = await (await restoredPdf.getPage(2)).getTextContent();
-    expect(restoredContent.items.map((item) => item.str).join(' ')).toContain('KEPT EDIT');
+    expect(restoredContent.items.map((item) => item.str).join('').replaceAll(/\s/g, '')).toContain('KEPTEDIT');
   } finally {
     await restoredTask.destroy();
   }

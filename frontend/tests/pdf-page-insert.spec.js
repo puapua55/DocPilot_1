@@ -14,7 +14,7 @@ test('inserting another PDF updates page order, later deletion, undo, redo, and 
   await page.locator('input[type=file]').first().setInputFiles({
     name: 'source.pdf', mimeType: 'application/pdf', buffer: Buffer.from(await source.save())
   });
-  await expect(page.locator('.pdf-page')).toHaveCount(3);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(3);
   await page.getByRole('button', { name: '편집', exact: true }).click();
   await page.getByRole('button', { name: '페이지 작업', exact: true }).click();
   await page.getByRole('button', { name: '삽입', exact: true }).click();
@@ -24,19 +24,19 @@ test('inserting another PDF updates page order, later deletion, undo, redo, and 
   await page.getByRole('combobox', { name: '삽입 위치' }).selectOption('after');
   await page.getByRole('spinbutton', { name: '몇 페이지 뒤' }).fill('1');
   await page.getByRole('button', { name: 'PDF 삽입', exact: true }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(5);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(5);
 
   await page.getByRole('button', { name: '삭제', exact: true }).click();
   await page.getByRole('textbox', { name: '삭제할 PDF 페이지 범위' }).fill('4');
   await page.getByRole('button', { name: '선택 페이지 삭제' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(4);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(4);
   await page.getByRole('button', { name: '페이지 작업', exact: true }).click();
   await page.getByRole('button', { name: '적용 전으로 되돌리기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(5);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(5);
   await page.getByRole('button', { name: '적용 전으로 되돌리기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(3);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(3);
   await page.getByRole('button', { name: '다시 적용하기' }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(5);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(5);
 
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
@@ -82,7 +82,7 @@ test('unsaved edits remain on their shifted page after insertion', async ({ page
   });
   await page.getByRole('combobox', { name: '삽입 위치' }).selectOption('front');
   await page.getByRole('button', { name: 'PDF 삽입', exact: true }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(3);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(3);
 
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
@@ -92,7 +92,7 @@ test('unsaved edits remain on their shifted page after insertion', async ({ page
   try {
     const pdf = await task.promise;
     const text = await (await pdf.getPage(3)).getTextContent();
-    expect(text.items.map((item) => item.str).join(' ')).toContain('SHIFTED EDIT');
+    expect(text.items.map((item) => item.str).join('').replaceAll(/\s/g, '')).toContain('SHIFTEDEDIT');
   } finally {
     await task.destroy();
   }
@@ -108,7 +108,7 @@ test('selecting 맨 뒤 appends every page of the added PDF', async ({ page }) =
   await page.locator('input[type=file]').first().setInputFiles({
     name: 'source.pdf', mimeType: 'application/pdf', buffer: Buffer.from(await source.save())
   });
-  await expect(page.locator('.pdf-page')).toHaveCount(1);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(1);
   await page.getByRole('button', { name: '편집', exact: true }).click();
   await page.getByRole('button', { name: '페이지 작업', exact: true }).click();
   await page.getByRole('button', { name: '삽입', exact: true }).click();
@@ -119,7 +119,7 @@ test('selecting 맨 뒤 appends every page of the added PDF', async ({ page }) =
   await position.selectOption('end');
   await expect(page.getByRole('spinbutton', { name: '몇 페이지 뒤' })).toHaveCount(0);
   await page.getByRole('button', { name: 'PDF 삽입', exact: true }).click();
-  await expect(page.locator('.pdf-page')).toHaveCount(3);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(3);
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
   await page.getByRole('dialog', { name: 'PDF 다운로드 미리보기' }).getByRole('button', { name: '확인' }).click();

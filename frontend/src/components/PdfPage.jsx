@@ -1047,7 +1047,9 @@ function PdfPage({
   onMoveImage,
   onMoveImageEnd,
   onDeleteImage,
-  onPageReady
+  onPageReady,
+  highlightRevision = 0,
+  onHighlightsReady
 }) {
   const canvasRef = useRef(null);
   const pageRef = useRef(null);
@@ -2162,11 +2164,19 @@ function PdfPage({
     let frameId = 0;
 
     const updateHighlightBoxes = () => {
+      if (!textContent || !viewport || textLayerVersion < 1) return;
       const entries = Array.isArray(highlightEntries) && highlightEntries.length
         ? highlightEntries
         : (highlightKeyword ? [{ keyword: highlightKeyword, ...highlightOptions }] : []);
       if (!entries.length) {
         setHighlightBoxes([]);
+        onHighlightsReady?.({
+          pageNumber,
+          revision: highlightRevision,
+          boxes: [],
+          sourcePageWidth: pageSize.width,
+          sourcePageHeight: pageSize.height
+        });
         return;
       }
       const domRangeBoxes = entries.flatMap((entry) => {
@@ -2201,10 +2211,25 @@ function PdfPage({
         ];
       });
       if (domRangeBoxes.length > 0) {
-        setHighlightBoxes(domRangeBoxes.map((box) => ({ ...box, page: pageNumber })));
+        const boxes = domRangeBoxes.map((box) => ({ ...box, page: pageNumber }));
+        setHighlightBoxes(boxes);
+        onHighlightsReady?.({
+          pageNumber,
+          revision: highlightRevision,
+          boxes,
+          sourcePageWidth: pageSize.width,
+          sourcePageHeight: pageSize.height
+        });
         return;
       }
       setHighlightBoxes(fallbackBoxes);
+      onHighlightsReady?.({
+        pageNumber,
+        revision: highlightRevision,
+        boxes: fallbackBoxes,
+        sourcePageWidth: pageSize.width,
+        sourcePageHeight: pageSize.height
+      });
       return;
       /*
       const hasSelectedTargetFilter = Array.isArray(highlightOptions.selectedTargets);
@@ -2238,7 +2263,7 @@ function PdfPage({
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [fallbackBoxes, highlightEntries, highlightKeyword, highlightOptions, movableTexts, pageNumber, scale, textLayerVersion]);
+  }, [fallbackBoxes, highlightEntries, highlightKeyword, highlightOptions, highlightRevision, movableTexts, onHighlightsReady, pageNumber, pageSize.height, pageSize.width, scale, textLayerVersion]);
 
   useLayoutEffect(() => {
     const targetPage = Number(findResult?.pageNumber ?? findResult?.page);

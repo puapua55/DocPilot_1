@@ -9,14 +9,14 @@ test('viewer page counter follows scrolling and page navigation', async ({ page 
   await page.locator('input[type=file]').first().setInputFiles({
     name: 'page-position.pdf', mimeType: 'application/pdf', buffer: Buffer.from(await source.save())
   });
-  await expect(page.locator('.pdf-page')).toHaveCount(4);
+  await expect(page.locator('.pdf-page-viewport-slot')).toHaveCount(4);
   const counter = page.getByRole('status', { name: 'PDF 페이지 위치' });
   const pageInput = page.getByRole('textbox', { name: '이동할 페이지 번호' });
   await expect(pageInput).toHaveValue('1');
   await expect(counter).toContainText('/4');
   const viewer = page.locator('.pdf-viewer-scroll');
   const scrollToPage = async (number) => viewer.evaluate((element, targetNumber) => {
-    const target = element.querySelector(`.pdf-page[data-page-number="${targetNumber}"]`);
+    const target = element.querySelector(`.pdf-page-viewport-slot[data-page-number="${targetNumber}"]`);
     element.scrollTop += target.getBoundingClientRect().top - element.getBoundingClientRect().top - 12;
   }, number);
 
@@ -27,7 +27,7 @@ test('viewer page counter follows scrolling and page navigation', async ({ page 
   await pageInput.fill('2');
   await pageInput.press('Enter');
   await expect(pageInput).toHaveValue('2');
-  const pageTwoPosition = await page.locator('.pdf-page[data-page-number="2"]').evaluate((element) => element.getBoundingClientRect().top);
+  const pageTwoPosition = await page.locator('.pdf-page-viewport-slot[data-page-number="2"]').evaluate((element) => element.getBoundingClientRect().top);
   const viewerPosition = await viewer.evaluate((element) => element.getBoundingClientRect().top);
   expect(pageTwoPosition - viewerPosition).toBeLessThan(40);
   await pageInput.fill('9');

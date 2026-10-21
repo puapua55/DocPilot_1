@@ -1,4 +1,4 @@
-import { ALLOWED_EXTENSIONS, MAX_FILE_SIZE } from '../utils/constants';
+import { ALLOWED_EXTENSIONS } from '../utils/constants';
 
 export function getFileExtension(fileName = '') {
   const parts = fileName.split('.');
@@ -22,13 +22,6 @@ export function validateDocumentFile(file) {
     return {
       valid: false,
       message: '0 byte 파일은 열 수 없습니다.'
-    };
-  }
-
-  if (file.size > MAX_FILE_SIZE) {
-    return {
-      valid: false,
-      message: '문서 크기는 50MB 이하만 허용됩니다.'
     };
   }
 
