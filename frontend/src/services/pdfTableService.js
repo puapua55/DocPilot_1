@@ -122,7 +122,6 @@ function drawTable(page, table, font) {
   const { x, y, width, height } = table.currentRect;
   const xs = offsets(table.columnWidths, width);
   const ys = offsets(table.rowHeights, height);
-  rectangle(page, table, x, y, width, height, '#ffffff');
   const visibleCells = tableVisibleCells(table);
   visibleCells.forEach((cell) => {
     const style = table.cellStyles[cell.index];
@@ -130,8 +129,9 @@ function drawTable(page, table, font) {
     const top = y + ys[cell.row];
     const right = x + xs[cell.column + cell.colSpan];
     const bottom = y + ys[cell.row + cell.rowSpan];
+    if (style.fillNone) return;
     const fill = style.fill || (cell.row === 0 ? table.headerFill : '#ffffff');
-    if (fill !== '#ffffff') rectangle(page, table, left, top, right - left, bottom - top, fill);
+    rectangle(page, table, left, top, right - left, bottom - top, fill);
   });
   tableBorderSegments(table).forEach((edge) => line(page, table, edge));
   if (!font) return;

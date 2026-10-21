@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { safeHyperlink } from '../services/hyperlinkService.js';
 import { resolvePdfJsDestination } from '../services/pdfInternalLinks.js';
 
-export default function PdfHyperlinkLayer({ pdf, pageNumber, viewport, editingEnabled, edits = [], onChange, onNavigate, getTextBoxAtTarget }) {
+export default function PdfHyperlinkLayer({ pdf, pageNumber, viewport, editingEnabled, edits = [], onChange, onNavigate, getTextBoxAtTarget, canPasteTextBox = false, onCopyTextBox, onPasteTextBox }) {
   const [links, setLinks] = useState([]);
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [menu, setMenu] = useState(null);
@@ -80,6 +80,7 @@ export default function PdfHyperlinkLayer({ pdf, pageNumber, viewport, editingEn
         return x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height;
       });
       const textBox = getTextBoxAtTarget?.(event.target);
+      const textBoxElement = event.target.closest?.('.movable-text-object[data-movable-text-id]');
       let rect = hit?.rect || (textBox ? pdfRect(textBox) : null);
       if (!rect) {
         const selection = window.getSelection();
@@ -96,7 +97,15 @@ export default function PdfHyperlinkLayer({ pdf, pageNumber, viewport, editingEn
       }
       if (!rect) return;
       event.preventDefault(); event.stopPropagation();
-      setMenu({ x: event.clientX, y: event.clientY, link: hit, rect });
+      const pasteTarget = {
+        pageNumber,
+        x: Math.max(0, (event.clientX - bounds.left) / viewport.scale),
+        y: Math.max(0, (event.clientY - bounds.top) / viewport.scale),
+        pageWidth: bounds.width / viewport.scale,
+        pageHeight: bounds.height / viewport.scale
+      };
+      setMenu({ x: event.clientX, y: event.clientY, link: hit, rect,
+        textBoxId: textBoxElement?.dataset.movableTextId, pasteTarget });
     };
     page.addEventListener('contextmenu', context, true);
     return () => page.removeEventListener('contextmenu', context, true);
@@ -135,6 +144,8 @@ export default function PdfHyperlinkLayer({ pdf, pageNumber, viewport, editingEn
     {menu ? createPortal(<div ref={menuRef} className="docpilot-hyperlink-menu" role="menu" aria-label="내부 링크 메뉴"
       style={{ left: Math.max(0, Math.min(menu.x, window.innerWidth - 190)), top: Math.max(0, Math.min(menu.y, window.innerHeight - 100)) }}
       onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+      {menu.textBoxId && onCopyTextBox ? <button type="button" role="menuitem" onClick={() => { onCopyTextBox(menu.textBoxId); setMenu(null); }}>복사</button> : null}
+      {menu.textBoxId && canPasteTextBox && onPasteTextBox ? <button type="button" role="menuitem" onClick={() => { onPasteTextBox(menu.pasteTarget); setMenu(null); }}>붙여넣기</button> : null}
       <button type="button" role="menuitem" onClick={openDialog}>{menu.link ? '이동 대상 변경' : '내부 링크 설정'}</button>
       {menu.link ? <button type="button" role="menuitem" onClick={() => update(true)}>내부 링크 제거</button> : null}
     </div>, document.body) : null}

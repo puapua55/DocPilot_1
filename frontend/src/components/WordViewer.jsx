@@ -429,8 +429,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   const tablePickerRef = useRef(null);
   const tableDragRef = useRef(null);
   const tableGestureRef = useRef(null);
+  const imageGestureRef = useRef(null);
   const suppressTableClickRef = useRef(false);
   const [tableFill, setTableFill] = useState('#ffffff');
+  const [tableFillNone, setTableFillNone] = useState(false);
   const [tableBorderBrush, setTableBorderBrush] = useState({ style: 'solid', width: 1, color: '#000000' });
   const [tableSettingsTab, setTableSettingsTab] = useState(null);
   const tableToolbarRef = useRef(null);
@@ -1197,6 +1199,77 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     } : null;
   };
 
+  const recordMovedImage = (imageParagraph) => {
+    if (!imageParagraph?.parentElement) return;
+    const siblings = Array.from(imageParagraph.parentElement.children);
+    const previous = siblings.slice(0, siblings.indexOf(imageParagraph)).reverse().find((block) =>
+      block.dataset.docxParagraphIndex !== undefined || block.dataset.docxTableIndex !== undefined);
+    if (previous?.dataset.docxTableIndex !== undefined) {
+      imageParagraph.dataset.docxInsertAfter = '-1';
+      imageParagraph.dataset.docxInsertAfterTable = previous.dataset.docxTableIndex;
+    } else {
+      imageParagraph.dataset.docxInsertAfter = previous?.dataset.docxParagraphIndex ?? '-1';
+      delete imageParagraph.dataset.docxInsertAfterTable;
+    }
+    imageParagraph.dataset.docxImageMoved = 'true';
+  };
+
+  const moveSelectedWordImage = (direction) => {
+    const imageParagraph = selectedImageParagraph();
+    const adjacent = direction < 0 ? imageParagraph?.previousElementSibling : imageParagraph?.nextElementSibling;
+    if (!imageParagraph || !adjacent
+      || !adjacent.matches('[data-docx-paragraph-index], table[data-docx-table-index], .docx-added-image')) return;
+    if (direction < 0) adjacent.before(imageParagraph);
+    else adjacent.after(imageParagraph);
+    recordMovedImage(imageParagraph);
+    commitDocumentChange();
+  };
+
+  const startImageMoveGesture = (event, imageParagraph) => {
+    event.preventDefault();
+    event.stopPropagation();
+    imageGestureRef.current?.abort();
+    const controller = new AbortController();
+    imageGestureRef.current = controller;
+    let target = null;
+    let after = false;
+    let changed = false;
+    const clearTarget = () => {
+      target?.classList.remove('docx-image-drop-before', 'docx-image-drop-after');
+      target = null;
+    };
+    const move = (pointerEvent) => {
+      clearTarget();
+      const blocks = Array.from(imageParagraph.parentElement?.children || []).filter((block) => block !== imageParagraph
+        && (block.dataset.docxParagraphIndex !== undefined || block.dataset.docxTableIndex !== undefined
+          || block.classList.contains('docx-added-image')));
+      if (!blocks.length) return;
+      target = blocks.reduce((nearest, block) => {
+        const rect = block.getBoundingClientRect();
+        const distance = Math.abs(rect.top + rect.height / 2 - pointerEvent.clientY);
+        return !nearest || distance < nearest.distance ? { element: block, distance } : nearest;
+      }, null)?.element;
+      if (!target) return;
+      const targetRect = target.getBoundingClientRect();
+      after = pointerEvent.clientY >= targetRect.top + targetRect.height / 2;
+      target.classList.add(after ? 'docx-image-drop-after' : 'docx-image-drop-before');
+      changed = true;
+    };
+    const end = () => {
+      controller.abort();
+      imageGestureRef.current = null;
+      if (target && changed) {
+        if (after) target.after(imageParagraph);
+        else target.before(imageParagraph);
+        recordMovedImage(imageParagraph);
+      }
+      clearTarget();
+      if (changed) commitDocumentChange();
+    };
+    window.addEventListener('pointermove', move, { signal: controller.signal });
+    window.addEventListener('pointerup', end, { signal: controller.signal, once: true });
+  };
+
   useEffect(() => {
     const move = (event) => {
       const drag = tableDragRef.current;
@@ -1227,7 +1300,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', end); };
   }, []);
 
-  useEffect(() => () => tableGestureRef.current?.abort(), []);
+  useEffect(() => () => {
+    tableGestureRef.current?.abort();
+    imageGestureRef.current?.abort();
+  }, []);
 
   const recordMovedTable = (table) => {
     if (table.dataset.docxTableIndex !== undefined) {
@@ -1414,7 +1490,19 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     if (!table || !bounds) return;
     Array.from(table.rows).forEach((row, rowIndex) => Array.from(row.cells).forEach((cell, columnIndex) => {
       if (rowIndex < bounds.minRow || rowIndex > bounds.maxRow || columnIndex < bounds.minColumn || columnIndex > bounds.maxColumn) return;
-      if (change.fill) cell.style.backgroundColor = change.fill;
+      if (change.fill) {
+        cell.style.backgroundColor = change.fill;
+        delete cell.dataset.docxCellFillNone;
+      }
+      if (typeof change.fillNone === 'boolean') {
+        if (change.fillNone) {
+          cell.style.backgroundColor = 'transparent';
+          cell.dataset.docxCellFillNone = 'true';
+        } else {
+          cell.style.backgroundColor = change.fill || tableFill;
+          delete cell.dataset.docxCellFillNone;
+        }
+      }
       if (change.fontSize) {
         cell.style.fontSize = `${change.fontSize}px`;
         cell.dataset.docxCellFontSize = String(change.fontSize);
@@ -1445,6 +1533,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       cell.dataset.docxCellStyleDirty = 'true';
     }));
     if (change.fill) setTableFill(change.fill);
+    if (typeof change.fillNone === 'boolean') setTableFillNone(change.fillNone);
     table.dataset.docxTableDirty = 'true';
     commitDocumentChange();
   };
@@ -1739,6 +1828,8 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     const imageParagraph = event.target.closest?.('.docx-added-image[data-docx-image-id]');
     if (editingEnabled && imageParagraph && docxContentRef.current?.contains(imageParagraph)) {
       setSelectedImageId(imageParagraph.dataset.docxImageId);
+      setSelectedTableCell(null);
+      setTableSettingsTab(null);
       setImageWidthDraft(String(Math.round(Number.parseFloat(imageParagraph.querySelector('img')?.style.width) || 0)));
       return;
     }
@@ -1753,7 +1844,11 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       setSelectedTableCell((previous) => previous?.tableId === table.dataset.docxTableId
         && previous.row === row && previous.column === column ? previous
         : { tableId: table.dataset.docxTableId, row, column, anchor: { row, column } });
-      setTableFill(cssColorToHex(window.getComputedStyle(cell).backgroundColor));
+      const computedCellFill = window.getComputedStyle(cell).backgroundColor;
+      const hasNoCellFill = cell.dataset.docxCellFillNone === 'true'
+        || !computedCellFill || computedCellFill === 'transparent' || /rgba\([^)]*,\s*0(?:\.0+)?\)$/.test(computedCellFill);
+      setTableFillNone(hasNoCellFill);
+      if (!hasNoCellFill) setTableFill(cssColorToHex(computedCellFill));
       const currentBorder = readWordCellBorder(cell, 'top');
       setTableBorderBrush({ style: currentBorder.style === 'none' ? 'solid' : currentBorder.style,
         width: currentBorder.width, color: cssColorToHex(currentBorder.color, '#000000') });
@@ -1837,6 +1932,12 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   };
 
   const handleImageResizePointerDown = (event) => {
+    const moveHandle = event.target.closest?.('.docx-image-move-handle');
+    if (editingEnabled && moveHandle && event.button === 0) {
+      const imageParagraph = moveHandle.closest('.docx-added-image[data-docx-image-id]');
+      if (imageParagraph) startImageMoveGesture(event, imageParagraph);
+      return;
+    }
     const handle = event.target.closest?.('.docx-image-resize-handle');
     if (!editingEnabled || !handle || event.button !== 0) return;
     const paragraph = handle.closest('.docx-added-image[data-docx-image-id]');
@@ -1982,6 +2083,12 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     resizeHandle.setAttribute('role', 'button');
     resizeHandle.setAttribute('aria-label', '이미지 크기 조절');
     imageParagraph.appendChild(resizeHandle);
+    const moveHandle = document.createElement('span');
+    moveHandle.className = 'docx-image-move-handle';
+    moveHandle.setAttribute('role', 'button');
+    moveHandle.setAttribute('aria-label', '이미지 이동');
+    moveHandle.textContent = '↕';
+    imageParagraph.appendChild(moveHandle);
     let insertAfter = paragraph;
     while (insertAfter.nextElementSibling?.dataset.docxInsertAfter === paragraph.dataset.docxParagraphIndex) {
       insertAfter = insertAfter.nextElementSibling;
@@ -2043,6 +2150,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     } else (page || root).appendChild(table);
     setSelectedImageId(null);
     setTableFill('#ffffff');
+    setTableFillNone(false);
     setTableBorderBrush({ style: 'solid', width: 1, color: '#000000' });
     setSelectedTableCell({ tableId: table.dataset.docxTableId, row: 0, column: 0, anchor: { row: 0, column: 0 } });
     setTablePickerOpen(false);
@@ -2057,6 +2165,8 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     const images = Array.from(root?.querySelectorAll('.docx-added-image[data-docx-insert-after]') || [])
       .map((element) => ({
         afterIndex: Number(element.dataset.docxInsertAfter),
+        afterTableIndex: element.dataset.docxInsertAfterTable === undefined
+          ? null : Number(element.dataset.docxInsertAfterTable),
         dataUrl: element.querySelector('img')?.src,
         width: Number.parseFloat(element.querySelector('img')?.style.width) || 400,
         height: Number.parseFloat(element.querySelector('img')?.style.height) || 300
@@ -2241,6 +2351,35 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
             aria-pressed={editingEnabled} onClick={() => changeEditingMode(true)}>편집</button>
         </div>
         </div>
+        <div className="docx-edit-actions-row">
+        <div className="docx-document-history" role="group" aria-label="문서 변경 이력">
+          <button
+            type="button"
+            onClick={undoDocumentChange}
+            disabled={!historyState.canUndo}
+            aria-label="적용 전으로 되돌리기"
+            title="적용 전으로 되돌리기"
+          >
+            &lt;
+          </button>
+          <button
+            type="button"
+            onClick={redoDocumentChange}
+            disabled={!historyState.canRedo}
+            aria-label="다시 적용하기"
+            title="다시 적용하기"
+          >
+            &gt;
+          </button>
+          <button
+            type="button"
+            className="docx-reset-all-button"
+            onClick={() => setIsResetConfirmOpen(true)}
+            disabled={!historyState.canReset}
+          >
+            전체 초기화
+          </button>
+        </div>
         <div className="docx-document-tools" role="group" aria-label="문서 작업">
           <div className="docx-table-picker" ref={tablePickerRef}>
             <button type="button" onClick={() => setTablePickerOpen((open) => !open)}
@@ -2278,33 +2417,6 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
             event.target.value = '';
           }} />
         </div>
-        <div className="docx-document-history" role="group" aria-label="문서 변경 이력">
-          <button
-            type="button"
-            onClick={undoDocumentChange}
-            disabled={!historyState.canUndo}
-            aria-label="적용 전으로 되돌리기"
-            title="적용 전으로 되돌리기"
-          >
-            &lt;
-          </button>
-          <button
-            type="button"
-            onClick={redoDocumentChange}
-            disabled={!historyState.canRedo}
-            aria-label="다시 적용하기"
-            title="다시 적용하기"
-          >
-            &gt;
-          </button>
-          <button
-            type="button"
-            className="docx-reset-all-button"
-            onClick={() => setIsResetConfirmOpen(true)}
-            disabled={!historyState.canReset}
-          >
-            전체 초기화
-          </button>
         </div>
         {hasMultiplePages && viewMode === 'page' ? (
             <div className="docx-page-navigation-wrap">
@@ -2383,9 +2495,14 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       {editingEnabled && selectedImageId ? (
         <div className="docx-image-toolbar document-toolbar" role="toolbar" aria-label="추가한 이미지 편집">
           <span>이미지</span>
+          <button className="docx-image-move-button" type="button" onClick={() => moveSelectedWordImage(-1)}
+            disabled={!selectedImageParagraph()?.previousElementSibling} title="이미지를 앞 문단 위로 이동">이미지 위로</button>
+          <button className="docx-image-move-button" type="button" onClick={() => moveSelectedWordImage(1)}
+            disabled={!selectedImageParagraph()?.nextElementSibling} title="이미지를 다음 문단 아래로 이동">이미지 아래로</button>
           <label>너비 <input type="number" min="32" max="560" step="1" value={imageWidthDraft}
             onChange={(event) => setImageWidthDraft(event.target.value)} onBlur={applySelectedImageWidth}
             onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /> px</label>
+          <span className="docx-image-gesture-hint">↕ 이동 · ↘ 크기 조절</span>
           <button type="button" onClick={deleteSelectedImage}>삭제</button>
         </div>
       ) : null}
@@ -2483,7 +2600,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
             </div>
             <div className="docx-table-tool-group"><span>배경</span>
               <label>{hasSelectedTableRange ? '선택 영역 색' : '셀 색'} <input type="color" aria-label="셀 배경색"
-                value={tableFill} onChange={(event) => updateTableCellStyle({ fill: event.target.value })} /></label>
+                disabled={tableFillNone} value={tableFill}
+                onChange={(event) => updateTableCellStyle({ fill: event.target.value, fillNone: false })} /></label>
+              <label><input type="checkbox" aria-label="표 색상 없음" checked={tableFillNone}
+                onChange={(event) => updateTableCellStyle({ fillNone: event.target.checked })} /> 색상 없음</label>
             </div>
           </> : null}
           {selectedWordTable && selectedWordTableBounds && tableSettingsTab === 'border' ? (

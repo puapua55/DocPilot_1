@@ -7,12 +7,13 @@ import {
   capturePageDrawingStream, insertDrawingCommandsAtContentAnchors,
   moveTextWithOriginalFont, removeSimpleMovedText, replacePdfTextInContentStream, resetPageDrawingStream
 } from './pdfDirectTextEdit.js';
-import { loadPdfDocument } from './pdfService.js';
+// loadPdfDocument is imported dynamically when browser DOM is available
 import { describePdfTextFonts } from './pdfFontPreview.js';
 import { writePdfTables } from './pdfTableService.js';
 
 const FONT_URL = '/fonts/NotoSansKR-Regular.base64.txt';
 const TEXT_BASELINE_RATIO = 0.84;
+const normalizeWhitespace = (value) => String(value || '').replace(/\s+/g, '').trim();
 
 function round(value, precision = 3) {
   const factor = 10 ** precision;
@@ -337,14 +338,20 @@ function collectMovableTextReplacements(movableTexts = []) {
       const coverPadding = Number.isFinite(Number(item.coverPadding))
         ? Number(item.coverPadding)
         : Math.max(1, Number(item.fontSize) * 0.06);
+      const isStationary = Math.abs(Number(item.currentRect.x) - Number(item.originalRect.x)) < 0.5
+        && Math.abs(Number(item.currentRect.y) - Number(item.originalRect.y)) < 0.5;
+      const sourceText = item.type === 'addedText' ? ''
+        : String(item.sourceSelection?.selectedText || item.sourceText || item.originalText || item.originalUnicodeText || text).trim();
+      // A failed deletion is harmless when the text has been moved because
+      // the source remains at its old location.  When text is edited in
+      // place, it would be painted directly over the old glyphs, so retain a
+      // narrowly scoped source cover as the safe fallback.
+      const hasTextChange = normalizeWhitespace(sourceText) !== normalizeWhitespace(text);
       return {
       id: item.id,
       sourceSelection: item.sourceSelection,
-      coverSourceOnFallback: item.coverSourceOnFallback === true
-        && Math.abs(Number(item.currentRect.x) - Number(item.originalRect.x)) < 0.5
-        && Math.abs(Number(item.currentRect.y) - Number(item.originalRect.y)) < 0.5,
-      sourceText: item.type === 'addedText' ? ''
-        : String(item.sourceSelection?.selectedText || item.sourceText || item.originalText || item.originalUnicodeText || text).trim(),
+      coverSourceOnFallback: isStationary && (item.coverSourceOnFallback === true || hasTextChange),
+      sourceText,
       originalText: item.type === 'addedText' ? ''
         : String(item.sourceSelection?.selectedText || item.originalText || item.sourceText || item.originalUnicodeText || text).trim(),
       // All UI movable objects originate in PDF.js Unicode selection text.
@@ -424,8 +431,11 @@ function collectMovableTextReplacements(movableTexts = []) {
     });
 }
 
-function toPdfColor(channels) {
-  return rgb(channels[0] / 255, channels[1] / 255, channels[2] / 255);
+function toPdfColor(channels, fallback = [0, 0, 0]) {
+  const parsed = Array.isArray(channels) && channels.length >= 3 && channels.every(Number.isFinite)
+    ? channels
+    : parseCssColor(channels, fallback);
+  return rgb(parsed[0] / 255, parsed[1] / 255, parsed[2] / 255);
 }
 
 function quantizeColor(red, green, blue) {
@@ -780,36 +790,50 @@ async function findNonRenderingLocalReplacementIds(outputBytes, replacements) {
   let loaded;
   try {
     const data = outputBytes.buffer.slice(outputBytes.byteOffset, outputBytes.byteOffset + outputBytes.byteLength);
+    const { loadPdfDocument } = await import('./pdfService.js');
     loaded = await loadPdfDocument(data);
     if (!loaded?.pdf) return [];
     const failedIds = [];
-    for (const target of targets) {
-      const page = await loaded.pdf.getPage(target.pageNumber);
+    const targetsByPage = new Map();
+    targets.forEach((target) => {
+      const pageNumber = Number(target.pageNumber);
+      if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > loaded.pdf.numPages) return;
+      const pageTargets = targetsByPage.get(pageNumber) || [];
+      pageTargets.push(target);
+      targetsByPage.set(pageNumber, pageTargets);
+    });
+    // Rendering a full page is the expensive part of validation. Reuse one
+    // canvas for every replacement on that page instead of rendering the same
+    // page once per edited text box.
+    for (const [pageNumber, pageTargets] of targetsByPage) {
+      const page = await loaded.pdf.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 2 });
       const canvas = document.createElement('canvas');
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
       const context = canvas.getContext('2d', { willReadFrequently: true });
       await page.render({ canvasContext: context, viewport }).promise;
-      const [baselineX, baselineY] = viewport.convertToViewportPoint(target.renderBounds.x, target.renderBounds.y);
-      const fontPixels = Math.max(2, target.renderBounds.fontSize * viewport.scale);
-      const left = Math.max(0, Math.floor(baselineX - 3));
-      const top = Math.max(0, Math.floor(baselineY - fontPixels * 1.25));
-      const width = Math.min(canvas.width - left, Math.ceil(target.renderBounds.width * viewport.scale + 8));
-      const height = Math.min(canvas.height - top, Math.ceil(fontPixels * 1.55 + 8));
-      if (width <= 0 || height <= 0) continue;
-      const pixels = context.getImageData(left, top, width, height).data;
-      let glyphPixels = 0;
-      for (let offset = 0; offset < pixels.length; offset += 4) {
-        if (pixels[offset + 3] > 24 && matchesRenderedTextColor(
-          pixels[offset], pixels[offset + 1], pixels[offset + 2], target.textColor
-        )) glyphPixels += 1;
-      }
-      // A genuine rendered string contains substantially more than a few
-      // anti-aliased edge pixels. This catches the selectable-but-invisible
-      // glyph issue while avoiding normal short-text false positives.
-      if (glyphPixels < Math.max(8, Array.from(String(target.text || '')).length * 2)) {
-        failedIds.push(target.id);
+      for (const target of pageTargets) {
+        const [baselineX, baselineY] = viewport.convertToViewportPoint(target.renderBounds.x, target.renderBounds.y);
+        const fontPixels = Math.max(2, target.renderBounds.fontSize * viewport.scale);
+        const left = Math.max(0, Math.floor(baselineX - 3));
+        const top = Math.max(0, Math.floor(baselineY - fontPixels * 1.25));
+        const width = Math.min(canvas.width - left, Math.ceil(target.renderBounds.width * viewport.scale + 8));
+        const height = Math.min(canvas.height - top, Math.ceil(fontPixels * 1.55 + 8));
+        if (width <= 0 || height <= 0) continue;
+        const pixels = context.getImageData(left, top, width, height).data;
+        let glyphPixels = 0;
+        for (let offset = 0; offset < pixels.length; offset += 4) {
+          if (pixels[offset + 3] > 24 && matchesRenderedTextColor(
+            pixels[offset], pixels[offset + 1], pixels[offset + 2], target.textColor
+          )) glyphPixels += 1;
+        }
+        // A genuine rendered string contains substantially more than a few
+        // anti-aliased edge pixels. This catches the selectable-but-invisible
+        // glyph issue while avoiding normal short-text false positives.
+        if (glyphPixels < Math.max(8, Array.from(String(target.text || '')).length * 2)) {
+          failedIds.push(target.id);
+        }
       }
     }
     return failedIds;
@@ -857,7 +881,13 @@ function hasVisibleSourceGlyphs(context, rect, textColor, text) {
 // Before saving, detect those original source runs too and rewrite only the
 // invisible runs with a resolvable local face (or Noto Sans KR fallback).
 async function collectInvisibleSourceTextRepairs(sourceBytes, existingReplacements) {
-  if (typeof document === 'undefined') return [];
+  if (typeof document === 'undefined' || !existingReplacements.length) return [];
+  const editedPageNumbers = [...new Set(existingReplacements
+    .filter((item) => item.type !== 'added-text'
+      && String(item.sourceText || item.originalText || item.sourceSelection?.selectedText || '').trim())
+    .map((item) => Number(item.pageNumber))
+    .filter((pageNumber) => Number.isInteger(pageNumber) && pageNumber > 0))];
+  if (!editedPageNumbers.length) return [];
   let loaded;
   try {
     // PDF.js transfers its input to the worker. Always pass a disposable
@@ -865,13 +895,19 @@ async function collectInvisibleSourceTextRepairs(sourceBytes, existingReplacemen
     // bytes to create the downloaded file.
     const data = sourceBytes instanceof ArrayBuffer ? sourceBytes.slice(0)
       : sourceBytes.buffer.slice(sourceBytes.byteOffset, sourceBytes.byteOffset + sourceBytes.byteLength);
+    const { loadPdfDocument } = await import('./pdfService.js');
     loaded = await loadPdfDocument(data);
     if (!loaded?.pdf) return [];
     const alreadyEdited = new Set(existingReplacements.map((item) => (
       `${Number(item.pageNumber)}\u0000${String(item.sourceText || item.originalText || '').replace(/\s+/g, '')}`
     )));
     const repairs = [];
-    for (let pageNumber = 1; pageNumber <= loaded.pdf.numPages; pageNumber += 1) {
+    // Saving an edit does not change untouched page content streams. The old
+    // implementation rendered and analysed every page, which made a one-page
+    // edit in a large document wait for the entire document. Restrict the
+    // malformed-font safety scan to pages that actually contain text edits.
+    for (const pageNumber of editedPageNumbers) {
+      if (pageNumber > loaded.pdf.numPages) continue;
       const page = await loaded.pdf.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 2 });
       const textContent = await page.getTextContent();
@@ -1114,6 +1150,7 @@ export async function buildPdfWithTextEdits({
   removalResults.forEach((outcome, replacement) => {
     replacement.canDirectEdit = outcome.direct;
     replacement.directRemoval = outcome.directRemoval === true;
+    replacement.directReplacement = outcome.directReplacement === true;
     replacement.deleteMode = outcome.deleteMode || null;
     replacement.deletedCommandCount = outcome.deletedCommandCount || 0;
     replacement.commandRange = outcome.commandRange || null;

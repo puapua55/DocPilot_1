@@ -16,6 +16,10 @@ import { removeHyperlinkFromRuns } from '../services/hyperlinkService.js';
 import { applyInternalLinkEdits } from '../services/pdfInternalLinks.js';
 
 let copiedPdfTable = null;
+// Text box copied from the right-click menu; lastCopiedKind decides which paste
+// entry the page menu offers when a table was copied as well.
+let copiedPdfTextBox = null;
+let lastCopiedKind = null;
 const PAGE_RENDER_RADIUS = 2;
 const BACKGROUND_PAGE_BATCH_SIZE = 2;
 const HIGHLIGHT_EXPORT_COLORS = {
@@ -849,6 +853,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const [tablePickerSize, setTablePickerSize] = useState({ rows: 3, columns: 3 });
   const tablePickerRef = useRef(null);
   const [tablePasteMenu, setTablePasteMenu] = useState(null);
+  const [availablePasteKind, setAvailablePasteKind] = useState(() => lastCopiedKind);
   useEffect(() => {
     if (!tablePickerOpen) return undefined;
     const dismiss = (event) => {
@@ -2138,6 +2143,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   const rememberTableCopy = (table) => {
     const text = tableToTsv(table);
     copiedPdfTable = { table: JSON.parse(JSON.stringify(table)), text, pastes: 0 };
+    lastCopiedKind = 'table';
+    setAvailablePasteKind('table');
     return text;
   };
 
@@ -2183,6 +2190,67 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     commitPdfChange(userHighlight, appliedReplacePreview, movableTexts, selectedMovableTextId, imageAttachments, selectedImageId, next, id);
   };
 
+  const copyMovableText = async (id) => {
+    const item = movableTexts.find((entry) => entry.id === id);
+    if (!item || item.isSelectionDraft) return;
+    const value = String(item.displayText ?? item.text ?? '');
+    let snapshot;
+    try { snapshot = JSON.parse(JSON.stringify(item)); } catch { snapshot = { ...item }; }
+    copiedPdfTextBox = { item: snapshot, text: value };
+    lastCopiedKind = 'text';
+    setAvailablePasteKind('text');
+    // Best effort only: the in-app paste uses the stored text box itself.
+    try {
+      if (window.docPilotClipboard?.writeText) await window.docPilotClipboard.writeText(value);
+      else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
+    } catch { /* clipboard access is optional */ }
+  };
+
+  const pasteCopiedTextBox = (target) => {
+    if (!copiedPdfTextBox || !target) return;
+    const source = copiedPdfTextBox.item;
+    const width = Math.max(24, Number(source.currentRect?.width) || 24);
+    const height = Math.max(16, Number(source.currentRect?.height) || 16);
+    const rect = {
+      x: Math.max(0, Math.min(target.x, Math.max(0, target.pageWidth - width))),
+      y: Math.max(0, Math.min(target.y, Math.max(0, target.pageHeight - height))),
+      width,
+      height
+    };
+    const value = copiedPdfTextBox.text;
+    const { id: _id, supersedesIds: _superseded, ...base } = source;
+    // The pasted box is a brand new text object: it has no source text to
+    // remove from the PDF, so it must not carry the original's cover or
+    // content-stream selection.
+    addMovableText({
+      ...base,
+      type: 'addedText',
+      pageNumber: target.pageNumber,
+      displayText: value,
+      text: value,
+      sourceText: '',
+      originalText: '',
+      originalUnicodeText: '',
+      originalRect: rect,
+      displayRect: rect,
+      movedRect: rect,
+      currentRect: rect,
+      fitTextWidth: width,
+      coverRects: [],
+      coverPadding: 0,
+      sourcePageWidth: target.pageWidth,
+      sourcePageHeight: target.pageHeight,
+      sourceSelection: null,
+      persistedToPdf: false,
+      hasChanges: false,
+      isSelectionDraft: false,
+      createdFromSelection: false,
+      autoEdit: false,
+      allowMove: true,
+      forceUnicodeFallback: true,
+      coverSourceOnFallback: false
+    });
+  };
   useEffect(() => {
     if (!isEditMode) return undefined;
     const onCopy = (event) => {
@@ -3129,12 +3197,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       className={`pdf-viewer-shell pdf-viewer-${pageOrientation}`}
       data-page-ratio={pdfPageSize.width && pdfPageSize.height ? (pdfPageSize.width / pdfPageSize.height).toFixed(4) : undefined}
       onContextMenu={(event) => {
-        if (!isEditMode || !copiedPdfTable || event.target.closest('.pdf-table-object')) return;
+        const pasteKind = availablePasteKind === 'text' && copiedPdfTextBox ? 'text'
+          : (availablePasteKind === 'table' && copiedPdfTable ? 'table' : null);
+        if (!isEditMode || !pasteKind || event.target.closest('.pdf-table-object, .movable-text-object, .movable-text-editor, input, textarea')) return;
         const page = event.target.closest('.pdf-page[data-page-number]');
         if (!page) return;
         event.preventDefault();
         const rect = page.getBoundingClientRect();
-        setTablePasteMenu({ pageNumber: Number(page.dataset.pageNumber),
+        setTablePasteMenu({ kind: pasteKind, pageNumber: Number(page.dataset.pageNumber),
           x: (event.clientX - rect.left) / effectiveScale, y: (event.clientY - rect.top) / effectiveScale,
           pageWidth: rect.width / effectiveScale, pageHeight: rect.height / effectiveScale,
           screenX: Math.min(event.clientX, window.innerWidth - 150), screenY: Math.min(event.clientY, window.innerHeight - 45) });
@@ -3142,7 +3212,11 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     >
       {tablePasteMenu ? createPortal(<div className="pdf-table-context-menu" role="menu" aria-label="페이지 메뉴"
         style={{ left: tablePasteMenu.screenX, top: tablePasteMenu.screenY }}>
-        <button type="button" role="menuitem" onClick={() => { pasteCopiedTable(tablePasteMenu); setTablePasteMenu(null); }}>표 붙여넣기</button>
+        <button type="button" role="menuitem" onClick={() => {
+          if (tablePasteMenu.kind === 'text') pasteCopiedTextBox(tablePasteMenu);
+          else pasteCopiedTable(tablePasteMenu);
+          setTablePasteMenu(null);
+        }}>{tablePasteMenu.kind === 'text' ? '붙여넣기' : '표 붙여넣기'}</button>
       </div>, document.body) : null}
       <div className="pdf-view-mode-controls document-toolbar" aria-label="PDF 보기 방식">
         <div className="pdf-view-mode-toggle-group">
@@ -3538,6 +3612,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
                 onCommitEditMovableText={commitEditMovableText}
                 onCancelEditMovableText={cancelEditMovableText}
                 onDeleteMovableText={deleteMovableText}
+                onCopyMovableText={copyMovableText}
+                canPasteTextBox={availablePasteKind === 'text' && Boolean(copiedPdfTextBox)}
+                onPasteTextBox={pasteCopiedTextBox}
                 onRemoveTextHyperlink={removeTextHyperlink}
                 internalLinkEdits={internalLinkEdits}
                 onChangeInternalLink={changeInternalLink}

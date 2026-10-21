@@ -40,6 +40,8 @@ export async function describePdfTextFonts(page, textContent) {
   let currentTextColor = null;
   let currentCtm = [1, 0, 0, 1, 0, 0];
   let currentTextMatrix = [1, 0, 0, 1, 0, 0];
+  let currentLineMatrix = [1, 0, 0, 1, 0, 0];
+  let currentLeading = 0;
   const stack = [];
   operators.fnArray.forEach((op, index) => {
     const args = operators.argsArray[index];
@@ -60,9 +62,32 @@ export async function describePdfTextFonts(page, textContent) {
       const transform = asMatrix(args);
       if (transform) currentCtm = multiplyMatrices(currentCtm, transform);
     }
+    else if (op === OPS.beginText) {
+      currentTextMatrix = [1, 0, 0, 1, 0, 0];
+      currentLineMatrix = currentTextMatrix;
+    }
     else if (op === OPS.setTextMatrix) {
       const textMatrix = asMatrix(args[0]);
-      if (textMatrix) currentTextMatrix = textMatrix;
+      if (textMatrix) {
+        currentTextMatrix = textMatrix;
+        currentLineMatrix = textMatrix;
+      }
+    }
+    // Td / TD / T* / TL also position text. Without tracking them, a line placed
+    // by a relative move gets the wrong origin and its fill color is never found.
+    else if (op === OPS.setLeading) currentLeading = Number(args?.[0]) || 0;
+    else if (op === OPS.moveText || op === OPS.setLeadingMoveText || op === OPS.nextLine) {
+      let tx = 0;
+      let ty = -currentLeading;
+      if (op !== OPS.nextLine) {
+        tx = Number(args?.[0]);
+        ty = Number(args?.[1]);
+        if (op === OPS.setLeadingMoveText) currentLeading = -ty;
+      }
+      if (Number.isFinite(tx) && Number.isFinite(ty)) {
+        currentLineMatrix = multiplyMatrices([1, 0, 0, 1, tx, ty], currentLineMatrix);
+        currentTextMatrix = currentLineMatrix;
+      }
     }
     else if (op === OPS.setFont) currentFont = args[0];
     // PDF.js passes RGB fill components as numbers for most PDF `rg`
@@ -139,7 +164,10 @@ export async function describePdfTextFonts(page, textContent) {
   // one color elsewhere on the page.
   let glyphRunCursor = 0;
   const findItemTextColor = (item) => {
-    const expected = String(item?.str || '');
+    // PDF.js adds spaces to item.str for glyph gaps (dot leaders, Tc spacing)
+    // that are absent from showText glyphs, so compare without whitespace.
+    const stripSpaces = (value) => String(value || '').replace(/\s+/g, '');
+    const expected = stripSpaces(item?.str);
     if (!expected) return null;
     const itemX = Number(item?.transform?.[4]);
     const itemY = Number(item?.transform?.[5]);
@@ -163,7 +191,7 @@ export async function describePdfTextFonts(page, textContent) {
       for (let end = start; end < glyphRuns.length; end += 1) {
         const run = glyphRuns[end];
         if (run.fontName !== item.fontName) break;
-        joined += run.text;
+        joined += stripSpaces(run.text);
         if (run.color) colors.add(run.color);
         if (joined === expected) {
           glyphRunCursor = end + 1;
@@ -172,6 +200,12 @@ export async function describePdfTextFonts(page, textContent) {
         if (!expected.startsWith(joined)) break;
       }
     }
+    // PDF.js splits one showText into several items at large TJ gaps (dot
+    // leaders), so the item text can be a part of one run. A run has a single
+    // fill color, hence a containing run decides the color.
+    const containing = glyphRuns.find((run, index) => index >= glyphRunCursor
+      && run.fontName === item.fontName && run.color && stripSpaces(run.text).includes(expected));
+    if (containing) return containing.color;
     return null;
   };
 

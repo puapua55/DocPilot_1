@@ -16,7 +16,7 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas:
     "view page-nav download"
-    "history tools toolbar";
+    "edit-actions edit-actions toolbar";
   align-items: flex-start;
   justify-content: stretch;
   column-gap: 8px;
@@ -31,7 +31,7 @@
 .docx-view-mode-controls.is-single-page {
   grid-template-areas:
     "view page-nav download"
-    "history tools toolbar";
+    "edit-actions edit-actions toolbar";
 }
 .docx-view-mode-controls.is-table-picker-open { z-index: 20; }
 
@@ -85,7 +85,15 @@
 .docx-edit-toggle button:disabled { opacity: .45; cursor: not-allowed; }
 
 .docx-document-tools {
-  grid-area: tools;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  justify-self: start;
+}
+
+.docx-edit-actions-row {
+  grid-area: edit-actions;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -176,13 +184,22 @@
 .docx-content .docx-added-image { position: relative; display: table; max-width: 100%; }
 .docx-content .docx-added-image.is-selected { outline: 2px solid #4e7cff; outline-offset: 3px; }
 .docx-image-resize-handle { display: none; position: absolute; right: -8px; bottom: -8px; width: 15px; height: 15px; border: 2px solid #fff; border-radius: 3px; background: #4e7cff; cursor: nwse-resize; }
-.docx-added-image.is-selected .docx-image-resize-handle { display: block; }
+.docx-image-move-handle { display: none; position: absolute; left: -11px; top: -11px; z-index: 5; width: 18px; height: 18px; border: 1px solid #315fc7; border-radius: 5px; background: #fff; color: #315fc7; font: 700 13px/16px sans-serif; text-align: center; cursor: grab; user-select: none; }
+.docx-image-move-handle:active { cursor: grabbing; }
+.docx-added-image.is-selected .docx-image-resize-handle,
+.docx-added-image.is-selected .docx-image-move-handle { display: block; }
 .docx-exporting .docx-added-image.is-selected { outline: 0; }
-.docx-exporting .docx-image-resize-handle { display: none !important; }
+.docx-exporting .docx-image-resize-handle,
+.docx-exporting .docx-image-move-handle { display: none !important; }
+.docx-content .docx-image-drop-before { border-top: 3px solid #315fc7 !important; }
+.docx-content .docx-image-drop-after { border-bottom: 3px solid #315fc7 !important; }
 .docx-image-toolbar { display: flex; align-items: center; gap: 8px; flex: none; padding: 5px 8px; border: 1px solid #d7e2ff; border-radius: 9px; background: #f9fbff; color: #364b78; font-size: .76rem; }
 .docx-image-toolbar label { display: inline-flex; align-items: center; gap: 4px; }
 .docx-image-toolbar input { width: 68px; height: 29px; border: 1px solid #cbd9ff; border-radius: 5px; }
 .docx-image-toolbar button { min-height: 29px; padding: 0 9px; border: 1px solid #eccdd2; border-radius: 6px; background: #fff; color: #a33d49; cursor: pointer; }
+.docx-image-toolbar .docx-image-move-button { border-color: #cbd9ff; color: #315fc7; }
+.docx-image-toolbar button:disabled { cursor: default; opacity: .45; }
+.docx-image-gesture-hint { color: #64759a; white-space: nowrap; }
 .docx-table-toolbar { display: flex; flex-direction: column; align-items: stretch; gap: 5px; flex: none; padding: 5px 8px; border: 1px solid #d7e2ff; border-radius: 9px; background: #f9fbff; color: #364b78; font-size: .76rem; }
 .docx-table-toolbar.is-inactive { display: none; }
 .docx-table-toolbar-heading { display: flex; align-items: baseline; gap: 10px; }
@@ -283,7 +300,7 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-areas:
       "view page-nav download"
-      "history tools tools"
+      "edit-actions edit-actions edit-actions"
       "toolbar toolbar toolbar";
   }
 
@@ -302,7 +319,6 @@
 }
 
 .docx-document-history {
-  grid-area: history;
   justify-self: start;
 }
 
@@ -340,7 +356,7 @@
 }
 
 .docx-document-history .docx-reset-all-button {
-  margin-left: 8px;
+  margin-left: 0;
   border-color: #7c9eff;
   color: #315fc7;
   font-size: 0.74rem;

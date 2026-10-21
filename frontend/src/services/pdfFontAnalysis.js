@@ -1,4 +1,5 @@
-import { PDFArray, PDFDict, PDFName, PDFRawStream, StandardFonts, decodePDFRawStream } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFName, PDFNumber, PDFRawStream, StandardFonts, decodePDFRawStream } from 'pdf-lib';
+import { Encodings, Font } from '@pdf-lib/standard-fonts';
 
 const name = PDFName.of;
 const STANDARD = new Set(Object.values(StandardFonts).filter((font) => !['Symbol', 'ZapfDingbats'].includes(font)));
@@ -9,14 +10,55 @@ const unicode = (hex) => {
   return utf16.decode(hexBytes(hex));
 };
 
-// A bounded ToUnicode reader. CMap inheritance and variable-length character
-// codes are intentionally rejected, never guessed from glyph IDs.
+function readFontWidthLookup(font, descendant, subtype, descriptor) {
+  if (subtype === 'Type0') {
+    const defaultWidth = descendant.lookupMaybe(name('DW'), PDFNumber)?.asNumber() ?? 1000;
+    const widths = new Map();
+    const wArray = descendant.lookupMaybe(name('W'), PDFArray);
+    if (wArray) {
+      for (let i = 0; i < wArray.size();) {
+        const first = wArray.lookupMaybe(i++, PDFNumber)?.asNumber();
+        const next = wArray.lookup(i++);
+        if (!Number.isFinite(first) || !next) break;
+        if (next instanceof PDFArray) {
+          for (let j = 0; j < next.size(); j++) {
+            const width = next.lookupMaybe(j, PDFNumber)?.asNumber();
+            if (Number.isFinite(width)) widths.set(first + j, width);
+          }
+        } else if (next instanceof PDFNumber) {
+          const last = next.asNumber();
+          const width = wArray.lookupMaybe(i++, PDFNumber)?.asNumber();
+          if (Number.isFinite(last) && Number.isFinite(width) && last >= first && last - first <= 65535) {
+            for (let code = first; code <= last; code++) widths.set(code, width);
+          }
+        }
+      }
+    }
+    return (code) => widths.get(code) ?? defaultWidth;
+  }
+  const defaultWidth = descriptor?.lookupMaybe(name('MissingWidth'), PDFNumber)?.asNumber() ?? 500;
+  const firstChar = font.lookupMaybe(name('FirstChar'), PDFNumber)?.asNumber() ?? 0;
+  const wArray = font.lookupMaybe(name('Widths'), PDFArray);
+  const widths = new Map();
+  if (wArray) {
+    for (let i = 0; i < wArray.size(); i++) {
+      const width = wArray.lookupMaybe(i, PDFNumber)?.asNumber();
+      if (Number.isFinite(width)) widths.set(firstChar + i, width);
+    }
+  }
+  return (code) => widths.get(code) ?? defaultWidth;
+}
+
+// A bounded ToUnicode reader. When a ToUnicode stream inherits from an external
+// CMap via usecmap, inline mappings are still parsed and unmapped character
+// codes decode to U+FFFD placeholders so glyph counts and positions remain
+// available for content-stream deletion while disabling raw-font glyph replay.
 export function readToUnicode(stream, codeBytes) {
   if (!(stream instanceof PDFRawStream)) throw new Error('ToUnicode 매핑이 없습니다.');
   const bytes = decodePDFRawStream(stream).decode();
   if (bytes.length > 4 * 1024 * 1024) throw new Error('ToUnicode 매핑이 너무 큽니다.');
   const text = new TextDecoder('latin1').decode(bytes).replace(/%[^\r\n]*/g, '');
-  if (/\busecmap\b/.test(text)) throw new Error('상속된 CMap은 아직 지원하지 않습니다.');
+  const usesExternalCMap = /\busecmap\b/.test(text);
   const map = new Map();
   const sourceCode = (hex) => {
     if (hex.length !== codeBytes * 2) throw new Error('가변 길이 문자 코드는 아직 지원하지 않습니다.');
@@ -63,25 +105,35 @@ export function readToUnicode(stream, codeBytes) {
     if (pos !== tokens.length) throw new Error('CMap 항목 수가 일치하지 않습니다.');
     if (type !== 'codespacerange') sections++;
   }
-  if (!sections || !map.size) throw new Error('해석 가능한 ToUnicode 항목이 없습니다.');
+  if ((!sections || !map.size) && !usesExternalCMap) throw new Error('해석 가능한 ToUnicode 항목이 없습니다.');
   const decode = (binary) => {
     if (binary.length % codeBytes) throw new Error('문자 코드 길이가 일치하지 않습니다.');
     let value = '';
     for (let offset = 0; offset < binary.length; offset += codeBytes) {
       let code = 0;
       for (let i = 0; i < codeBytes; i++) code = code * 256 + binary.charCodeAt(offset + i);
-      if (!map.has(code)) throw new Error('ToUnicode에서 원본 문자를 확인할 수 없습니다.');
+      if (!map.has(code)) {
+        if (usesExternalCMap) {
+          value += '\uFFFD';
+          continue;
+        }
+        throw new Error('ToUnicode에서 원본 문자를 확인할 수 없습니다.');
+      }
       value += map.get(code);
     }
     return value;
   };
+  decode.partial = usesExternalCMap;
   const reverse = new Map();
-  let ambiguous = new Set();
+  const ambiguous = new Set();
   map.forEach((value, code) => {
     if (reverse.has(value) && reverse.get(value) !== code) ambiguous.add(value);
     else reverse.set(value, code);
   });
   decode.encode = (value) => {
+    if (usesExternalCMap) {
+      throw new Error('상속된 CMap 글꼴은 원본 glyph 재인코딩을 지원하지 않습니다.');
+    }
     let binary = '';
     for (const character of String(value || '')) {
       if (ambiguous.has(character) || !reverse.has(character)) {
@@ -115,6 +167,8 @@ export function analyzePdfFont(page, resourceName) {
   } else if (!['Type1', 'TrueType'].includes(subtype)) throw new Error('지원하지 않는 원본 글꼴 형식입니다.');
   const descriptor = descendant.lookupMaybe(name('FontDescriptor'), PDFDict);
   const embedded = !!descriptor && ['FontFile', 'FontFile2', 'FontFile3'].some((key) => descriptor.has(name(key)));
+  const codeBytes = subtype === 'Type0' ? 2 : 1;
+  const glyphWidth = readFontWidthLookup(font, descendant, subtype, descriptor);
   const cmap = font.lookup(name('ToUnicode'));
   const info = {
     resourceName,
@@ -127,25 +181,54 @@ export function analyzePdfFont(page, resourceName) {
     canReuseOriginalFont: false
   };
   if (cmap) {
-    const decode = readToUnicode(cmap, subtype === 'Type0' ? 2 : 1);
+    const decode = readToUnicode(cmap, codeBytes);
     return {
       ...info,
+      codeBytes,
+      glyphWidth,
       toUnicodeMapped: true,
-      canReuseOriginalFont: true,
+      partialToUnicode: decode.partial === true,
+      canReuseOriginalFont: decode.partial !== true,
       decode,
-      encode: decode.encode
+      encode: decode.partial === true ? undefined : decode.encode
     };
   }
   if (subtype === 'Type1' && STANDARD.has(baseFont) && !font.has(name('Widths')) && !descriptor
     && (!encodingObject || encoding === 'WinAnsiEncoding')) {
-    return { ...info, canReuseOriginalFont: true, decode: (binary) => {
+    const metrics = Font.load(baseFont);
+    const measureText = (value, size) => {
+      const glyphs = Array.from(String(value || ''), (character) => (
+        Encodings.WinAnsi.encodeUnicodeCodePoint(character.codePointAt(0))
+      ));
+      let width = 0;
+      glyphs.forEach((glyph, index) => {
+        width += metrics.getWidthOfGlyph(glyph.name) || 250;
+        width += metrics.getXAxisKerningForPair(glyph.name, glyphs[index + 1]?.name) || 0;
+      });
+      return width * Number(size) / 1000;
+    };
+    return { ...info, codeBytes, glyphWidth, canReuseOriginalFont: true, decode: (binary) => {
       if (!/^[\x20-\x7e]*$/.test(binary)) throw new Error('원본 문자 매핑을 확인할 수 없습니다.');
       return binary;
     }, encode: (value) => {
       const text = String(value || '');
       if (!/^[\x20-\x7e]*$/.test(text)) throw new Error('원본 글꼴에 새 문자의 glyph mapping이 없습니다.');
       return text;
-    } };
+    }, measureText };
+  }
+  if (['Type1', 'TrueType'].includes(subtype)
+    && (!encodingObject || ['WinAnsiEncoding', 'MacRomanEncoding', 'StandardEncoding'].includes(encoding))) {
+    return {
+      ...info,
+      codeBytes,
+      glyphWidth,
+      partialToUnicode: true,
+      canReuseOriginalFont: false,
+      decode: (binary) => Array.from(binary, (ch) => {
+        const code = ch.charCodeAt(0);
+        return code >= 0x20 && code <= 0x7e ? ch : '\uFFFD';
+      }).join('')
+    };
   }
   throw new Error('원본 글꼴에 해석 가능한 ToUnicode 매핑이 없습니다.');
 }

@@ -143,3 +143,43 @@ test('table move buttons and total size inputs work', async ({ page }) => {
   });
   expect((await table.boundingBox()).width).toBeLessThanOrEqual(pageWidth + 2);
 });
+
+test('an attached image can move between document blocks and keeps that position when saved', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: 'image-move.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    buffer: await makeDocx(2)
+  });
+  const paragraph = page.locator('.docx-content section.docx article > p').filter({ hasText: 'Text after table' }).first();
+  await page.locator('.docx-edit-toggle').getByRole('button', { name: '편집' }).click();
+  await paragraph.click();
+  await page.locator('input[type=file][accept*="image/png"]').setInputFiles({
+    name: 'pixel.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2ZQAAAABJRU5ErkJggg==', 'base64')
+  });
+  const imageBlock = page.locator('.docx-added-image[data-docx-image-id]').first();
+  await expect(imageBlock).toBeVisible();
+  await expect(page.getByRole('button', { name: '이미지 이동' })).toBeVisible();
+  await page.getByRole('button', { name: '이미지 위로' }).click();
+  await expect(imageBlock).toHaveAttribute('data-docx-image-moved', 'true');
+  expect(await imageBlock.evaluate((element) => element.previousElementSibling?.tagName)).toBe('TABLE');
+
+  const moveHandle = page.getByRole('button', { name: '이미지 이동' });
+  const handleBounds = await moveHandle.boundingBox();
+  const paragraphBounds = await paragraph.boundingBox();
+  await page.mouse.move(handleBounds.x + handleBounds.width / 2, handleBounds.y + handleBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(paragraphBounds.x + 20, paragraphBounds.y + paragraphBounds.height - 2, { steps: 8 });
+  await page.mouse.up();
+  expect(await imageBlock.evaluate((element) => element.previousElementSibling?.textContent)).toContain('Text after table');
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'), page.locator('.viewer-download-button.docx').click()
+  ]);
+  const saved = await JSZip.loadAsync(await readFile(await download.path()));
+  const xml = await saved.file('word/document.xml').async('string');
+  expect(xml.indexOf('<w:tbl>')).toBeLessThan(xml.indexOf('Text after table'));
+  expect(xml.indexOf('Text after table')).toBeLessThan(xml.indexOf('<w:drawing>'));
+});

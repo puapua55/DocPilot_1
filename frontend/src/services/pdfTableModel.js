@@ -28,6 +28,7 @@ export function tableStyle(style = {}) {
     align: ['left', 'center', 'right'].includes(style.align) ? style.align : 'left',
     verticalAlign: ['top', 'middle', 'bottom'].includes(style.verticalAlign) ? style.verticalAlign : 'middle',
     fill: /^#[\da-f]{6}$/i.test(style.fill || '') ? style.fill : '',
+    fillNone: style.fillNone === true,
     color: /^#[\da-f]{6}$/i.test(style.color || '') ? style.color : '#14203a',
     fontSize: Number.isFinite(Number(style.fontSize)) && Number(style.fontSize) >= 5 && Number(style.fontSize) <= 32 ? Number(style.fontSize) : null,
     borderWidth: Number.isFinite(Number(style.borderWidth)) && Number(style.borderWidth) >= 0.25 && Number(style.borderWidth) <= 5 ? Number(style.borderWidth) : null,

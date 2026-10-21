@@ -469,8 +469,15 @@ function applyEditedTable(table, element) {
         setW(width, 'w', Math.round(Number.parseFloat(domCell.style.width) * 15));
         setW(width, 'type', 'dxa');
       }
-      const fill = cssColorHex(domCell.style.backgroundColor);
-      if (fill) {
+      const fillNone = domCell.dataset.docxCellFillNone === 'true';
+      const fill = fillNone ? '' : cssColorHex(domCell.style.backgroundColor);
+      if (fillNone) {
+        let shading = children(props, 'shd')[0];
+        if (!shading) { shading = create(table.ownerDocument, 'shd'); props.appendChild(shading); }
+        setW(shading, 'val', 'nil');
+        shading.removeAttributeNS(W, 'fill');
+        shading.removeAttributeNS(W, 'color');
+      } else if (fill) {
         let shading = children(props, 'shd')[0];
         if (!shading) { shading = create(table.ownerDocument, 'shd'); props.appendChild(shading); }
         setW(shading, 'fill', fill);
@@ -553,11 +560,17 @@ function createAddedTable(doc, element) {
         props.appendChild(merge);
         verticalSpans.set(currentColumn, { endRow: rowIndex + domCell.rowSpan - 1, columns: domCell.colSpan });
       }
-      const fill = cssColorHex(domCell.style.backgroundColor) || 'FFFFFF';
-      const shading = create(doc, 'shd');
-      setW(shading, 'fill', fill);
-      setW(shading, 'val', 'clear');
-      props.appendChild(shading);
+      if (domCell.dataset.docxCellFillNone === 'true') {
+        const shading = create(doc, 'shd');
+        setW(shading, 'val', 'nil');
+        props.appendChild(shading);
+      } else {
+        const fill = cssColorHex(domCell.style.backgroundColor) || 'FFFFFF';
+        const shading = create(doc, 'shd');
+        setW(shading, 'fill', fill);
+        setW(shading, 'val', 'clear');
+        props.appendChild(shading);
+      }
       writeCellBorders(props, domCell, true);
       cell.appendChild(props);
       const paragraphs = Array.from(domCell.children).filter((child) => child.matches('p'));
@@ -621,8 +634,10 @@ export async function makeEditedDocx(file, edits, images, tables = [], addedBloc
     let nextId = Math.max(0, ...Array.from(relRoot.children).map((item) => Number(item.getAttribute('Id')?.replace(/^rId/, '')) || 0)) + 1;
     const imageAnchors = new Map();
     for (const [imageIndex, image] of images.entries()) {
-      const paragraph = paragraphs[image.afterIndex];
-      if (!paragraph) continue;
+      const afterTableIndex = image.afterTableIndex === null || image.afterTableIndex === undefined
+        ? null : Number(image.afterTableIndex);
+      const anchorKey = afterTableIndex === null ? `paragraph-${image.afterIndex}` : `table-${afterTableIndex}`;
+      const sourceAnchor = afterTableIndex === null ? paragraphs[image.afterIndex] : sourceTables[afterTableIndex];
       const mime = image.dataUrl.match(/^data:(image\/(?:png|jpeg|gif));base64,/i)?.[1];
       if (!mime) continue;
       const extension = mime === 'image/jpeg' ? 'jpg' : mime.split('/')[1];
@@ -641,9 +656,14 @@ export async function makeEditedDocx(file, edits, images, tables = [], addedBloc
       relRoot.appendChild(rel);
       const imageParagraph = create(doc, 'p');
       imageParagraph.appendChild(imageDrawing(doc, id, image.width, image.height, nextId + imageIndex));
-      const anchor = imageAnchors.get(image.afterIndex) || paragraph;
-      anchor.parentNode.insertBefore(imageParagraph, anchor.nextSibling);
-      imageAnchors.set(image.afterIndex, imageParagraph);
+      const anchor = imageAnchors.get(anchorKey) || sourceAnchor;
+      if (anchor?.parentNode === body) anchor.parentNode.insertBefore(imageParagraph, anchor.nextSibling);
+      else if (afterTableIndex === null && Number(image.afterIndex) < 0) {
+        const firstBlock = Array.from(body.childNodes).find((node) =>
+          node.nodeType === 1 && !(node.namespaceURI === W && node.localName === 'sectPr'));
+        body.insertBefore(imageParagraph, firstBlock || children(body, 'sectPr')[0] || null);
+      } else body.insertBefore(imageParagraph, children(body, 'sectPr')[0] || null);
+      imageAnchors.set(anchorKey, imageParagraph);
     }
     zip.file(relPath, new XMLSerializer().serializeToString(relDoc));
     zip.file('[Content_Types].xml', new XMLSerializer().serializeToString(typeDoc));

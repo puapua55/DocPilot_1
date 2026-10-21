@@ -57,6 +57,10 @@ public class GeminiChatService {
         log.info("[Gemini] configuration: apiKeyPresent={}, model={}", !this.apiKey.isBlank(), this.model);
     }
 
+    public boolean hasApiKey() {
+        return !apiKey.isBlank();
+    }
+
     public ChatResult chat(ChatController.ChatRequest request) {
         if (apiKey.isBlank()) {
             throw new ResponseStatusException(SERVICE_UNAVAILABLE, "GEMINI_API_KEY가 설정되지 않았습니다. 백엔드 환경변수에 API Key를 설정해주세요.");

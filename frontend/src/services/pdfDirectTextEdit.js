@@ -173,6 +173,152 @@ function matchesDeleteText(candidateText, expectedTexts) {
     || normalizedCandidate === normalizeForDeleteMatch(expected));
 }
 
+function matchesOpaqueUnicodeCandidate(candidate, item) {
+  // Some legacy CID fonts inherit an external CMap. Their PDF.js text layer
+  // has the correct Unicode string, but the embedded ToUnicode stream alone
+  // yields one U+FFFD per glyph. For a whole selected item, its exact matrix
+  // plus the glyph count is sufficient to remove that one show command. Do
+  // not use this for partial selections, where a substring boundary cannot be
+  // proven from an opaque encoded string.
+  if (item.sourceSelection?.wholeItem !== true || candidate.fontInfo?.partialToUnicode !== true) return false;
+  const source = String(item.sourceSelection?.selectedText || item.sourceText || item.originalText || item.originalUnicodeText || '')
+    .replace(/\s+/g, '');
+  return source.length > 0
+    && /^\uFFFD+$/u.test(candidate.text)
+    && Array.from(candidate.text).length === Array.from(source).length;
+}
+
+function encodedHex(binary) {
+  return `<${Array.from(String(binary || ''), (character) => character.charCodeAt(0).toString(16).padStart(2, '0')).join('')}>`;
+}
+
+function splitEncodedGlyphs(candidate) {
+  const binary = String(candidate.encodedText || '');
+  const codeBytes = Number(candidate.fontInfo?.codeBytes) || 1;
+  if (!binary || binary.length % codeBytes !== 0 || typeof candidate.decodeGlyph !== 'function') return null;
+  const glyphs = [];
+  let unicodeOffset = 0;
+  for (let byteOffset = 0; byteOffset < binary.length; byteOffset += codeBytes) {
+    const bytes = binary.slice(byteOffset, byteOffset + codeBytes);
+    let text;
+    try { text = candidate.decodeGlyph(bytes); } catch { return null; }
+    if (!text || text.includes('\uFFFD')) return null;
+    glyphs.push({ bytes, text, byteOffset, unicodeStart: unicodeOffset, unicodeEnd: unicodeOffset + text.length });
+    unicodeOffset += text.length;
+  }
+  return glyphs;
+}
+
+function makePartialRemovalCommand(candidate, item, page) {
+  if (!item.sourceSelection?.partialSelection || candidate.showOperator !== 'Tj'
+    || candidate.text !== item.sourceSelection.text) return null;
+  const selectedText = String(item.sourceSelection.selectedText || item.sourceText || item.originalText || '');
+  if (!selectedText) return null;
+  let start = Number(item.sourceSelection.startOffset);
+  let end = Number(item.sourceSelection.endOffset);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start
+    || candidate.text.slice(start, end) !== selectedText) {
+    const first = candidate.text.indexOf(selectedText);
+    if (first < 0 || candidate.text.indexOf(selectedText, first + selectedText.length) >= 0) return null;
+    start = first;
+    end = first + selectedText.length;
+  }
+  const glyphs = splitEncodedGlyphs(candidate);
+  if (!glyphs?.length) return null;
+  const selected = glyphs.filter((glyph) => glyph.unicodeStart >= start && glyph.unicodeEnd <= end);
+  if (!selected.length || selected[0].unicodeStart !== start || selected[selected.length - 1].unicodeEnd !== end) return null;
+  const byteStart = selected[0].byteOffset;
+  const byteEnd = selected[selected.length - 1].byteOffset + selected[selected.length - 1].bytes.length;
+  const prefix = candidate.encodedText.slice(0, byteStart);
+  const suffix = candidate.encodedText.slice(byteEnd);
+  const fontSize = Number(candidate.fontSize);
+  if (!(fontSize > 0)) return null;
+  let advance = 0;
+  let measurable = true;
+  selected.forEach((glyph) => {
+    let code = 0;
+    for (const character of glyph.bytes) code = code * 256 + character.charCodeAt(0);
+    const width = Number(candidate.fontInfo.glyphWidth?.(code));
+    if (!Number.isFinite(width)) { measurable = false; return; }
+    advance += width / 1000 * fontSize + Number(candidate.charSpacing || 0);
+    if (glyph.text === ' ') advance += Number(candidate.wordSpacing || 0);
+  });
+  if (!measurable || !Number.isFinite(advance) || advance <= 0) return null;
+  // The PDF.js selection box contains the rendered advance of the selected
+  // substring, including the source font's kerning. Prefer it over font width
+  // tables, which are incomplete for several standard/subset fonts.
+  const measuredAdvance = typeof candidate.fontInfo.measureText === 'function'
+    ? candidate.fontInfo.measureText(selectedText, fontSize)
+      + Number(candidate.charSpacing || 0) * selected.length
+      + Number(candidate.wordSpacing || 0) * selected.filter((glyph) => glyph.text === ' ').length
+    : null;
+  const geometryAdvance = Number(item.textBoxWidth) > 0 && Number(item.sourcePageWidth) > 0
+    ? Number(item.textBoxWidth) * page.getWidth() / Number(item.sourcePageWidth) : null;
+  const renderedAdvance = Number.isFinite(measuredAdvance) && measuredAdvance > 0 ? measuredAdvance
+    : Number.isFinite(geometryAdvance) && geometryAdvance > 0 ? geometryAdvance : advance;
+  const horizontalScale = Number(candidate.horizontalScale) / 100 || 1;
+  const adjustmentFor = (distance) => Number((-distance * 1000 / fontSize / horizontalScale).toFixed(6));
+  const replacementText = String(item.displayText ?? item.text ?? '');
+  if (typeof candidate.fontInfo.encode === 'function' && replacementText) {
+    try {
+      const replacementBytes = candidate.fontInfo.encode(replacementText);
+      let replacementAdvance = null;
+      if (typeof candidate.fontInfo.measureText === 'function') {
+        replacementAdvance = candidate.fontInfo.measureText(replacementText, fontSize)
+          + Number(candidate.charSpacing || 0) * Array.from(replacementText).length
+          + Number(candidate.wordSpacing || 0) * Array.from(replacementText).filter((character) => character === ' ').length;
+      } else {
+        const codeBytes = Number(candidate.fontInfo.codeBytes) || 1;
+        if (replacementBytes.length % codeBytes === 0) {
+          replacementAdvance = 0;
+          for (let offset = 0; offset < replacementBytes.length; offset += codeBytes) {
+            const glyphBytes = replacementBytes.slice(offset, offset + codeBytes);
+            let code = 0;
+            for (const character of glyphBytes) code = code * 256 + character.charCodeAt(0);
+            const width = Number(candidate.fontInfo.glyphWidth?.(code));
+            if (!Number.isFinite(width)) { replacementAdvance = null; break; }
+            replacementAdvance += width / 1000 * fontSize + Number(candidate.charSpacing || 0);
+            if (candidate.decodeGlyph(glyphBytes) === ' ') replacementAdvance += Number(candidate.wordSpacing || 0);
+          }
+        }
+      }
+      if (Number.isFinite(replacementAdvance)) {
+        if (!suffix) return { command: `${encodedHex(prefix + replacementBytes)} Tj`, partialSourceReplacement: true };
+        const difference = renderedAdvance - replacementAdvance;
+        const adjustment = Math.abs(difference) < 0.000001 ? '' : ` ${adjustmentFor(difference)}`;
+        return {
+          command: `[${encodedHex(prefix)} ${encodedHex(replacementBytes)}${adjustment} ${encodedHex(suffix)}] TJ`,
+          partialSourceReplacement: true
+        };
+      }
+    } catch {
+      // The source subset does not contain the replacement. Remove only the
+      // old bytes and let the Unicode overlay path draw the new characters.
+    }
+  }
+  if (!suffix) return { command: `${encodedHex(prefix)} Tj`, partialSourceReplacement: false };
+  const adjustment = adjustmentFor(renderedAdvance);
+  return { command: `[${encodedHex(prefix)} ${adjustment} ${encodedHex(suffix)}] TJ`, partialSourceReplacement: false };
+}
+
+function findPartialTextCommand(analysis, item, page) {
+  const evidence = item.sourceSelection;
+  if (!evidence?.partialSelection || !Array.isArray(evidence.transform) || evidence.transform.length !== 6) return null;
+  const matches = analysis.candidates.filter((candidate) => candidate.transform.every((value, index) => close(value, evidence.transform[index])))
+    .map((candidate) => ({ candidate, edit: makePartialRemovalCommand(candidate, item, page) }))
+    .filter((entry) => entry.edit?.command);
+  if (matches.length !== 1) return null;
+  const { candidate, edit } = matches[0];
+  return {
+    ...candidate,
+    start: candidate.showStart,
+    end: candidate.showEnd,
+    replacementCommand: edit.command,
+    partialRewrite: true,
+    partialSourceReplacement: edit.partialSourceReplacement
+  };
+}
+
 // Tokenize strings/arrays/comments instead of regex-replacing stream text.
 // In particular, operator-like text inside a string must remain data.
 function tokenize(source) {
@@ -269,6 +415,8 @@ function analyzePage(page, unsafe = false) {
   const fontCache = new Map();
   let state = { ctm: IDENTITY, font: '', size: 0, spacing: 0, wordSpacing: 0, hscale: 100, rise: 0, render: 0, leading: 0, fill: '0 g' };
   const stack = [];
+  let markedContentDepth = 0;
+  let compatibilityDepth = 0;
   let block = null;
   let operands = [];
   const numbers = (count) => {
@@ -292,11 +440,14 @@ function analyzePage(page, unsafe = false) {
       state.ctm = multiply(state.ctm, numbers(6));
     } else if (op === 'BT') {
       numbers(0); if (block) fail('중첩 텍스트 객체입니다.');
-      block = { start: token.start, matrix: [...IDENTITY], line: [...IDENTITY], shows: [] };
+      block = { start: token.start, matrix: [...IDENTITY], line: [...IDENTITY], shows: [], unsupported: false };
     } else if (op === 'ET') {
       numbers(0); if (!block) fail('잘못된 텍스트 객체입니다.');
-      if (block.shows.length > 1) fail('여러 출력 명령이 연결된 텍스트 객체는 overlay로 저장합니다.');
-      if (block.shows.length === 1 && block.shows[0]) {
+      // One BT/ET block may contain several independent output commands. It
+      // is unsafe to rewrite one of those runs as though it owned the whole
+      // object, but an unrelated multi-show block must not prevent deletion
+      // of a separately bounded single-show text object elsewhere on the page.
+      if (!block.unsupported && block.shows.length === 1 && block.shows[0]) {
         candidates.push({ ...block.shows[0], objectStart: block.start, objectEnd: token.end,
           fullText: block.shows[0].text });
       }
@@ -318,25 +469,41 @@ function analyzePage(page, unsafe = false) {
     } else if (op === 'Tj' || op === 'TJ') {
       if (!block || operands.length !== 1) fail('잘못된 텍스트 출력 명령입니다.');
       let value = null;
+      let hasNonZeroTjAdjustment = false;
       if (op === 'Tj' && operands[0].type === 'string') value = operands[0].value;
       if (op === 'TJ' && operands[0].type === 'array') {
         const parts = operands[0].value;
-        if (parts.every((part) => part.type === 'string' || (part.type === 'number' && part.value === 0))) {
+        // A TJ array may contain kerning/advance adjustments between strings.
+        // They change glyph placement but not the text command that has to be
+        // removed.  Keep them for direct deletion; original-font replay below
+        // still rejects this state because it normalizes text spacing.
+        if (parts.every((part) => part.type === 'string' || (part.type === 'number' && Number.isFinite(part.value)))) {
           value = parts.filter((part) => part.type === 'string').map((part) => part.value).join('');
+          hasNonZeroTjAdjustment = parts.some((part) => part.type === 'number' && part.value !== 0);
         }
       }
       const transform = multiply(state.ctm, multiply(block.matrix, [state.size, 0, 0, state.size, 0, 0]));
       if (!fontCache.has(state.font)) fontCache.set(state.font, analyzePdfFont(page, state.font));
       const font = fontCache.get(state.font);
       const decoded = value === null ? null : font.decode(value);
+      // Unicode fallback only needs to identify and remove the original show
+      // command.  Tc/Tw and TJ adjustments are safe in that path because the
+      // command is removed as a whole.  Replaying the original encoded glyphs
+      // is stricter: that path currently emits normalized text state.
       const supported = decoded
-        && state.spacing === 0 && state.wordSpacing === 0 && state.hscale === 100 && state.rise === 0 && state.render === 0
+        && [state.spacing, state.wordSpacing, state.hscale, state.rise, state.render].every(Number.isFinite)
         && Math.abs(transform[0]) > 0 && Math.abs(transform[3]) > 0
         && close(transform[1], 0) && close(transform[2], 0);
       if (!supported) fail('해석 가능한 단순 가로 텍스트만 직접 이동할 수 있습니다.');
+      const canReplayWithOriginalFont = state.spacing === 0 && state.wordSpacing === 0
+        && state.hscale === 100 && state.rise === 0 && state.render === 0 && !hasNonZeroTjAdjustment;
       const { decode, ...fontInfo } = font;
-      block.shows.push({ text: decoded, transform, matrix: [...block.matrix], ctm: [...state.ctm],
-        fontInfo, fontSize: state.size, fill: state.fill, start: operands[0].start, end: token.end });
+      block.shows.push({ text: decoded, encodedText: value, showOperator: op,
+        showStart: operands[0].start, showEnd: token.end, decodeGlyph: font.decode,
+        charSpacing: state.spacing, wordSpacing: state.wordSpacing, horizontalScale: state.hscale,
+        transform, matrix: [...block.matrix], ctm: [...state.ctm],
+        fontInfo, fontSize: state.size, fill: state.fill, start: operands[0].start, end: token.end,
+        canReplayWithOriginalFont });
       // A second show in this BT/ET invalidates the entire candidate: deleting
       // the first could otherwise change the text advance of later glyphs.
     } else if (op === 'Do') {
@@ -346,8 +513,54 @@ function analyzePage(page, unsafe = false) {
       if (block || operands.length !== 1 || operands[0].type !== 'name') {
         fail('지원하지 않는 XObject 명령입니다.');
       }
+    } else if (op === 'BMC') {
+      // Marked-content tags do not change the graphics or text state. They
+      // commonly wrap accessible PDF text, so retain them while editing the
+      // enclosed text command.
+      if (operands.length !== 1 || operands[0].type !== 'name') fail('잘못된 marked-content 시작 명령입니다.');
+      markedContentDepth++;
+    } else if (op === 'BDC') {
+      // Named property lists are resolved through the page resources and have
+      // no bearing on glyph geometry. Dictionary property lists remain
+      // unsupported by the tokenizer and fall back safely before this point.
+      if (operands.length !== 2 || operands[0].type !== 'name' || operands[1].type !== 'name') {
+        fail('지원하지 않는 marked-content 속성입니다.');
+      }
+      markedContentDepth++;
+    } else if (op === 'EMC') {
+      if (operands.length !== 0 || markedContentDepth <= 0) fail('잘못된 marked-content 종료 명령입니다.');
+      markedContentDepth--;
+    } else if (op === 'BX') {
+      if (operands.length !== 0) fail('잘못된 호환성 구역 시작 명령입니다.');
+      compatibilityDepth++;
+    } else if (op === 'EX') {
+      if (operands.length !== 0 || compatibilityDepth <= 0) fail('잘못된 호환성 구역 종료 명령입니다.');
+      compatibilityDepth--;
+    } else if (op === 'gs') {
+      // An ExtGState can alter paint settings such as opacity but not the
+      // text bytes or text matrix being removed.
+      if (operands.length !== 1 || operands[0].type !== 'name') fail('잘못된 그래픽 상태 명령입니다.');
+    } else if (op === 'i') {
+      numbers(1);
+    } else if (op === 'ri') {
+      if (operands.length !== 1 || operands[0].type !== 'name') fail('잘못된 렌더링 의도 명령입니다.');
+    } else if (op === 'CS' || op === 'cs') {
+      if (operands.length !== 1 || operands[0].type !== 'name') fail('잘못된 색 공간 명령입니다.');
+    } else if (['SC', 'SCN', 'sc', 'scn'].includes(op)) {
+      // Pattern/color-space operands affect painting only. Text deletion
+      // leaves the surrounding color commands untouched.
+      if (!operands.length || operands.some((part) => part.type !== 'number' && part.type !== 'name')) {
+        fail('잘못된 색 설정 명령입니다.');
+      }
+    } else if (op === 'sh') {
+      // Shading is a page paint operation. It does not modify the text state
+      // of the following content stream commands.
+      if (operands.length !== 1 || operands[0].type !== 'name') fail('잘못된 음영 명령입니다.');
     } else if (graphics.has(op)) {
-      if (block && !['G', 'g', 'RG', 'rg', 'K', 'k'].includes(op)) fail('텍스트 객체 내부 그래픽은 overlay로 저장합니다.');
+      // Some producer PDFs use stroke settings inside BT/ET to outline text.
+      // Skip that whole block as a deletion candidate, but keep parsing so an
+      // unrelated simple text object on the same page can still be removed.
+      if (block && !['G', 'g', 'RG', 'rg', 'K', 'k'].includes(op)) block.unsupported = true;
       numbers(graphics.get(op));
       if (['g', 'rg', 'k'].includes(op)) state.fill = `${operands.map((part) => part.value).join(' ')} ${op}`;
     } else if (op === 'd') {
@@ -356,7 +569,7 @@ function analyzePage(page, unsafe = false) {
     } else fail(`지원하지 않는 PDF 명령(${op})은 overlay로 저장합니다.`);
     operands = [];
   }
-  if (operands.length || block || stack.length) fail('완성되지 않은 콘텐츠 스트림입니다.');
+  if (operands.length || block || stack.length || markedContentDepth || compatibilityDepth) fail('완성되지 않은 콘텐츠 스트림입니다.');
   return { source, candidates, retired };
 }
 
@@ -707,11 +920,22 @@ function editMovedText(pdfDocument, replacements, preserveFont) {
         }
         if (evidence?.wholeItem === true && matchTexts.length && Array.isArray(evidence.transform)
           && evidence.transform.length === 6 && evidence.transform.every(Number.isFinite)) {
-          const found = analysis.candidates.filter((candidate) => matchesDeleteText(candidate.text, matchTexts)
+          const found = analysis.candidates.filter((candidate) => (matchesDeleteText(candidate.text, matchTexts)
+            || matchesOpaqueUnicodeCandidate(candidate, item))
             && candidate.transform.every((value, index) => close(value, evidence.transform[index])));
           reason = '원본 문자열과 위치를 유일하게 확인할 수 없어 overlay로 저장했습니다.';
           if (found.length === 1 || (EXPERIMENTAL_UNSAFE_DIRECT_EDIT && found.length > 0)) {
             const selectedCandidate = found[0];
+            if (preserveFont && !selectedCandidate.canReplayWithOriginalFont) {
+              outcomes.set(item, {
+                direct: false,
+                fontPreserved: false,
+                canReuseOriginalFont: false,
+                sourceFont: selectedCandidate.fontInfo,
+                reason: '자간 또는 TJ 글자 위치 보정이 있는 원본 글꼴은 재배치하지 않고 Unicode overlay를 사용합니다.'
+              });
+              continue;
+            }
             // PdfTextLayer keeps a rendered glyph preview for the browser.
             // That preview is not a safe source for replaying PDF bytes: a
             // PDF.js glyph mapping can look correct on screen while the
@@ -753,8 +977,25 @@ function editMovedText(pdfDocument, replacements, preserveFont) {
             reason = '겹치는 이동/교체 영역은 overlay로 저장했습니다.';
           }
         }
+        const partialCommand = findPartialTextCommand(analysis, item, page);
+        if (partialCommand) {
+          const conflict = !EXPERIMENTAL_UNSAFE_DIRECT_EDIT && replacements.some((other) => other !== item && other.pageNumber === item.pageNumber
+            && other.type !== 'movable-text' && intersects(item, other));
+          if (!conflict) { matches.set(item, [partialCommand]); continue; }
+          reason = '겹치는 이동/교체 영역은 overlay로 저장했습니다.';
+        }
         const partialRun = findPartialGlyphRun(analysis, item, page, EXPERIMENTAL_UNSAFE_DIRECT_EDIT);
         if (partialRun) {
+          if (preserveFont && partialRun.some((candidate) => !candidate.canReplayWithOriginalFont)) {
+            outcomes.set(item, {
+              direct: false,
+              fontPreserved: false,
+              canReuseOriginalFont: false,
+              sourceFont: partialRun[0]?.fontInfo || null,
+              reason: '자간 또는 TJ 글자 위치 보정이 있는 원본 글꼴은 재배치하지 않고 Unicode overlay를 사용합니다.'
+            });
+            continue;
+          }
           const conflict = !EXPERIMENTAL_UNSAFE_DIRECT_EDIT && replacements.some((other) => other !== item && other.pageNumber === item.pageNumber
             && other.type !== 'movable-text' && intersects(item, other));
           if (!conflict) { matches.set(item, partialRun); continue; }
@@ -786,7 +1027,7 @@ function editMovedText(pdfDocument, replacements, preserveFont) {
       const drawingCommands = new Map();
       const streamChanges = [];
       edits.forEach((edit) => {
-        if (!preserveFont) {
+        if (!preserveFont && !edit.candidates.every((candidate) => candidate.partialSourceReplacement)) {
           edit.contentOrderAnchor = createContentOrderAnchor();
           streamChanges.push({ start: Math.min(...edit.candidates.map((candidate) => candidate.objectStart)),
             end: Math.min(...edit.candidates.map((candidate) => candidate.objectStart)),
@@ -815,7 +1056,7 @@ function editMovedText(pdfDocument, replacements, preserveFont) {
             `${values} Tm`, analysis.source.slice(candidate.start, candidate.end), 'ET', 'Q'
           ].join('\n'));
         }
-        streamChanges.push({ start: candidate.start, end: candidate.end, text: '' });
+        streamChanges.push({ start: candidate.start, end: candidate.end, text: candidate.replacementCommand || '' });
       });
       streamChanges.sort((a, b) => b.start - a.start).forEach(({ start, end, text }) => {
         rewritten = rewritten.slice(0, start) + text + rewritten.slice(end);
@@ -826,13 +1067,14 @@ function editMovedText(pdfDocument, replacements, preserveFont) {
       edits.forEach(({ item, candidates, contentOrderAnchor }) => outcomes.set(item, {
         direct: true,
         directRemoval: true,
+        directReplacement: candidates.every((candidate) => candidate.partialSourceReplacement),
         deleteMode: candidates.length === 1 && !item.sourceSelection?.partialSelection
           ? 'full-object'
           : item.sourceSelection?.partialSelection ? 'partial-string' : 'range-group',
         deletedCommandCount: candidates.length,
         commandRange: { start: Math.min(...candidates.map((candidate) => candidate.start)), end: Math.max(...candidates.map((candidate) => candidate.end)) },
         reason: preserveFont ? null : '원본 텍스트를 content stream에서 제거하고 Unicode overlay를 삽입합니다.',
-        fontPreserved: preserveFont,
+        fontPreserved: preserveFont || candidates.every((candidate) => candidate.partialSourceReplacement),
         canReuseOriginalFont: candidates[0].fontInfo.canReuseOriginalFont === true,
         sourceFont: candidates[0].fontInfo,
         drawingCommands: drawingCommands.get(item),

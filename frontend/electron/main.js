@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fontkit from '@pdf-lib/fontkit';
 import { chatWithGemini } from './geminiService.js';
+import { chatWithOpenAi } from './openaiService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -123,14 +124,22 @@ function getStartUrl() {
 }
 
 function registerAiIpc() {
-  ipcMain.handle('docpilot-ai:chat', (_event, request = {}) => chatWithGemini({
-    message: typeof request.message === 'string' ? request.message : '',
-    documentName: typeof request.documentName === 'string' ? request.documentName : '',
-    documentType: typeof request.documentType === 'string' ? request.documentType : '',
-    documentText: typeof request.documentText === 'string' ? request.documentText : '',
-    history: Array.isArray(request.history) ? request.history : []
-  }, readLocalSettings()));
+  ipcMain.handle('docpilot-ai:chat', (_event, request = {}) => {
+    const settings = readLocalSettings();
+    const payload = {
+      message: typeof request.message === 'string' ? request.message : '',
+      documentName: typeof request.documentName === 'string' ? request.documentName : '',
+      documentType: typeof request.documentType === 'string' ? request.documentType : '',
+      documentText: typeof request.documentText === 'string' ? request.documentText : '',
+      history: Array.isArray(request.history) ? request.history : []
+    };
+    if (process.env.OPENAI_API_KEY || settings.openAiApiKey) {
+      return chatWithOpenAi(payload, settings);
+    }
+    return chatWithGemini(payload, settings);
+  });
 }
+
 
 const localFontCache = new Map();
 

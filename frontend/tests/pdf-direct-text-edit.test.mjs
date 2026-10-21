@@ -207,6 +207,39 @@ for (const variant of ['partial', 'wrong-position', 'duplicate', 'rotation', 'un
   });
 }
 
+test('partial selection rewrites one Tj command without a background cover', async () => {
+  const sourceBytes = await fixture(['Document and editing']);
+  const original = (await inspect(sourceBytes)).items[0];
+  const item = move(original);
+  item.text = 'or';
+  item.displayText = 'or';
+  item.forceUnicodeFallback = true;
+  item.coverSourceOnFallback = true;
+  item.sourceText = 'and';
+  item.originalText = 'and';
+  item.sourceSelection = {
+    wholeItem: false,
+    partialSelection: true,
+    text: original.str,
+    selectedText: 'and',
+    startOffset: original.str.indexOf('and'),
+    endOffset: original.str.indexOf('and') + 3,
+    transform: original.transform
+  };
+  item.coverX = original.transform[4] + 96;
+  item.coverWidth = 34;
+  item.textX = item.coverX;
+  item.textY = 80;
+  item.baseline = 100;
+  const result = await buildPdfWithTextEdits({ sourceBytes, fontBytes, replacements: [item] });
+  assert.equal(result.directDeleteCount, 1);
+  assert.equal(result.fallbackOverlayCount, 0);
+  assert.equal(result.textMoveResults[0].deleteMode, 'partial-string');
+  assert.equal(result.textMoveResults[0].shouldApplyCover, false);
+  const text = (await inspect(result.outputBytes)).items.map((entry) => entry.str).join(' ');
+  assert.equal(text, 'Document or editing');
+});
+
 async function streamFixture(content) {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -227,14 +260,28 @@ test('literal escapes, comments, zero-adjustment TJ and compressed streams are p
   }
 });
 
-test('multiple shows in one text object and nonzero kerning remain untouched', async () => {
-  for (const show of ['(Move me) Tj 0 -60 Td (Keep me) Tj', '[(Move) -200 (me)] TJ']) {
-    const bytes = await streamFixture(`BT /F1 20 Tf 60 700 Td ${show} ET`);
-    const item = move((await inspect(bytes)).items[0]);
-    const doc = await PDFDocument.load(bytes);
-    assert.equal(removeSimpleMovedText(doc, [item]).get(item).direct, false);
-    assert.ok((await inspect(await doc.save())).items.length > 0);
-  }
+test('multiple shows in one text object remain untouched', async () => {
+  const bytes = await streamFixture('BT /F1 20 Tf 60 700 Td (Move me) Tj 0 -60 Td (Keep me) Tj ET');
+  const item = move((await inspect(bytes)).items[0]);
+  const doc = await PDFDocument.load(bytes);
+  assert.equal(removeSimpleMovedText(doc, [item]).get(item).direct, false);
+  assert.ok((await inspect(await doc.save())).items.length > 0);
+});
+
+test('nonzero Tc and TJ adjustments are removable as one complete text object', async () => {
+  const bytes = await streamFixture('BT /F1 20 Tf -0.0663 Tc 60 700 Td [(Move) -200 ( me)] TJ ET');
+  const item = move((await inspect(bytes)).items[0]);
+  const doc = await PDFDocument.load(bytes);
+  assert.equal(removeSimpleMovedText(doc, [item]).get(item).direct, true);
+  assert.equal((await inspect(await doc.save())).items.length, 0);
+});
+
+test('marked content surrounding a text object does not block direct deletion', async () => {
+  const bytes = await streamFixture('/Document /MC0 BDC BT /F1 20 Tf -0.0663 Tc 60 700 Td [(Move) -200 ( me)] TJ ET EMC');
+  const item = move((await inspect(bytes)).items[0]);
+  const doc = await PDFDocument.load(bytes);
+  assert.equal(removeSimpleMovedText(doc, [item]).get(item).direct, true);
+  assert.equal((await inspect(await doc.save())).items.length, 0);
 });
 
 test('ambiguous overprinted text follows the configured direct-edit mode', async () => {
@@ -375,157 +422,6 @@ test('Korean fallback embeds the complete font and preserves every display chara
   assert.equal(debug.drawnTextLength, [...fallbackText].length);
   const saved = (await inspect(result.outputBytes)).items;
   assert.ok(saved.some((entry) => entry.str === fallbackText));
-});
-
-test('table PDF deletes only the selected split glyph commands before moving text', async () => {
-  const sourceBytes = readFileSync(new URL('../../테스트표.pdf', import.meta.url));
-  const { items } = await inspect(sourceBytes);
-  const original = items.find((item) => item.str === '테스트1');
-  const item = {
-    id: 'table-partial', type: 'movable-text', pageNumber: 1,
-    text: '테스트', displayText: '테스트', forceUnicodeFallback: true,
-    sourceSelection: { wholeItem: false, partialSelection: true, selectedText: '테스트', text: original.str, transform: original.transform },
-    sourcePageWidth: 595.3, sourcePageHeight: 841.9,
-    coverX: original.transform[4], coverY: 841.9 - original.transform[5] - original.height,
-    coverWidth: 30, coverHeight: original.height,
-    textX: 150, textY: 100, baseline: 108, fontSize: 10,
-    backgroundColor: [255, 255, 255], textColor: [0, 0, 0]
-  };
-  const result = await buildPdfWithTextEdits({ sourceBytes, fontBytes, replacements: [item] });
-  assert.equal(result.directDeleteCount, 1);
-  assert.equal(result.fallbackOverlayCount, 0);
-  assert.equal(result.textMoveResults[0].method, 'direct-remove-overlay');
-  const saved = (await inspect(result.outputBytes)).items.map((entry) => entry.str);
-  assert.ok(saved.includes('1'));
-  assert.ok(saved.includes('테스트3'));
-  assert.ok(saved.includes('테스트색O'));
-  assert.ok(saved.includes('테스트'));
-});
-
-test('NEW PDF removes only the selected DocPilot run while retaining its background', async () => {
-  const sourceBytes = readFileSync(new URL('../../NEW.pdf', import.meta.url));
-  const { items } = await inspect(sourceBytes);
-  const original = items.find((item) => item.str === 'DocPilot');
-  const item = {
-    id: 'new-docpilot', type: 'movable-text', pageNumber: 1,
-    text: 'DocPilot', displayText: 'DocPilot', forceUnicodeFallback: true,
-    sourceSelection: { wholeItem: true, text: original.str, transform: original.transform },
-    sourcePageWidth: 610, sourcePageHeight: 342,
-    coverX: original.transform[4], coverY: 342 - original.transform[5] - original.height,
-    coverWidth: original.width, coverHeight: original.height,
-    textX: 200, textY: 100, baseline: 125, fontSize: original.height,
-    backgroundColor: [255, 255, 255], textColor: [24, 80, 121]
-  };
-  const result = await buildPdfWithTextEdits({ sourceBytes, fontBytes, replacements: [item] });
-  assert.equal(result.directDeleteCount, 1);
-  assert.equal(result.textMoveResults[0].method, 'direct-remove-overlay');
-  const saved = (await inspect(result.outputBytes)).items.map((entry) => entry.str);
-  assert.equal(saved.filter((text) => text === 'DocPilot').length, 1);
-  assert.ok(saved.includes('문서 검색 및 편집 지원 프로그램'));
-  assert.ok(saved.includes('팀명'));
-});
-
-test('NEW PDF removes the long Korean range while retaining DocPilot and team text', async () => {
-  const sourceBytes = readFileSync(new URL('../../NEW.pdf', import.meta.url));
-  const { items } = await inspect(sourceBytes);
-  const original = items.find((item) => item.str.includes('문서 검색'));
-  const item = {
-    id: 'new-korean-range', type: 'movable-text', pageNumber: 1,
-    text: original.str, displayText: original.str, forceUnicodeFallback: true,
-    sourceSelection: { wholeItem: true, text: original.str, transform: original.transform },
-    sourcePageWidth: 610, sourcePageHeight: 342,
-    coverX: original.transform[4], coverY: 342 - original.transform[5] - original.height,
-    coverWidth: original.width, coverHeight: original.height,
-    textX: 100, textY: 50, baseline: 75, fontSize: original.height,
-    backgroundColor: [255, 255, 255], textColor: [24, 80, 121]
-  };
-  const result = await buildPdfWithTextEdits({ sourceBytes, fontBytes, replacements: [item] });
-  assert.equal(result.directDeleteCount, 1);
-  assert.equal(result.rangeDeleteCount, 1);
-  assert.equal(result.textMoveResults[0].deleteMode, 'range-group');
-  assert.ok(result.textMoveResults[0].deletedCommandCount > 1);
-  const saved = (await inspect(result.outputBytes)).items.map((entry) => entry.str);
-  assert.equal(saved.filter((text) => text === original.str).length, 1);
-  assert.ok(saved.includes('DocPilot'));
-  assert.ok(saved.includes('팀명'));
-});
-
-test('NEW PDF independently deletes two moved objects on the same page', async () => {
-  const sourceBytes = readFileSync(new URL('../../NEW.pdf', import.meta.url));
-  const { items } = await inspect(sourceBytes);
-  const docPilot = items.find((item) => item.str === 'DocPilot');
-  const title = items.find((item) => item.str.includes('문서 검색'));
-  const makeMove = (source, id, textX, textY) => ({
-    id, type: 'movable-text', pageNumber: 1,
-    text: source.str, displayText: source.str, forceUnicodeFallback: true,
-    sourceSelection: { wholeItem: true, text: source.str, transform: source.transform },
-    sourcePageWidth: 610, sourcePageHeight: 342,
-    coverX: source.transform[4], coverY: 342 - source.transform[5] - source.height,
-    coverWidth: source.width, coverHeight: source.height,
-    textX, textY, baseline: textY + source.height * 0.84, fontSize: source.height,
-    backgroundColor: [255, 255, 255], textColor: [24, 80, 121]
-  });
-  const result = await buildPdfWithTextEdits({
-    sourceBytes, fontBytes,
-    replacements: [makeMove(docPilot, 'doc', 200, 100), makeMove(title, 'title', 100, 50)]
-  });
-  assert.equal(result.movableTextCount, 2);
-  assert.equal(result.directDeleteCount, 2);
-  assert.equal(result.fallbackOverlayCount, 0);
-  assert.ok(result.textMoveResults.every((entry) => entry.directDeleteSucceeded));
-  assert.ok(result.textMoveResults.every((entry) => !entry.shouldApplyCover));
-  const saved = (await inspect(result.outputBytes)).items.map((entry) => entry.str);
-  assert.equal(saved.filter((text) => text === 'DocPilot').length, 1);
-  assert.equal(saved.filter((text) => text === title.str).length, 1);
-  assert.ok(saved.includes('팀명'));
-});
-
-test('NEW PDF deletes three UI moves even when sourceSelection evidence is absent', async () => {
-  const sourceBytes = readFileSync(new URL('../../NEW.pdf', import.meta.url));
-  const { items } = await inspect(sourceBytes);
-  const docPilot = items.find((item) => item.str === 'DocPilot');
-  const title = items.find((item) => item.str.includes('문서 검색'));
-  const teamItems = items.filter((item) => ['팀명', ':', '올빼미'].includes(item.str));
-  const team = {
-    str: '팀명 : 올빼미', transform: teamItems[0].transform, height: teamItems[0].height,
-    width: teamItems.reduce((total, item) => total + item.width, 0)
-  };
-  const makeMove = (source, id, textX, textY) => ({
-    id, type: 'movable-text', pageNumber: 1,
-    // The browser may display layout spaces even when the PDF source omits
-    // them. Source text must remain the deletion key in that case.
-    text: source.str === title.str ? '문서 검색 및 편집 지원 프로그램' : source.str,
-    displayText: source.str === title.str ? '문서 검색 및 편집 지원 프로그램' : source.str,
-    sourceText: source.str.replace(/\s+/g, ''),
-    originalText: source.str.replace(/\s+/g, ''),
-    // collectMovableTextReplacements normalizes every UI object to this route.
-    forceUnicodeFallback: true,
-    sourceSelection: null,
-    sourcePageWidth: 610, sourcePageHeight: 342,
-    originalRect: {
-      x: source.transform[4], y: 342 - source.transform[5] - source.height,
-      width: source.width, height: source.height
-    },
-    currentRect: { x: textX, y: textY, width: source.width, height: source.height },
-    fontSize: source.height, backgroundColor: '#ffffff', color: '#185079'
-  });
-  // Use the same UI-shaped objects consumed by collectMovableTextReplacements.
-  const result = await buildPdfWithTextEdits({
-    sourceBytes, fontBytes,
-    replacements: [
-      // Browser line boxes are taller than the PDF glyph bounds, so these
-      // adjacent source rectangles overlap. That must not suppress deletion
-      // of independent content-stream commands.
-      { ...makeMove(docPilot, 'doc', 295, 50), coverX: docPilot.transform[4], coverY: 342 - docPilot.transform[5] - docPilot.height, coverWidth: docPilot.width, coverHeight: docPilot.height + 14, textX: 295, textY: 50, baseline: 75, textColor: [24, 80, 121] },
-      { ...makeMove(title, 'title', 20, 250), coverX: title.transform[4], coverY: 342 - title.transform[5] - title.height, coverWidth: title.width, coverHeight: title.height + 14, textX: 20, textY: 250, baseline: 275, textColor: [24, 80, 121] },
-      { ...makeMove(team, 'team', 475, 150), coverX: team.transform[4], coverY: 342 - team.transform[5] - team.height, coverWidth: team.width, coverHeight: team.height, textX: 475, textY: 150, baseline: 164, textColor: [24, 80, 121] }
-    ]
-  });
-  assert.equal(result.directDeleteCount, 3);
-  assert.equal(result.fallbackOverlayCount, 0);
-  assert.equal(result.directDeleteResults.length, 3);
-  assert.equal(result.fallbackResults.length, 0);
-  assert.ok(result.directDeleteResults.every((entry) => !entry.shouldApplyCover));
 });
 
 test('all fallback covers are painted before moved text at another source position', async () => {

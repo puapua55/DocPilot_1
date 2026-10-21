@@ -236,7 +236,11 @@ export default function PdfTableToolbar({ table, selection, onChange, onCopy, on
           <label>세로 <select aria-label="셀 세로 정렬" value={style.verticalAlign} onChange={(event) => updateStyle({ verticalAlign: event.target.value })}><option value="top">위</option><option value="middle">가운데</option><option value="bottom">아래</option></select></label>
         </div>
         <div className="pdf-table-tool-group"><span className="pdf-table-tool-group-label">배경</span>
-          <label>{canMerge ? '선택 영역 색' : '셀 색'} <input aria-label="셀 배경색" type="color" value={style.fill || (cell.row === 0 ? table.headerFill : '#ffffff')} onChange={(event) => updateStyle({ fill: event.target.value })} /></label>
+          <label>{canMerge ? '선택 영역 색' : '셀 색'} <input aria-label="셀 배경색" type="color" disabled={style.fillNone}
+            value={style.fill || (cell.row === 0 ? table.headerFill : '#ffffff')}
+            onChange={(event) => updateStyle({ fill: event.target.value, fillNone: false })} /></label>
+          <label><input aria-label="표 색상 없음" type="checkbox" checked={style.fillNone}
+            onChange={(event) => updateStyle({ fillNone: event.target.checked })} /> 색상 없음</label>
         </div>
         <span className="pdf-table-tool-hint">여러 셀을 드래그하면 선택 범위에 서식이 적용됩니다.</span>
       </>}

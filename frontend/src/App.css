@@ -1569,6 +1569,24 @@ button:disabled {
   word-break: break-all;
 }
 
+.movable-text-move-edge {
+  position: absolute;
+  z-index: 11;
+  display: block;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: move;
+}
+
+.movable-text-move-edge.is-top,
+.movable-text-move-edge.is-bottom { left: 5px; right: 5px; height: 5px; }
+.movable-text-move-edge.is-left,
+.movable-text-move-edge.is-right { top: 5px; bottom: 5px; width: 5px; }
+.movable-text-move-edge.is-top { top: -4px; }
+.movable-text-move-edge.is-right { right: -4px; }
+.movable-text-move-edge.is-bottom { bottom: -4px; }
+.movable-text-move-edge.is-left { left: -4px; }
+
 .movable-text-resize-handle {
   position: absolute;
   z-index: 12;

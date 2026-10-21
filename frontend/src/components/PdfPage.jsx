@@ -111,7 +111,8 @@ function findReplacementBackgroundRightEdge(canvas, pageSize, cover, backgroundC
   return null;
 }
 
-function sampleReplacementTextColor(canvas, pageSize, cover) {
+function sampleReplacementTextColor(canvas, pageSize, cover, backgroundColor = null) {
+  const bg = String(backgroundColor || '').match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number);
   const context = canvas?.getContext('2d', { willReadFrequently: true });
   if (!context || !pageSize.width || !pageSize.height) return null;
   const scaleX = canvas.width / pageSize.width;
@@ -130,12 +131,23 @@ function sampleReplacementTextColor(canvas, pageSize, cover) {
       const brightness = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
       const saturation = Math.max(...channels) - Math.min(...channels);
       if (brightness > 210 && saturation < 28) continue;
+      // Skip pixels close to the sampled background (tinted boxes, gradients);
+      // otherwise the background itself is mistaken for the text color.
+      if (bg?.length === 3 && Math.hypot(channels[0] - bg[0], channels[1] - bg[1], channels[2] - bg[2]) < 90) continue;
       const color = channels.map((channel) => Math.round(channel / 8) * 8);
       const key = color.join(',');
       colors.set(key, (colors.get(key) || 0) + 1);
     }
     const dominant = Array.from(colors.entries()).sort((a, b) => b[1] - a[1])[0];
-    return dominant ? `rgb(${dominant[0]})` : null;
+    if (!dominant) return null;
+    // A sampled color with almost no contrast against the background would make
+    // the edit box text invisible; let the caller use its dark default instead.
+    if (bg?.length === 3) {
+      const sampled = dominant[0].split(',').map(Number);
+      const luma = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+      if (Math.abs(luma(sampled) - luma(bg)) < 60) return null;
+    }
+    return `rgb(${dominant[0]})`;
   } catch {
     return null;
   }
@@ -1038,6 +1050,9 @@ function PdfPage({
   onCommitEditMovableText,
   onCancelEditMovableText,
   onDeleteMovableText,
+  onCopyMovableText,
+  canPasteTextBox = false,
+  onPasteTextBox,
   onRemoveTextHyperlink,
   internalLinkEdits = [],
   onChangeInternalLink,
@@ -1175,9 +1190,22 @@ function PdfPage({
     // removal implementation. Partial/multi-span selections still use overlay.
     let sourceSelection = null;
     const sourceInfo = sourceElement?.dataset.pdfSource ? JSON.parse(sourceElement.dataset.pdfSource) : null;
+    const nonWhitespaceSelectedSpans = selectedSpans.filter((span) => String(span.textContent || '').trim());
+    const wholePdfItemWithLayoutSpaces = Boolean(lineSelection && range
+      && !lineSelection.supersedesIds?.length
+      && nonWhitespaceSelectedSpans.length === 1
+      && nonWhitespaceSelectedSpans[0] === sourceElement
+      && selectedSpans.every((span) => span === sourceElement || !String(span.textContent || '').trim()));
     if (sourceElement?.dataset.pdfSource && (lineSelection
-      ? selectedSpans.length === 1 && !lineSelection.supersedesIds?.length && Boolean(range)
+      ? (wholePdfItemWithLayoutSpaces || (selectedSpans.length === 1 && !lineSelection.supersedesIds?.length && Boolean(range)))
       : sourceElement.contains(range.endContainer))) {
+      if (wholePdfItemWithLayoutSpaces) {
+        sourceSelection = {
+          ...sourceInfo,
+          wholeItem: true,
+          selectedText: String(sourceInfo?.text || sourceElement.textContent || '')
+        };
+      } else {
       const before = range.cloneRange();
       before.selectNodeContents(sourceElement);
       before.setEnd(range.startContainer, range.startOffset);
@@ -1187,12 +1215,16 @@ function PdfPage({
       if (!before.toString() && !after.toString()) {
         sourceSelection = { ...sourceInfo, wholeItem: true };
       } else {
+        const startOffset = before.toString().length;
         sourceSelection = {
           ...sourceInfo,
           wholeItem: false,
           partialSelection: true,
-          selectedText
+          selectedText,
+          startOffset,
+          endOffset: startOffset + selectedText.length
         };
+      }
       }
     }
     // A PDF.js DOM Range can begin a few points before the actual glyph
@@ -1247,7 +1279,7 @@ function PdfPage({
       y: cover.y * scale,
       width: cover.width * scale,
       height: cover.height * scale
-    });
+    }, backgroundColor);
     const resolvedSourceFont = getSelectionSourceFont(sourceInfo, textContent, selectedText)
       || lineSourceItem?.sourceFont || null;
     if (sourceSelection && resolvedSourceFont) {
@@ -1517,7 +1549,14 @@ function PdfPage({
       const selectedPart = group.parts.length === 1 ? group.parts[0] : null;
       const wholeItem = selectedPart?.startOffset === 0 && selectedPart?.endOffset === selectedPart?.span?.textContent?.length;
       const sourceSelection = sourceInfo && selectedPart
-        ? { ...sourceInfo, wholeItem, partialSelection: !wholeItem, selectedText: text }
+        ? {
+          ...sourceInfo,
+          wholeItem,
+          partialSelection: !wholeItem,
+          selectedText: text,
+          startOffset: selectedPart.startOffset,
+          endOffset: selectedPart.endOffset
+        }
         : null;
       const overlaySource = selectedPart?.item || null;
       const computedStyle = sourceElement ? window.getComputedStyle(sourceElement) : null;
@@ -1547,7 +1586,7 @@ function PdfPage({
       const computedColor = computedStyle?.color || '';
       const color = sourceFont?.textColor || sampleReplacementTextColor(canvasRef.current, pageSize, {
         x: cover.x * scale, y: cover.y * scale, width: cover.width * scale, height: cover.height * scale
-      }) || (computedColor && !/rgba?\(\s*0\s*,\s*0\s*,\s*0\s*(?:,\s*0)?\s*\)/i.test(computedColor) ? computedColor : '#111111');
+      }, backgroundColor) || (computedColor && !/rgba?\(\s*0\s*,\s*0\s*,\s*0\s*(?:,\s*0)?\s*\)/i.test(computedColor) ? computedColor : '#111111');
       const preferBoldFont = sourceFont?.preferBoldFont === true || sourceFontWeight === 'bold' || Number(sourceFontWeight) >= 600;
       return {
         type: 'replacementText', pageNumber, displayText: text, text,
@@ -1770,7 +1809,7 @@ function PdfPage({
     onBatchReplaceHandled?.(batchReplaceRequest.id, pageNumber);
   }, [batchReplaceRequest, handleTextSelection, onBatchReplaceHandled, pageNumber, textLayerVersion]);
 
-  const handleMovableTextPointerDown = (event, item) => {
+  const handleMovableTextPointerDown = (event, item, forceMove = false) => {
     if (!editingEnabled) return;
     if (event.button !== 0) return;
     if (areaTextReplaceMode) return;
@@ -1781,7 +1820,7 @@ function PdfPage({
     // "텍스트 이동" explicitly authorizes moving any edited text as well.
     // Older replacement objects may have allowMove:false from the former
     // creation-time lock, so do not let that stale flag override the mode.
-    if (!textMoveMode) return;
+    if (!textMoveMode && !forceMove) return;
     moveRef.current = {
       id: item.id,
       startX: event.clientX,
@@ -2447,6 +2486,7 @@ function PdfPage({
       />
       <PdfHyperlinkLayer pdf={pdf} pageNumber={pageNumber} viewport={viewport} editingEnabled={editingEnabled}
         edits={internalLinkEdits} onChange={onChangeInternalLink} onNavigate={onNavigateInternalLink}
+        canPasteTextBox={canPasteTextBox} onCopyTextBox={onCopyMovableText} onPasteTextBox={onPasteTextBox}
         getTextBoxAtTarget={(target) => {
           if (textAddMode || tableAddMode || textMoveMode) return null;
           const editedBox = target.closest?.('.movable-text-object[data-movable-text-id]');
@@ -2481,6 +2521,7 @@ function PdfPage({
         onEditCommit={onCommitEditMovableText}
         onEditCancel={onCancelEditMovableText}
         onRemoveHyperlink={onRemoveTextHyperlink}
+        onCopy={onCopyMovableText}
       />
       <ImageAttachmentLayer items={imageAttachments} scale={scale} selectedId={selectedImageId} onPointerDown={handleImagePointerDown} />
       <TableLayer items={tables} removedItems={removedTables} scale={scale} selectedId={selectedTableId} selectedCell={selectedTableCell} editingEnabled={editingEnabled} onPointerDown={handleTablePointerDown} onSelect={onSelectTable} onSelectCell={onSelectTableCell} onCopy={onCopyTable} onDelete={onDeleteTable} onUpdate={onUpdateTable} />
@@ -2647,7 +2688,8 @@ function TableLayer({ items, removedItems = [], scale, selectedId, selectedCell,
               data-cell-index={cell.index}
               style={{ gridColumn: `${cell.column + 1} / span ${cell.colSpan}`, gridRow: `${cell.row + 1} / span ${cell.rowSpan}`,
                 fontSize: `${fontSize}px`, fontWeight: style.bold ? 700 : 400,
-                textAlign: style.align, color: style.color, backgroundColor: style.fill || (cell.row === 0 ? item.headerFill : '#ffffff'),
+                textAlign: style.align, color: style.color,
+                backgroundColor: style.fillNone ? 'transparent' : style.fill || (cell.row === 0 ? item.headerFill : '#ffffff'),
                 paddingTop: `${tableCellTopPadding(item.cells[cell.index], style, cellWidth, cellHeight, fontSize)}px` }} />;
           })}
         </div> : null}
@@ -2693,8 +2735,22 @@ function getMovableRunWeight(run, item) {
     ? 'normal' : weight;
 }
 
-function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMoveMode, editingEnabled, onPointerDown, onResizePointerDown, onDoubleClick, onEditChange, onEditStyleChange, onEditSelectionChange, onEditCommit, onEditCancel, onRemoveHyperlink }) {
+function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMoveMode, editingEnabled, onPointerDown, onResizePointerDown, onDoubleClick, onEditChange, onEditStyleChange, onEditSelectionChange, onEditCommit, onEditCancel, onRemoveHyperlink, onCopy }) {
   const [linkMenu, setLinkMenu] = useState(null);
+  const [copyMenu, setCopyMenu] = useState(null);
+  useEffect(() => {
+    if (!copyMenu) return undefined;
+    const dismiss = (event) => { if (!event.target.closest?.('.pdf-table-context-menu')) setCopyMenu(null); };
+    const escape = (event) => { if (event.key === 'Escape') setCopyMenu(null); };
+    document.addEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', escape);
+    window.addEventListener('scroll', dismiss, true);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss);
+      document.removeEventListener('keydown', escape);
+      window.removeEventListener('scroll', dismiss, true);
+    };
+  }, [copyMenu]);
   if (!items.length) return null;
 
   return (
@@ -2703,6 +2759,9 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
         onRemoveHyperlink?.(linkMenu.itemId, linkMenu.linkId);
         setLinkMenu(null);
       }} />
+      {copyMenu ? createPortal(<div className="pdf-table-context-menu" role="menu" aria-label="텍스트 상자 메뉴" style={{ left: copyMenu.x, top: copyMenu.y }}>
+        <button type="button" role="menuitem" onClick={() => { onCopy?.(copyMenu.itemId); setCopyMenu(null); }}>복사</button>
+      </div>, document.body) : null}
       {items.map((item) => (
         <div key={item.id}>
           {(item.type === 'addedText' || (item.isSelectionDraft && editingMovableText?.id !== item.id)
@@ -2765,11 +2824,16 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
             }}
             onPointerDown={(event) => onPointerDown(event, item)}
             onContextMenu={(event) => {
+              if (!editingEnabled || event.target.closest?.('.movable-text-editor')) return;
               const link = event.target.closest?.('a[data-hyperlink-id]');
-              if (!editingEnabled || !link) return;
+              if (!link && (!onCopy || item.isSelectionDraft)) return;
               event.preventDefault();
               event.stopPropagation();
-              setLinkMenu({ x: event.clientX, y: event.clientY, itemId: item.id, linkId: link.dataset.hyperlinkId });
+              if (link) {
+                setLinkMenu({ x: event.clientX, y: event.clientY, itemId: item.id, linkId: link.dataset.hyperlinkId });
+                return;
+              }
+              setCopyMenu({ itemId: item.id, x: Math.min(event.clientX, window.innerWidth - 150), y: Math.min(event.clientY, window.innerHeight - 45) });
             }}
             onDoubleClick={(event) => {
               event.preventDefault();
@@ -2871,14 +2935,21 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
                 : (item.displayText || item.text)
             ))}
             {editingEnabled && !textMoveMode && selectedId === item.id
-              ? ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((direction) => (
+              ? <>
+                {['top', 'right', 'bottom', 'left'].map((side) => (
+                  <span key={`move-${side}`} className={`movable-text-move-edge is-${side}`}
+                    aria-label="텍스트 상자 이동"
+                    onPointerDown={(event) => onPointerDown?.(event, item, true)} />
+                ))}
+                {['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((direction) => (
                 <span
                   key={direction}
                   className={`movable-text-resize-handle is-${direction}`}
                   data-resize-direction={direction}
                   onPointerDown={(event) => onResizePointerDown?.(event, item, direction)}
                 />
-              ))
+                ))}
+              </>
               : null}
           </div>
         </div>
