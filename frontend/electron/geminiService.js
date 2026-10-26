@@ -1,3 +1,5 @@
+import { secureApiFetch } from './secureApiFetch.js';
+
 const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 const MAX_HISTORY = 10;
 const MAX_DOCUMENT_TEXT = 20_000;
@@ -136,7 +138,7 @@ export async function chatWithGemini(request = {}, settings = {}) {
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    response = await secureApiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({

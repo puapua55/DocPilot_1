@@ -327,6 +327,7 @@ function createMainWindow() {
 }
 
 app.whenReady().then(() => {
+  console.info(`DocPilot runtime: Electron ${process.versions.electron}, Node.js ${process.versions.node}, Chromium ${process.versions.chrome}`);
   registerAppProtocol();
   registerSettingsIpc();
   registerAiIpc();

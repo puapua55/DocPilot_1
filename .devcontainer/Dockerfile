@@ -1,17 +1,22 @@
-FROM mcr.microsoft.com/devcontainers/java:1-21-bullseye
+FROM mcr.microsoft.com/devcontainers/java:1-21-bookworm
 
 ARG MAVEN_VERSION=3.9.16
-ARG GIT_LFS_VERSION=2.13.2-1+b5
 
 USER root
 
-# The repository has a Git LFS pre-push hook. Install the version from the
-# Debian main repository so synchronization continues to work after rebuilds.
-RUN apt-get install -y --no-install-recommends "git-lfs=${GIT_LFS_VERSION}" \
-    && git lfs install --system
+# Pull the current Bookworm security updates whenever the development image is
+# rebuilt. The JDK assertion prevents a cached pre-eMudhra image from being
+# accepted silently; Microsoft OpenJDK 21.0.12.1 is the first patched build on
+# this release line.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends git-lfs \
+    && java -version 2>&1 | grep -Eq 'version "21\.0\.(12\.[1-9]|1[3-9]|[2-9][0-9])' \
+    && git lfs install --system \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Maven from the official Apache binary distribution. This avoids
-# relying on the EOL Debian Bullseye Maven package metadata during rebuilds.
+# Install Maven from the official Apache binary distribution so its version is
+# explicit and independent of the Debian package metadata.
 RUN curl -fsSL "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
        -o /tmp/apache-maven.tar.gz \
     && curl -fsSL "https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz.sha512" \

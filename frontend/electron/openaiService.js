@@ -1,3 +1,5 @@
+import { secureApiFetch } from './secureApiFetch.js';
+
 const DEFAULT_MODEL = 'gpt-5-mini';
 const MAX_HISTORY = 10;
 const MAX_DOCUMENT_TEXT = 20_000;
@@ -131,7 +133,7 @@ export async function chatWithOpenAi(request = {}, settings = {}) {
 
   let response;
   try {
-    response = await fetch('https://api.openai.com/v1/responses', {
+    response = await secureApiFetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, store: false, input })
