@@ -244,7 +244,9 @@ function HighlightModal({
       titleId="highlight-modal-title"
       className="highlight-panel"
       initialWidth={600}
-      initialHeight={670}
+      initialHeight={390}
+      minHeight={360}
+      autoHeight
       onClose={handleClose}
     >
 

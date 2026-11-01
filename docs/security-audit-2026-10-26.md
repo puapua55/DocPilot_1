@@ -1,5 +1,22 @@
 # DocPilot Node.js / Java 보안 점검 보고서
 
+## 2026-11-01 재점검 및 추가 조치
+
+이 절은 아래 2026-10-26 기록 이후의 상태를 반영한다. 아래 표의 과거 판정과 후속 조치 항목은 당시 기록이다.
+
+| 항목 | 재점검 결과 및 조치 |
+|---|---|
+| 배포용 Electron/Node.js | 기존 Electron 45.0.0의 내장 Node.js는 24.22.0으로 10월 21일 Brotli·TLS·DNS 보안 패치 전 버전이었다. 안정판 Electron 45.2.1은 Node.js 24.22.1을 포함한다. `frontend/package.json`과 잠금 파일을 45.2.1로 갱신했다. Windows EXE를 새로 빌드·배포해야 기존 설치본에 패치가 적용된다. |
+| Node.js 통신 경로 | 메인 프로세스의 고정 HTTPS API 호스트, 제어문자/NUL 차단, 리디렉션 거부, 비압축 요청 및 Brotli 응답 거부는 유지했다. 프로젝트 코드에서 `dns.resolve*` 직접 호출은 확인되지 않았다. 외부 공개 Brotli 디코딩 서버·API 게이트웨이·프록시는 이 저장소에 없다. |
+| Java | 이 저장소의 Spring Boot 개발용 백엔드는 Java 21을 사용하지만 배포용 Electron EXE에는 JRE가 없다. 기존 devcontainer의 `21.0.12.1` 이상 검사는 이번 인증서 사고의 패치 기준으로 부족했다. Microsoft OpenJDK 21.0.13.0.2 이상을 요구하도록 변경했다. 현재 점검 PC의 Microsoft OpenJDK `21.0.12.1`도 미달하며 PC의 JDK 교체는 저장소 변경만으로 이루어지지 않는다. |
+| 인증서 로그 | 운영 서버와 TLS 인증 로그에 접근할 수 없어 유출된 eMudhra 중간 CA로 인증한 이력을 확인하지 못했다. 실제 운영 환경에서 관련 인증서 체인과 접속 로그를 점검해야 한다. |
+| Docker | devcontainer는 가변 베이스 이미지이므로 재빌드 시 최신 이미지를 가져오고 Dockerfile의 JDK 버전 검사가 통과하는지 확인해야 한다. 이 PC에 Docker가 없어 이미지 빌드는 검증하지 못했다. |
+| 의존성 취약점 | jsPDF 3.0.4 → 4.2.1, 하위 의존성 DOMPurify 3.4.14 → 3.4.17로 갱신했다. `npm audit --omit=dev` 경고가 Critical 2건에서 0건으로 감소했다. |
+| Windows 빌드 | Electron 45.2.1 기반 portable EXE를 재빌드했다. 패키징된 앱 프로세스가 Windows에서 실행 상태를 유지하고 내장 Node.js가 24.22.1임을 확인했다. `frontend/release/DocPilot 0.1.0.exe` SHA-256은 `b7517c669e951d78b5cf6e7112fc591094e9b56e0d24811385e9d26d151a3784`이다. 배포는 수행하지 않았다. |
+| 검증 | 보안 단위 테스트 5/5, Vite 프로덕션 빌드, PDF 저장 E2E 5건, DOCX 표·단락 E2E 4건 통과. 전체 Node 단위 테스트는 53건 중 50건 통과·2건 건너뜀·1건 실패했다. PDF E2E 2건은 jsPDF 3.0.4에서도 동일하게 실패해 이번 갱신의 신규 회귀는 아니다. DOCX 변환 테스트는 현재 UI에 없는 버튼을 찾고, 다른 DOCX 테스트 4건은 로컬 자료 파일이 없어 실행할 수 없었다. DOCX 이미지 이동 테스트 1건은 실패해 추가 조사 대상이다. 실제 Gemini/OpenAI 호출은 수행하지 않았다. |
+
+공식 근거: [Node.js 2026-10-21 보안 릴리스](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases), [Electron 45.2.1 내장 런타임](https://releases.electronjs.org/release/v45.2.1), [Microsoft OpenJDK 릴리스 정보](https://learn.microsoft.com/en-us/java/openjdk/release-notes), [Oracle eMudhra 안내](https://ops.java/emudhra).
+
 - 점검일: 2026-10-26
 - 기준 소스: `origin/main` 커밋 `0a74edb` (`end13`)
 - 작업 브랜치: `security/node-java-2026-10-26`
@@ -79,12 +96,12 @@ UI와 PDF/DOCX 편집 코드는 변경하지 않았다.
 - `main` 병합/배포: 하지 않음
 - 커밋: 완료(작업 브랜치 HEAD)
 
-## 남은 문제와 후속 조치
+## 남은 문제와 후속 조치 (2026-11-01 갱신)
 
-1. 2026-10-26 기준 패치된 Node.js 24.22.1을 포함하는 Electron은 46.0.0-alpha.1뿐이다. 안정판 43~45는 Node.js 24.22.0이므로 알파 업그레이드는 하지 않았다. 지원 안정판에 Node.js 24.22.1 이상이 포함되면 Electron을 다시 업데이트해야 런타임 자체 조치가 완료된다.
-2. 개발 컨테이너는 재빌드 후 `java -version`과 eMudhra 점검을 다시 실행해야 한다. 실행 중인 Codespace는 이번 작업에서 삭제하거나 강제 재생성하지 않았다.
-3. `npm audit --omit=dev`에는 현재 범위 밖의 `jspdf` 및 `dompurify` Critical 경고 2건이 남아 있다. PDF 기능 회귀 위험이 있는 별도 패키지 업데이트이므로 이번 Node/Java 변경에는 포함하지 않았다. 별도 브랜치에서 문서 편집·저장 회귀 테스트와 함께 조치해야 한다.
-4. Windows 실제 PC에서 EXE 실행, PDF/DOCX 전체 회귀, 실제 Gemini/OpenAI 호출을 추가 확인해야 한다.
+1. **Electron 런타임 패치 완료, 배포 필요:** 2026-10-30 안정판 Electron 45.2.1에 Node.js 24.22.1이 포함되었다. 이 버전으로 소스와 Windows portable EXE를 갱신했다. 기존 배포본 교체는 별도 작업이다.
+2. **개발 컨테이너 재빌드 필요:** Dockerfile은 Microsoft OpenJDK 21.0.13.0.2 이상을 강제한다. 현재 PC에 Docker가 없어 이미지 재빌드와 실제 `java -version`, eMudhra 인증서 상태를 검증하지 못했다. 실행 중인 Codespace는 변경하지 않았다. 로컬 PC의 Java 21.0.12.1과 Node.js 24.19.0도 해당 보안 패치 전 버전이다.
+3. **프로덕션 npm 취약점 조치 완료:** jsPDF와 DOMPurify를 패치 버전으로 갱신했고 `npm audit --omit=dev`는 0건이다. PDF 저장 E2E 5건 통과. 실패한 PDF 테스트 2건은 이전 jsPDF에서도 같은 결과였다.
+4. **남은 실행 검증:** Windows 패키지 프로세스 기동은 확인했으나 화면 전체 조작과 PDF/DOCX 전체 회귀는 완료되지 않았다. 일부 기존 테스트는 현재 UI 또는 로컬 자료 파일과 맞지 않는다. DOCX 이미지 이동 테스트 실패는 별도 조사 필요. 실제 Gemini/OpenAI 호출과 운영 인증 로그 확인에는 해당 환경·자격 증명이 필요하다.
 
 ## 공식 근거
 

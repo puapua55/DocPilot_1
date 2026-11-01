@@ -198,9 +198,10 @@ function BatchTextReplaceModal({ isOpen, selectedDocument, previewModel, initial
       titleId="batch-text-replace-title"
       className="batch-replace-panel"
       initialWidth={600}
-      initialHeight={670}
+      initialHeight={390}
       minWidth={600}
-      minHeight={420}
+      minHeight={360}
+      autoHeight
       onClose={onClose}
     >
       <div className="batch-replace-meta">

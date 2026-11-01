@@ -6,6 +6,22 @@ import WordViewer from './WordViewer';
 import { convertDocxFileWithHighlights } from '../services/docxHighlightService';
 import ZoomControls from './ZoomControls';
 
+function requestedDownloadName(operation, file) {
+  if (!operation?.filename && !operation?.nameSuffix) return null;
+  const extension = operation.format === 'pdf' ? '.pdf' : '.docx';
+  const base = String(file?.name || 'document').replace(/\.(?:pdf|docx?)$/i, '');
+  const name = operation.filename
+    ? String(operation.filename).trim()
+    : `${base}${String(operation.nameSuffix).trim()}`;
+  if (!name || /[\\/:*?"<>|\x00-\x1f]/u.test(name) || name === '.' || name === '..') {
+    throw new Error('저장 파일명에 사용할 수 없는 문자가 있습니다.');
+  }
+  if (/\.(?:pdf|docx?)$/i.test(name) && !name.toLowerCase().endsWith(extension)) {
+    throw new Error(`저장 파일명의 확장자는 ${extension}여야 합니다.`);
+  }
+  return name.toLowerCase().endsWith(extension) ? name : `${name}${extension}`;
+}
+
 const DEFAULT_SCALE = 1;
 const DOCX_DEFAULT_SCALE = 1;
 const MIN_SCALE = 0.5;
@@ -68,6 +84,12 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     scrollToSearchResult(result) {
       return viewerRef.current?.scrollToSearchResult?.(result) ?? false;
     },
+    getCurrentPageNumber() {
+      return viewerRef.current?.getCurrentPageNumber?.() ?? null;
+    },
+    getPageCount() {
+      return viewerRef.current?.getPageCount?.() ?? null;
+    },
     clearSearchSelection() {
       viewerRef.current?.clearSearchSelection?.();
     },
@@ -103,6 +125,28 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     resetAllDocumentChanges() {
       return viewerRef.current?.resetAllDocumentChanges?.() ?? false;
     },
+    async executeViewerCommand(operation) {
+      const command = operation?.command;
+      if (command === 'zoom') {
+        if (Number.isFinite(Number(operation.value))) setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, Number(operation.value))));
+        else if (Number.isFinite(Number(operation.delta))) setScale((current) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, current + Number(operation.delta))));
+        else if (Number.isFinite(Number(operation.multiplier))) setScale((current) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, current * Number(operation.multiplier))));
+        else return { ok: false, message: '변경할 확대 비율이 지정되지 않았습니다.' };
+        return { ok: true };
+      }
+      if (command === 'download') {
+        const fileName = requestedDownloadName(operation, file);
+        if (operation.format === 'pdf') {
+          if (viewerType === 'pdf') { const opened = await viewerRef.current?.downloadAsPdf?.(null, { fileName }); return { ok: opened === true }; }
+          if (viewerType === 'word') { const saved = await downloadCurrentDocxAsPdf(fileName); return { ok: saved }; }
+        }
+        if (operation.format === 'docx' && viewerType === 'word') { const saved = await downloadCurrentDocx(fileName); return { ok: saved }; }
+        return { ok: false, message: '지원되지 않는 기능입니다.' };
+      }
+      if (command === 'fit' && viewerType === 'word') return { ok: false, message: '지원되지 않는 기능입니다.' };
+      return await viewerRef.current?.executeViewerCommand?.(operation)
+        ?? { ok: false, message: '현재 뷰어에서 요청한 보기 작업을 지원하지 않습니다.' };
+    },
     getModifiedHtml() {
       return viewerRef.current?.getModifiedHtml?.() ?? '';
     }
@@ -124,50 +168,56 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     event.target.value = '';
   };
 
-  const downloadCurrentDocx = async () => {
-    if (!file) return;
+  const downloadCurrentDocx = async (fileName = null) => {
+    if (!file) return false;
     try {
-      if (await viewerRef.current?.downloadEditedDocx?.()) return;
+      if (await viewerRef.current?.downloadEditedDocx?.(fileName)) return true;
     } catch (error) {
       console.error('[DocumentViewer] DOCX edit download failed:', error);
       window.alert(`DOCX 저장에 실패했습니다. ${error.message || error}`);
-      return;
+      return false;
     }
     const highlights = viewerRef.current?.getDocxHighlights?.() || [];
     if (highlights.length > 0) {
-      convertDocxFileWithHighlights(file, highlights).catch((error) => {
+      try {
+        await convertDocxFileWithHighlights(file, highlights, fileName);
+        return true;
+      } catch (error) {
         console.error('[DocumentViewer] DOCX highlight download failed:', error);
-      });
-      return;
+        return false;
+      }
     }
     const url = URL.createObjectURL(file);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = file.name;
+    anchor.download = fileName || file.name;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return true;
   };
 
-  const downloadCurrentDocxAsPdf = async () => {
-    if (docxPdfDownloadState !== 'idle') return;
+  const downloadCurrentDocxAsPdf = async (fileName = null) => {
+    if (docxPdfDownloadState !== 'idle') return false;
     setDocxPdfDownloadState('running');
     try {
-      await viewerRef.current?.downloadAsPdf?.();
+      await viewerRef.current?.downloadAsPdf?.(fileName);
       setDocxPdfDownloadState('idle');
+      return true;
     } catch (error) {
       console.error('[DocumentViewer] DOCX PDF download failed:', error);
       setDocxPdfDownloadState('error');
       window.setTimeout(() => setDocxPdfDownloadState('idle'), 2500);
+      return false;
     }
   };
 
   const docxDownloadActions = (
     <div className="viewer-download-actions docx-download-actions" aria-label="DOCX 다운로드">
       <span className="viewer-download-label">다운로드</span>
-      <button type="button" className="viewer-download-button pdf" onClick={downloadCurrentDocxAsPdf} disabled={docxPdfDownloadState === 'running'} aria-label="PDF 다운로드">
+      <button type="button" className="viewer-download-button pdf" onClick={() => downloadCurrentDocxAsPdf()} disabled={docxPdfDownloadState === 'running'} aria-label="PDF 다운로드">
         {docxPdfDownloadState === 'running' ? 'PDF 생성 중...' : docxPdfDownloadState === 'error' ? 'PDF 실패' : 'PDF'}
       </button>
-      <button type="button" className="viewer-download-button docx" onClick={downloadCurrentDocx} aria-label="DOCX 다운로드">
+      <button type="button" className="viewer-download-button docx" onClick={() => downloadCurrentDocx()} aria-label="DOCX 다운로드">
         DOCX
       </button>
     </div>
@@ -231,7 +281,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
     }
 
     if (previewModel.type === 'word') {
-      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} toolbarActions={viewerActions} downloadActions={docxDownloadActions} />;
+      return <WordViewer ref={viewerRef} file={file} previewModel={previewModel} scale={scale} toolbarActions={viewerActions} downloadActions={docxDownloadActions} onEditModeChange={onEditModeChange} />;
     }
 
     return (

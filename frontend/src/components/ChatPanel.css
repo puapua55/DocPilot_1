@@ -15,6 +15,12 @@
 
 .ai-chat-section { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; height: 100%; overflow: hidden; gap: 10px; }
 .assistant-head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.assistant-head-actions { display: flex; align-items: center; gap: 7px; }
+.ai-mode-toggle { flex: 0 0 auto; min-width: 66px; border: 1px solid #b8c8f4; border-radius: 10px; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 0.76rem; font-weight: 800; transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+.ai-mode-toggle.is-on { border-color: #6677f4; background: #6677f4; color: #fff; }
+.ai-mode-toggle.is-on:hover { background: #5365e7; }
+.ai-mode-toggle.is-off { border-color: #cbd4e7; background: #f2f4f8; color: #657089; }
+.ai-mode-toggle.is-off:hover { background: #e8ecf4; }
 .gemini-settings-button { flex: 0 0 auto; border: 1px solid #b8c8f4; border-radius: 10px; background: #fff; color: #43517a; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 0.76rem; }
 .gemini-settings-button:hover { background: #eef3ff; }
 .gemini-missing-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #f5d58a; border-radius: 12px; background: #fff9e8; color: #8a5a00; padding: 10px 12px; font-size: 0.8rem; }
@@ -25,18 +31,20 @@
 .document-tool-header p { margin-top: 4px; color: var(--muted); font-size: 0.84rem; }
 .chat-feed { flex: 1 1 auto; min-width: 0; min-height: 0; max-height: none; overflow-y: auto; padding: 10px; border: 1px solid #e1e8f8; border-radius: 16px; background: #f8faff; }
 .chat-bubble { white-space: pre-wrap; }
-.chat-search-results { margin-top: 10px; color: #263651; font-size: 0.78rem; white-space: normal; }
-.chat-search-table-wrap { overflow-x: auto; border: 1px solid #d7e2f8; border-radius: 10px; background: #fff; }
-.chat-search-table { width: 100%; min-width: 390px; border-collapse: collapse; table-layout: fixed; }
-.chat-search-table th, .chat-search-table td { padding: 8px 9px; border-bottom: 1px solid #e4ebf8; text-align: left; vertical-align: middle; }
-.chat-search-table th { background: #f1f5ff; color: #405a88; font-weight: 800; white-space: nowrap; }
-.chat-search-table th:nth-child(1), .chat-search-table td:nth-child(1) { width: 62px; }
-.chat-search-table th:nth-child(2), .chat-search-table td:nth-child(2) { width: 48px; }
-.chat-search-table th:nth-child(4), .chat-search-table td:nth-child(4) { width: 58px; }
+.chat-row.has-result-table .chat-bubble { box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; }
+.chat-search-results { min-width: 0; margin-top: 10px; color: #263651; font-size: 0.78rem; white-space: normal; }
+.chat-search-table-wrap { box-sizing: border-box; width: 100%; overflow-x: auto; border: 1px solid #d7e2f8; border-radius: 10px; background: #fff; }
+.chat-search-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; }
+.chat-search-table--search col:nth-child(1) { width: 84px; }
+.chat-search-table--search col:nth-child(2) { width: 58px; }
+.chat-search-table--replace col:nth-child(1) { width: 48px; }
+.chat-search-table--replace col:nth-child(2) { width: 84px; }
+.chat-search-table--replace col:nth-child(3) { width: 58px; }
+.chat-search-table th, .chat-search-table td { overflow: hidden; padding: 8px 7px; border-bottom: 1px solid #e4ebf8; text-align: left; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.chat-search-table th { background: #f1f5ff; color: #405a88; font-weight: 800; }
 .chat-search-table tbody tr:last-child td { border-bottom: 0; }
 .chat-search-result-row { cursor: pointer; }
 .chat-search-result-row:hover { background: #eef4ff; }
-.chat-search-result-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-search-more { margin: 7px 2px 0; color: #687896; }
 .chat-loading { color: var(--muted); }
 .chat-error { padding: 10px 12px; border: 1px solid #fecdd3; border-radius: 12px; background: #fff1f2; color: #be123c; font-size: 0.84rem; }

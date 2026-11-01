@@ -1614,7 +1614,8 @@ button:disabled {
 }
 
 .movable-text-object [contenteditable="true"],
-.movable-text-object input {
+.movable-text-object input,
+.movable-text-object textarea {
   cursor: text;
 }
 
@@ -1653,6 +1654,7 @@ button:disabled {
   box-sizing: border-box;
   pointer-events: auto;
   user-select: text;
+  resize: none;
 }
 
 .movable-text-edit-rich {
@@ -1665,10 +1667,10 @@ button:disabled {
 }
 
 .movable-text-object:not(.is-added-text) .movable-text-edit-rich {
-  height: 1.15em;
-  white-space: pre;
-  overflow-wrap: normal;
-  word-break: normal;
+  height: auto;
+  min-height: 1.15em;
+  white-space: pre-wrap;
+  overflow: visible;
 }
 
 .movable-text-editor {

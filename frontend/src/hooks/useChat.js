@@ -2,10 +2,10 @@ import { useState } from 'react';
 import { sendChatMessage } from '../services/llmService';
 import { INITIAL_CHAT_MESSAGES } from '../utils/constants';
 
-const RESTRICTED_CHAT_MESSAGE = '채팅은 정확한 문서 검색과 위치 하이라이트 요청에만 사용할 수 있습니다.';
-const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'batch-replace']);
+const RESTRICTED_CHAT_MESSAGE = '채팅은 문서 검색, 하이라이트, 텍스트 변경, 보기·이력 명령을 지원합니다.';
+const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'batch-replace', 'undo', 'redo', 'reset', 'viewer-command']);
 
-export function useChat(selectedDocument, previewModel, documentViewerRef, isEditMode = false) {
+export function useChat(selectedDocument, previewModel, documentViewerRef, isEditMode = false, isAiEnabled = true) {
   const [messages, setMessages] = useState(INITIAL_CHAT_MESSAGES);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -33,7 +33,7 @@ export function useChat(selectedDocument, previewModel, documentViewerRef, isEdi
       setMessages((current) => [...current, userMessage, {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
-        text: '문서를 먼저 선택한 뒤 정확한 문서 검색 또는 위치 하이라이트를 요청해주세요.',
+        text: '문서를 먼저 선택한 뒤 검색, 하이라이트, 텍스트 변경 또는 보기·이력 명령을 요청해주세요.',
         intent: 'unsupported',
         action: null
       }]);
@@ -60,7 +60,8 @@ export function useChat(selectedDocument, previewModel, documentViewerRef, isEdi
         documentName,
         documentType,
         documentText,
-        history: nextMessages.slice(-10).map(({ role, text }) => ({ role, content: text }))
+        history: nextMessages.slice(-10).map(({ role, text }) => ({ role, content: text })),
+        aiEnabled: isAiEnabled
       });
 
       // Older AI responses may still call this action "replace". A request
@@ -78,7 +79,9 @@ export function useChat(selectedDocument, previewModel, documentViewerRef, isEdi
         ? '편집모드를 활성화 해주세요'
         : documentAction && normalizedAction?.type === 'batch-replace'
           ? '텍스트 변경 요청을 확인했습니다. 검색 결과를 확인합니다.'
-          : documentAction ? reply.answer : RESTRICTED_CHAT_MESSAGE;
+          : documentAction ? reply.answer
+            : !isAiEnabled || reply.answer === '지원되지 않는 기능입니다.' ? reply.answer
+              : RESTRICTED_CHAT_MESSAGE;
 
       setMessages((current) => [
         ...current,

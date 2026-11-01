@@ -7,6 +7,7 @@ const POINTS_PER_INCH = 72;
 const CAPTURE_SCALE = 2;
 
 function makeFileName(fileName = 'document.docx') {
+  if (/\.pdf$/i.test(String(fileName))) return String(fileName);
   return `${String(fileName).replace(/\.docx?$/i, '')}_converted.pdf`;
 }
 

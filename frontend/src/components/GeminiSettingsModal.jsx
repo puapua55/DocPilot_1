@@ -88,7 +88,7 @@ function GeminiSettingsModal({ isOpen, status, onSaved, onClose }) {
         <div className="settings-modal-header">
           <div>
             <p className="settings-eyebrow">DESKTOP SETTINGS</p>
-            <h2 id="gemini-settings-title">Gemini 설정</h2>
+            <h2 id="gemini-settings-title">설정</h2>
           </div>
           <button className="settings-close-button" type="button" onClick={onClose} aria-label="설정 닫기">×</button>
         </div>

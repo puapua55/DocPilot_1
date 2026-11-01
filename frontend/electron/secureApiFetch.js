@@ -35,9 +35,8 @@ export async function secureApiFetch(url, options = {}, fetchImplementation = gl
   }
 
   const headers = new Headers(options.headers || {});
-  // Temporary mitigation for CVE-2026-111497 while no supported stable
-  // Electron release contains the patched Node.js runtime. Do not allow an
-  // API server to route untrusted Brotli bytes into Node's decoder.
+  // Keep API responses uncompressed as defense in depth, including when a
+  // packaged runtime is older than the patched Node.js release.
   headers.set('Accept-Encoding', 'identity');
 
   const response = await fetchImplementation(validatedUrl, {

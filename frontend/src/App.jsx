@@ -26,6 +26,34 @@ function getSearchResults(result) {
   return [];
 }
 
+function filterResultsByPageScope(results, scope, viewer) {
+  if (!scope) return results;
+  const pageCount = viewer?.getPageCount?.();
+  const currentPage = viewer?.getCurrentPageNumber?.();
+  if (['last', 'last-n'].includes(scope.kind) && (!Number.isSafeInteger(pageCount) || pageCount < 1)) {
+    throw new Error('문서의 마지막 페이지를 확인하지 못했습니다.');
+  }
+  if (['current', 'from-current'].includes(scope.kind) && (!Number.isSafeInteger(currentPage) || currentPage < 1)) {
+    throw new Error('현재 페이지를 확인하지 못했습니다.');
+  }
+  const isIncluded = (page) => {
+    switch (scope.kind) {
+      case 'page': return page === scope.page;
+      case 'range': return page >= scope.startPage && page <= scope.endPage;
+      case 'pages': return scope.pages.includes(page);
+      case 'first-n': return page <= scope.count;
+      case 'last-n': return page > pageCount - scope.count;
+      case 'from': return page >= scope.startPage;
+      case 'from-current': return page >= currentPage;
+      case 'current': return page === currentPage;
+      case 'first': return page === 1;
+      case 'last': return page === pageCount;
+      default: throw new Error('지원하지 않는 페이지 범위입니다.');
+    }
+  };
+  return results.filter((result) => isIncluded(Number(result?.pageNumber ?? result?.page)));
+}
+
 function resolveHighlightTargets(results, action) {
   const orderedResults = Array.isArray(results) ? results : [];
   if (action?.all === true) {
@@ -36,6 +64,10 @@ function resolveHighlightTargets(results, action) {
   }
 
   const targets = Array.isArray(action?.targets) ? action.targets : [];
+  if (!targets.length && ['first', 'last', 'current'].includes(action?.pageScope?.kind)) {
+    const selected = orderedResults[0];
+    return selected ? [{ ...(selected.raw || selected), color: action.color, highlightOccurrence: 1 }] : [];
+  }
   if (!targets.length) return [];
 
   return targets.map((target) => {
@@ -46,7 +78,8 @@ function resolveHighlightTargets(results, action) {
     const lineResults = Number.isInteger(line) && line > 0
       ? pageResults.filter((result) => Number(result?.lineNumber ?? result?.line) === line)
       : pageResults;
-    const selected = lineResults[Number.isInteger(occurrence) && occurrence > 0 ? occurrence - 1 : 0];
+    const selected = target?.occurrence === 'last' ? lineResults.at(-1)
+      : lineResults[Number.isInteger(occurrence) && occurrence > 0 ? occurrence - 1 : 0];
     return selected
       ? { ...(selected.raw || selected), color: target.color, highlightOccurrence: occurrence }
       : null;
@@ -92,23 +125,41 @@ function App() {
   const [selectedSearchResult, setSelectedSearchResult] = useState(null);
   const [runningActionId, setRunningActionId] = useState(null);
   const [pendingSimilarSearch, setPendingSimilarSearch] = useState(null);
+  const [pendingLimitedSearch, setPendingLimitedSearch] = useState(null);
+  const [isAiEnabled, setIsAiEnabled] = useState(() => {
+    try { return window.localStorage.getItem('docpilot-ai-enabled') !== 'false'; }
+    catch { return true; }
+  });
   const [pageStructureHistory, setPageStructureHistory] = useState({ past: [], future: [] });
   const [protectedPdfFile, setProtectedPdfFile] = useState(null);
   const { selectedDocument, previewModel, documentText, errorMessage, handleDocumentSelect, clearSelectedDocument } = useDocument();
-  const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage, appendUserMessage } = useChat(selectedDocument, previewModel, documentViewerRef, isEditMode);
+  const { messages, loading: chatLoading, error: chatError, handleSendMessage, appendAssistantMessage, appendUserMessage } = useChat(selectedDocument, previewModel, documentViewerRef, isEditMode, isAiEnabled);
   const isPdfEditRestricted = previewModel?.type === 'pdf' && selectedDocument?.file?.docPilotEditRestricted === true;
   const pdfEditRestrictedMessage = '이 PDF는 비밀번호 없이 열리는 암호화 문서이므로 편집할 수 없습니다.';
 
   useEffect(() => { console.log('[App] highlightKeyword:', highlightKeyword); }, [highlightKeyword]);
   useEffect(() => { console.log('[App] selectedSearchResult:', selectedSearchResult); }, [selectedSearchResult]);
+  useEffect(() => {
+    try { window.localStorage.setItem('docpilot-ai-enabled', String(isAiEnabled)); }
+    catch { /* localStorage may be unavailable in restricted browser contexts. */ }
+  }, [isAiEnabled]);
+
+  const handleAiEnabledChange = (enabled) => {
+    const nextEnabled = Boolean(enabled);
+    setIsAiEnabled(nextEnabled);
+    appendAssistantMessage(nextEnabled
+      ? 'AI 온라인 모드로 전환했습니다. 설정된 AI 공급자를 사용해 자연어 요청을 해석합니다.'
+      : 'AI 오프라인 모드로 전환했습니다. 외부 AI에 연결하지 않고 이 PC에서 검색, 하이라이트, 텍스트 일괄 변경 명령을 해석합니다.');
+  };
 
   const resetDocumentViewState = () => {
     setIsSearchModalOpen(false); setIsHighlightModalOpen(false); setIsBatchReplaceModalOpen(false); setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null);
-    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setPendingSimilarSearch(null); setIsEditMode(false); setPageStructureHistory({ past: [], future: [] }); setProtectedPdfFile(null); clearSelectedDocument();
+    setHighlightKeyword(''); setHighlightStatusMessage(''); setSelectedSearchResult(null); setRunningActionId(null); setPendingSimilarSearch(null); setPendingLimitedSearch(null); setIsEditMode(false); setPageStructureHistory({ past: [], future: [] }); setProtectedPdfFile(null); clearSelectedDocument();
   };
 
   const handleNewDocumentSelect = async (file) => {
     setPendingSimilarSearch(null);
+    setPendingLimitedSearch(null);
     setPageStructureHistory({ past: [], future: [] });
     setIsHighlightModalOpen(false);
     setIsBatchReplaceModalOpen(false);
@@ -419,6 +470,17 @@ function App() {
 
   const executeSearchAction = async (messageId, action) => {
     if (!validateKeywordAction(action)) return;
+    const requestedLimit = Number(action?.limit);
+    const hasLimit = Number.isInteger(requestedLimit) && requestedLimit > 0;
+    if (hasLimit && !['first', 'last'].includes(action?.order)) {
+      const questionId = `limited-search-${Date.now()}-${Math.random()}`;
+      setPendingLimitedSearch({ questionId, action: { ...action, limit: requestedLimit }, documentFile: selectedDocument?.file });
+      appendAssistantMessage(`'${action.keyword}' 검색 결과 ${requestedLimit}개를 어느 방향에서 찾을까요?`, {
+        id: questionId,
+        searchOrderQuestion: true
+      });
+      return;
+    }
     await runAction(messageId, 'search', async () => {
       if (previewModel?.type !== 'word' && previewModel?.type !== 'pdf') {
         throw new Error('지원하지 않는 파일 형식입니다.');
@@ -426,10 +488,10 @@ function App() {
       if (!documentViewerRef.current?.searchDocument && previewModel?.type !== 'pdf') {
         throw new Error('현재 뷰어에서 검색 기능을 사용할 수 없습니다.');
       }
-      const rawResult = await handleDocumentSearch(action.keyword, { matchMode: 'contains' });
-      const results = getSearchResults(rawResult);
-      const count = results.length || normalizeCount(rawResult);
-      if (count === 0 && !action.skipSimilarSearch) {
+      const rawResult = await handleDocumentSearch(action.keyword, { matchMode: action.matchMode === 'exact' ? 'exact' : 'contains' });
+      const results = filterResultsByPageScope(getSearchResults(rawResult), action.pageScope, documentViewerRef.current);
+      const totalCount = action.pageScope ? results.length : results.length || normalizeCount(rawResult);
+      if (totalCount === 0 && !getSearchResults(rawResult).length && !action.skipSimilarSearch) {
         let segments = [];
         try {
           segments = await documentViewerRef.current?.getSearchableTextSegments?.() || [];
@@ -442,10 +504,19 @@ function App() {
           return;
         }
       }
-      const visibleResults = results.slice(0, 20);
-      const hasMoreResults = results.length > visibleResults.length;
+      const orderedResults = action?.order === 'last' ? [...results].reverse() : results;
+      const scopedResults = action.occurrence === 'last' ? orderedResults.slice(-1)
+        : Number.isInteger(Number(action.occurrence)) && Number(action.occurrence) > 0
+          ? orderedResults.slice(Number(action.occurrence) - 1, Number(action.occurrence))
+          : hasLimit ? orderedResults.slice(0, requestedLimit) : orderedResults;
+      const count = hasLimit || action.occurrence ? scopedResults.length : totalCount;
+      const visibleResults = scopedResults.slice(0, 20);
+      const hasMoreResults = scopedResults.length > visibleResults.length;
+      const scopeText = hasLimit
+        ? `\n검색 기준: ${action.order === 'last' ? '끝 페이지' : '첫 페이지'}부터 ${requestedLimit}개`
+        : '';
       appendAssistantMessage(
-        `검색을 실행했습니다.\n검색어: ${action.keyword}\n검색 결과: ${count}건${hasMoreResults ? '\n채팅에는 상위 20건을 표시합니다.' : ''}`,
+        `검색을 실행했습니다.\n검색어: ${action.keyword}${scopeText}\n검색 결과: ${count}건${hasLimit && totalCount > count ? ` (전체 ${totalCount}건)` : ''}${hasMoreResults ? '\n채팅에는 상위 20건을 표시합니다.' : ''}`,
         {
           searchResults: visibleResults,
           searchKeyword: action.keyword,
@@ -454,6 +525,14 @@ function App() {
         }
       );
     });
+  };
+
+  const answerLimitedSearch = async (questionId, order, fromChat = false) => {
+    const pending = pendingLimitedSearch;
+    if (!pending || pending.questionId !== questionId || pending.documentFile !== selectedDocument?.file) return;
+    if (!fromChat) appendUserMessage(order === 'last' ? '끝 페이지 기준' : '첫 페이지 기준');
+    setPendingLimitedSearch(null);
+    await executeSearchAction(questionId, { ...pending.action, order });
   };
 
   const answerSimilarSearch = async (questionId, accepted, fromChat = false) => {
@@ -474,6 +553,18 @@ function App() {
 
   const handleChatMessage = (message) => {
     const answer = String(message || '').trim();
+    if (pendingLimitedSearch?.documentFile === selectedDocument?.file) {
+      if (/^(첫\s*페이지|처음|앞|첫페이지)(?:\s*기준)?$/u.test(answer)) {
+        appendUserMessage(answer);
+        void answerLimitedSearch(pendingLimitedSearch.questionId, 'first', true);
+        return;
+      }
+      if (/^(끝\s*페이지|마지막|뒤|끝페이지)(?:\s*기준)?$/u.test(answer)) {
+        appendUserMessage(answer);
+        void answerLimitedSearch(pendingLimitedSearch.questionId, 'last', true);
+        return;
+      }
+    }
     if (pendingSimilarSearch?.documentFile === selectedDocument?.file) {
       if (/^(네|예|응|맞아|맞아요|맞습니다|그거야|yes|y)$/iu.test(answer)) {
         appendUserMessage(answer);
@@ -487,6 +578,7 @@ function App() {
       }
     }
     setPendingSimilarSearch(null);
+    setPendingLimitedSearch(null);
     void handleSendMessage(message);
   };
 
@@ -495,7 +587,7 @@ function App() {
     await runAction(messageId, 'highlight', async () => {
       if (!documentViewerRef.current?.highlightText) throw new Error('현재 뷰어에서 하이라이트 기능을 사용할 수 없습니다.');
       const searchResponse = await handleDocumentSearch(action.keyword, { matchMode: 'contains' });
-      const searchResults = getSearchResults(searchResponse);
+      const searchResults = filterResultsByPageScope(getSearchResults(searchResponse), action.pageScope, documentViewerRef.current);
       const selectedTargets = resolveHighlightTargets(searchResults, action);
       if (!searchResults.length) {
         throw new Error('하이라이트 검색 결과가 없습니다.');
@@ -531,7 +623,7 @@ function App() {
     }
     await runAction(messageId, 'batch-replace', async () => {
       const searchResponse = await handleDocumentSearch(originalText, { matchMode: 'contains' });
-      const searchResults = getSearchResults(searchResponse);
+      const searchResults = filterResultsByPageScope(getSearchResults(searchResponse), action.pageScope, documentViewerRef.current);
       if (!searchResults.length) throw new Error('텍스트 변경 검색 결과가 없습니다.');
       const selectedTargets = resolveReplacementTargets(searchResults, action);
 
@@ -565,10 +657,65 @@ function App() {
     });
   };
 
+  const executeDocumentHistoryAction = async (messageId, action) => {
+    if (!requireDocumentForAction()) return;
+    const actionType = action?.type;
+    if (actionType === 'viewer-command') {
+      await runAction(messageId, actionType, async () => {
+        const operations = Array.isArray(action?.operations) ? action.operations : [];
+        if (!operations.length || typeof documentViewerRef.current?.executeViewerCommand !== 'function') {
+          throw new Error('현재 문서 뷰어에서 요청한 보기 작업을 사용할 수 없습니다.');
+        }
+        for (const operation of operations) {
+          const result = await documentViewerRef.current.executeViewerCommand(operation);
+          if (result?.ok === false) {
+            if (result.message === '지원되지 않는 기능입니다.') {
+              appendAssistantMessage(result.message);
+              return;
+            }
+            throw new Error(result.message || '문서 보기 작업을 실행하지 못했습니다.');
+          }
+        }
+        const fitOperation = operations.findLast((operation) => operation.command === 'fit');
+        appendAssistantMessage(fitOperation
+          ? `${fitOperation.mode === 'width' ? '너비 맞춤' : '페이지 맞춤'}을 적용했습니다.`
+          : operations.length > 1 ? '요청한 문서 작업을 순서대로 실행했습니다.' : '요청한 문서 작업을 실행했습니다.');
+      });
+      return;
+    }
+    if (!['undo', 'redo', 'reset'].includes(actionType)) return;
+    await runAction(messageId, actionType, async () => {
+      if (actionType === 'reset' && previewModel?.type === 'word' && !window.confirm('모든 기능 적용전으로 초기화 하시겠습니다?')) {
+        appendAssistantMessage('전체 초기화를 취소했습니다.');
+        return;
+      }
+      const methodName = actionType === 'undo' ? 'undoDocumentChange'
+        : actionType === 'redo' ? 'redoDocumentChange'
+          : 'resetAllDocumentChanges';
+      const method = documentViewerRef.current?.[methodName];
+      if (typeof method !== 'function') throw new Error('현재 문서 뷰어에서 변경 이력 기능을 사용할 수 없습니다.');
+      const requestedCount = actionType === 'reset' ? 1 : Math.min(10, Math.max(1, Number(action?.count) || 1));
+      let changedCount = 0;
+      for (let index = 0; index < requestedCount; index += 1) {
+        if (!await method()) break;
+        changedCount += 1;
+      }
+      const successMessage = actionType === 'undo' ? '문서를 이전 상태로 되돌렸습니다.'
+        : actionType === 'redo' ? '되돌린 문서 변경을 다시 적용했습니다.'
+          : '문서의 편집 내용을 전체 초기화했습니다.';
+      const emptyMessage = actionType === 'undo' ? '되돌릴 문서 변경이 없습니다.'
+        : actionType === 'redo' ? '다시 적용할 문서 변경이 없습니다.'
+          : '초기화할 문서 변경이 없습니다.';
+      appendAssistantMessage(changedCount
+        ? requestedCount > 1 ? `${successMessage} (${changedCount}회)` : successMessage
+        : emptyMessage);
+    });
+  };
+
   const appContent = (
     <div className="app-page" onPointerDown={handleTemporarySearchDismiss}><div className="ambient ambient-left" /><div className="ambient ambient-right" /><div className="app-shell"><main className="main-layout">
       <DocumentWorkspace ref={documentViewerRef} selectedDocument={selectedDocument} previewModel={previewModel} highlightKeyword={highlightKeyword} highlightStatusMessage={highlightStatusMessage} selectedSearchResult={selectedSearchResult} errorMessage={errorMessage} isEditMode={isEditMode && !isPdfEditRestricted} isPdfEditRestricted={isPdfEditRestricted} onEditModeChange={(enabled) => setIsEditMode(enabled && !isPdfEditRestricted)} onDocumentSelect={handleNewDocumentSelect} onDocumentClear={resetDocumentViewState} onDocumentReselect={resetDocumentViewState} onVisualPdfConvert={handleVisualPdfConvert} onPdfPagesChanged={handlePdfPagesChanged} onUndoPdfPageChange={undoPdfPageChange} onRedoPdfPageChange={redoPdfPageChange} onPdfDocumentChanged={() => setPageStructureHistory((history) => history.future.length ? { ...history, future: [] } : history)} canUndoPdfPageChange={pageStructureHistory.past.length > 0} canRedoPdfPageChange={pageStructureHistory.future.length > 0} />
-      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} activeSuggestionId={pendingSimilarSearch?.questionId} isEditMode={isEditMode && !isPdfEditRestricted} isPdfEditRestricted={isPdfEditRestricted} onSendMessage={handleChatMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => { if (isPdfEditRestricted) return; setIsHighlightModalOpen(true); }} onBatchReplaceCardClick={() => { if (isPdfEditRestricted) { appendAssistantMessage(pdfEditRestrictedMessage); return; } if (!isEditMode) { appendAssistantMessage('편집모드를 활성화 해주세요'); return; } setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); setIsBatchReplaceModalOpen(true); }} onSearchResultClick={handleSearchResultClick} onSuggestionAnswer={answerSimilarSearch} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteBatchReplaceAction={executeBatchReplaceAction} />
+      <AssistantPanel messages={messages} loading={chatLoading} error={chatError} selectedDocument={selectedDocument} runningActionId={runningActionId} activeSuggestionId={pendingSimilarSearch?.questionId} activeSearchOrderId={pendingLimitedSearch?.questionId} isAiEnabled={isAiEnabled} isEditMode={isEditMode && !isPdfEditRestricted} isPdfEditRestricted={isPdfEditRestricted} onAiEnabledChange={handleAiEnabledChange} onSendMessage={handleChatMessage} onSearchCardClick={() => setIsSearchModalOpen(true)} onHighlightCardClick={() => { if (isPdfEditRestricted) return; setIsHighlightModalOpen(true); }} onBatchReplaceCardClick={() => { if (isPdfEditRestricted) { appendAssistantMessage(pdfEditRestrictedMessage); return; } if (!isEditMode) { appendAssistantMessage('편집모드를 활성화 해주세요'); return; } setBatchReplaceInitialValues(null); setBatchReplaceSearchContext(null); setIsBatchReplaceModalOpen(true); }} onSearchResultClick={handleSearchResultClick} onSuggestionAnswer={answerSimilarSearch} onSearchOrderAnswer={answerLimitedSearch} onExecuteSearchAction={executeSearchAction} onExecuteHighlightAction={executeHighlightAction} onExecuteBatchReplaceAction={executeBatchReplaceAction} onExecuteDocumentHistoryAction={executeDocumentHistoryAction} />
     </main></div>
     {isSearchModalOpen ? <SearchModal selectedDocument={selectedDocument} previewModel={previewModel} onSearch={handleDocumentSearch} onReset={handleSearchReset} onResultClick={handleSearchResultClick} onClose={() => setIsSearchModalOpen(false)} /> : null}
     <HighlightModal

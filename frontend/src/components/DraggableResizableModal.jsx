@@ -37,7 +37,8 @@ function DraggableResizableModal({
   initialWidth = 600,
   initialHeight = 670,
   minWidth = 600,
-  minHeight = 360
+  minHeight = 360,
+  autoHeight = false
 }) {
   const modalRef = useRef(null);
   const dragRef = useRef(null);
@@ -105,13 +106,13 @@ function DraggableResizableModal({
     <div className="modal-backdrop" role="presentation">
       <div
         ref={modalRef}
-        className={`draggable-modal search-modal ${className}`}
+        className={`draggable-modal search-modal ${autoHeight ? 'draggable-modal-auto-height' : ''} ${className}`}
         role="dialog"
         aria-modal="false"
         aria-labelledby={titleId}
         style={{
           width,
-          height,
+          height: autoHeight ? 'auto' : height,
           minWidth: `min(${minWidth}px, calc(100vw - ${EDGE_MARGIN * 2}px))`,
           minHeight: `min(${minHeight}px, calc(100vh - ${EDGE_MARGIN * 2}px))`,
           left: position.left,

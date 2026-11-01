@@ -37,7 +37,8 @@ function ChatSearchResults({ results, keyword, hasMoreResults, onResultClick }) 
   return (
     <div className="chat-search-results" aria-label="AI 문서 검색 결과">
       <div className="chat-search-table-wrap">
-        <table className="chat-search-table">
+        <table className="chat-search-table chat-search-table--search">
+          <colgroup><col /><col /><col /><col /></colgroup>
           <thead>
             <tr><th>페이지</th><th>위치</th><th>내용</th><th>검색어</th></tr>
           </thead>
@@ -54,7 +55,7 @@ function ChatSearchResults({ results, keyword, hasMoreResults, onResultClick }) 
                   <td>{location.page}</td>
                   <td>{location.line}</td>
                   <td className="chat-search-result-text" title={getSearchResultText(result)}>{getSearchResultText(result)}</td>
-                  <td>{String(result?.keyword || keyword || '-')}</td>
+                  <td title={String(result?.keyword || keyword || '-')}>{String(result?.keyword || keyword || '-')}</td>
                 </tr>
               );
             })}
@@ -66,23 +67,34 @@ function ChatSearchResults({ results, keyword, hasMoreResults, onResultClick }) 
   );
 }
 
-function ChatBatchReplaceResults({ results, replacementText }) {
+function ChatBatchReplaceResults({ results, replacementText, onResultClick }) {
   if (!Array.isArray(results) || results.length === 0) return null;
   return (
     <div className="chat-search-results chat-batch-replace-results" aria-label="텍스트 변경 검색 결과">
       <div className="chat-search-table-wrap">
-        <table className="chat-search-table">
-          <thead><tr><th>찾은 텍스트</th><th>변경할 텍스트</th></tr></thead>
+        <table className="chat-search-table chat-search-table--replace">
+          <colgroup><col /><col /><col /><col /><col /></colgroup>
+          <thead><tr><th>번호</th><th>페이지</th><th>위치</th><th>찾는 텍스트</th><th>변경할 텍스트</th></tr></thead>
           <tbody>
-            {results.map((result, index) => (
-              <tr key={result?.id || `batch-chat-result-${index}`}>
-                <td>
-                  <strong>{getSearchResultText(result)}</strong>
-                  <small>{formatSearchLocation(result).page} · {formatSearchLocation(result).line}</small>
-                </td>
-                <td>{String(replacementText || '')}</td>
-              </tr>
-            ))}
+            {results.map((result, index) => {
+              const location = formatSearchLocation(result);
+              const foundText = getSearchResultText(result);
+              const nextText = String(replacementText || '');
+              return (
+                <tr
+                  key={result?.id || `batch-chat-result-${index}`}
+                  data-search-result-trigger="true"
+                  className="chat-search-result-row"
+                  onClick={() => onResultClick?.(result)}
+                >
+                  <td>{index + 1}</td>
+                  <td>{location.page}</td>
+                  <td>{location.line}</td>
+                  <td title={foundText}>{foundText}</td>
+                  <td title={nextText}>{nextText}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -92,16 +104,18 @@ function ChatBatchReplaceResults({ results, replacementText }) {
 
 function AssistantPanel({
   messages, loading, error, selectedDocument, runningActionId, onSendMessage,
+  isAiEnabled = true, onAiEnabledChange,
   isEditMode = false,
   isPdfEditRestricted = false,
   onSearchCardClick, onHighlightCardClick, onBatchReplaceCardClick,
-  onSearchResultClick, onSuggestionAnswer, activeSuggestionId,
-  onExecuteSearchAction, onExecuteHighlightAction, onExecuteBatchReplaceAction
+  onSearchResultClick, onSuggestionAnswer, activeSuggestionId, activeSearchOrderId, onSearchOrderAnswer,
+  onExecuteSearchAction, onExecuteHighlightAction, onExecuteBatchReplaceAction, onExecuteDocumentHistoryAction
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [geminiStatus, setGeminiStatus] = useState(null);
   const autoSearchIdsRef = useRef(new Set());
   const autoBatchIdsRef = useRef(new Set());
+  const autoHistoryIdsRef = useRef(new Set());
   const chatFeedRef = useRef(null);
   const settingsApi = typeof window !== 'undefined' ? window.docPilotSettings : null;
 
@@ -125,6 +139,14 @@ function AssistantPanel({
       onExecuteBatchReplaceAction?.(message.id, message.action);
     });
   }, [messages, onExecuteBatchReplaceAction]);
+
+  useEffect(() => {
+    messages.forEach((message) => {
+      if (message.role !== 'assistant' || !['undo', 'redo', 'reset', 'viewer-command'].includes(message.action?.type) || autoHistoryIdsRef.current.has(message.id)) return;
+      autoHistoryIdsRef.current.add(message.id);
+      onExecuteDocumentHistoryAction?.(message.id, message.action);
+    });
+  }, [messages, onExecuteDocumentHistoryAction]);
 
   useEffect(() => {
     const feed = chatFeedRef.current;
@@ -156,10 +178,21 @@ function AssistantPanel({
         <div className="assistant-head">
           <div className="assistant-head-row">
             <h2>DocPilot AI</h2>
-            <button className="gemini-settings-button" type="button" onClick={() => setSettingsOpen(true)}>Gemini 설정</button>
+            <div className="assistant-head-actions">
+              <button
+                className={`ai-mode-toggle ${isAiEnabled ? 'is-on' : 'is-off'}`}
+                type="button"
+                aria-pressed={isAiEnabled}
+                title={isAiEnabled ? '외부 AI 사용 중' : '완전한 오프라인 명령 처리 중'}
+                onClick={() => onAiEnabledChange?.(!isAiEnabled)}
+              >
+                AI {isAiEnabled ? 'ON' : 'OFF'}
+              </button>
+              <button className="gemini-settings-button" type="button" onClick={() => setSettingsOpen(true)}>설정</button>
+            </div>
           </div>
         </div>
-        {settingsApi && geminiStatus && !geminiStatus.hasApiKey ? (
+        {isAiEnabled && settingsApi && geminiStatus && !geminiStatus.hasApiKey ? (
           <div className="gemini-missing-banner" role="status">
             <span>Gemini API Key가 설정되지 않았습니다.</span>
             <button type="button" onClick={() => setSettingsOpen(true)}>설정하기</button>
@@ -175,7 +208,7 @@ function AssistantPanel({
           {messages.map((message) => {
             const runningType = runningActionId?.startsWith(`${message.id}:`) ? runningActionId.slice(message.id.length + 1) : '';
             return (
-              <div key={message.id} className={`chat-row ${message.role === 'user' ? 'user' : 'assistant'}`}>
+              <div key={message.id} className={`chat-row ${message.role === 'user' ? 'user' : 'assistant'} ${message.role === 'assistant' && (message.searchResults?.length || message.batchReplaceResults?.length) ? 'has-result-table' : ''}`}>
                 <div className="chat-bubble">
                   {message.text}
                   {message.role === 'assistant' ? (
@@ -190,6 +223,7 @@ function AssistantPanel({
                     <ChatBatchReplaceResults
                       results={message.batchReplaceResults}
                       replacementText={message.batchReplacementText}
+                      onResultClick={onSearchResultClick}
                     />
                   ) : null}
                   {message.role === 'assistant' && activeSuggestionId === message.id ? (
@@ -198,7 +232,13 @@ function AssistantPanel({
                       <button type="button" onClick={() => onSuggestionAnswer?.(message.id, false)} disabled={Boolean(runningActionId)}>아니요</button>
                     </div>
                   ) : null}
-                  {message.role === 'assistant' && message.action && !['search', 'batch-replace'].includes(message.action.type) ? (
+                  {message.role === 'assistant' && activeSearchOrderId === message.id ? (
+                    <div className="chat-similar-choice" aria-label="검색 방향 선택">
+                      <button type="button" onClick={() => onSearchOrderAnswer?.(message.id, 'first')} disabled={Boolean(runningActionId)}>첫 페이지 기준</button>
+                      <button type="button" onClick={() => onSearchOrderAnswer?.(message.id, 'last')} disabled={Boolean(runningActionId)}>끝 페이지 기준</button>
+                    </div>
+                  ) : null}
+                  {message.role === 'assistant' && message.action && !['search', 'batch-replace', 'undo', 'redo', 'reset', 'viewer-command'].includes(message.action.type) ? (
                     <AiActionCard
                       action={message.action}
                       selectedFile={selectedFile}

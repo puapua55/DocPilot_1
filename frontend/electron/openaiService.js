@@ -1,19 +1,22 @@
 import { secureApiFetch } from './secureApiFetch.js';
+import { inferDocumentCommand } from './documentCommandParser.js';
 
 const DEFAULT_MODEL = 'gpt-5-mini';
 const MAX_HISTORY = 10;
 const MAX_DOCUMENT_TEXT = 20_000;
 const DOCUMENT_EDGE_LENGTH = MAX_DOCUMENT_TEXT / 2;
-const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'replace', 'batch-replace']);
+const ALLOWED_ACTION_TYPES = new Set(['search', 'highlight', 'replace', 'batch-replace', 'undo', 'redo', 'reset', 'viewer-command']);
 const RESTRICTED_CHAT_MESSAGE = '채팅은 정확한 문서 검색, 위치 하이라이트, 즉시 텍스트 교체 요청에만 사용할 수 있습니다.';
 
-const DOCUMENT_ASSISTANT_INSTRUCTIONS = `너는 DocPilot의 문서 작업 보조 AI다. 지원하는 요청은 정확한 문서 검색(search), 위치 하이라이트(highlight), 즉시 텍스트 교체(replace)뿐이다.
+const DOCUMENT_ASSISTANT_INSTRUCTIONS = `너는 DocPilot의 문서 작업 보조 AI다. 지원하는 요청은 정확한 문서 검색(search), 위치 하이라이트(highlight), 즉시 텍스트 교체(replace), 실행 취소(undo), 다시 실행(redo), 전체 초기화(reset), 문서 보기 제어(viewer-command)다.
 요약, 문서 질의응답, 일반 대화, 사용법 안내, 그 밖의 모든 요청은 지원하지 않는다.
 지원하지 않는 요청에는 intent를 unsupported로, answer를 '${RESTRICTED_CHAT_MESSAGE}'로, action을 null로 설정한다.
 검색 요청은 search이며 keyword를 추출한다. 하이라이트/표시 요청은 highlight이며 keyword를 추출한다. 텍스트 치환 요청은 replace이며 originalText와 newText를 추출한다.
 search/highlight/replace 작업을 직접 실행했다고 절대 말하지 않는다. 실행 가능한 작업을 준비했다고 설명하고 반드시 사용자 승인 버튼을 눌러야 실행된다고 안내한다.
 응답은 JSON 객체만 출력한다. 형식은 {"answer":"...","intent":"search|highlight|replace|unsupported","action":null}이다.
 search action은 {"type":"search","keyword":"..."}, highlight action은 {"type":"highlight","keyword":"..."}, replace action은 {"type":"replace","originalText":"...","newText":"..."} 형식이다.
+문서 상태를 이전으로 되돌리는 요청은 {"type":"undo"}, 되돌린 변경을 다시 적용하는 요청은 {"type":"redo"}, 모든 편집을 초기화하는 요청은 {"type":"reset"}으로 반환한다.
+보기 제어는 {"type":"viewer-command","operations":[...]} 형식이다. 허용 명령은 set-view-mode, go-to-page, zoom, fit, download이며 복합 요청은 사용자 순서대로 배열에 넣는다. 연결되지 않은 편집 기능은 실행 완료라고 말하지 않는다.
 JSON 외 설명이나 Markdown 코드 블록을 출력하지 않는다.`;
 
 const BATCH_REPLACE_INSTRUCTION = `
@@ -40,6 +43,13 @@ The batch-replace action format is {"type":"batch-replace","originalText":"...",
 
 const NO_APPROVAL_INSTRUCTION = `
 Do not tell the user to press an approval button and do not claim that an approval button is required. The app handles searching and applying after the action is received.
+`;
+
+const NATURAL_TEXT_INSTRUCTION = `
+사용자가 작업 대상 문구를 따옴표로 감싸지 않아도 문장 의미와 한국어 명령 구조로 추출한다. 따옴표는 선택 사항이다.
+"테그스 찾아줘"는 search(keyword="테그스"), "PDF를 TXT로 바꿔줘"는 batch-replace(originalText="PDF", newText="TXT")로 반환한다.
+문서에서 같은 범위 표현, 을/를/으로/로/에서 같은 경계 조사와 찾아줘/검색해줘/바꿔줘/변경해줘 같은 명령 표현은 작업 대상 문자열에 포함하지 않는다. 여러 단어로 된 원문은 전체를 유지한다.
+검색 개수를 지정하면 action.limit에 개수를 넣는다. 첫 페이지 기준은 order="first", 끝 페이지 기준은 order="last"이며 기준이 없으면 order=null이다. 따옴표로 감싼 범위는 공백과 조사를 포함해 검색어 그대로 사용한다.
 `;
 
 function limitDocumentText(text) {
@@ -85,6 +95,13 @@ function parseChatResult(rawText) {
         all: parsed.action?.all === true,
         targets: Array.isArray(parsed.action?.targets) ? parsed.action.targets : []
       };
+      if (intent === 'search') {
+        const limit = Number(parsed.action.limit ?? parsed.action.count);
+        if (Number.isInteger(limit) && limit > 0) {
+          action.limit = limit;
+          action.order = ['first', 'last'].includes(parsed.action.order) ? parsed.action.order : null;
+        }
+      }
     } else if (['replace', 'batch-replace'].includes(intent)
       && typeof parsed.action?.originalText === 'string' && parsed.action.originalText.trim()
       && typeof parsed.action?.newText === 'string' && parsed.action.newText.length > 0) {
@@ -95,6 +112,12 @@ function parseChatResult(rawText) {
         all: parsed.action?.all === true,
         targets: Array.isArray(parsed.action?.targets) ? parsed.action.targets : []
       };
+    } else if (['undo', 'redo', 'reset'].includes(intent) && actionType === intent) {
+      action = { type: intent };
+    } else if (intent === 'viewer-command' && actionType === intent && Array.isArray(parsed.action?.operations)) {
+      const commands = new Set(['set-view-mode', 'go-to-page', 'zoom', 'fit', 'download']);
+      const operations = parsed.action.operations.filter((operation) => commands.has(operation?.command));
+      if (operations.length) action = { type: intent, operations };
     }
     if (!action) return { answer: RESTRICTED_CHAT_MESSAGE, intent: 'unsupported', action: null };
     return {
@@ -123,7 +146,7 @@ export async function chatWithOpenAi(request = {}, settings = {}) {
   const model = String(process.env.OPENAI_MODEL || settings.openAiModel || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const limitedDocument = limitDocumentText(String(request.documentText || ''));
   const input = [
-    { role: 'developer', content: `${DOCUMENT_ASSISTANT_INSTRUCTIONS}\n${BATCH_REPLACE_INSTRUCTION}\n${HIGHLIGHT_TARGET_INSTRUCTION}\n${BATCH_SCOPE_INSTRUCTION}\n${NO_APPROVAL_INSTRUCTION}\n${buildDocumentContext(request, limitedDocument)}` }
+    { role: 'developer', content: `${DOCUMENT_ASSISTANT_INSTRUCTIONS}\n${NATURAL_TEXT_INSTRUCTION}\n${BATCH_REPLACE_INSTRUCTION}\n${HIGHLIGHT_TARGET_INSTRUCTION}\n${BATCH_SCOPE_INSTRUCTION}\n${NO_APPROVAL_INSTRUCTION}\n${buildDocumentContext(request, limitedDocument)}` }
   ];
   const history = Array.isArray(request.history) ? request.history.slice(-MAX_HISTORY) : [];
   for (const item of history) {
@@ -149,5 +172,8 @@ export async function chatWithOpenAi(request = {}, settings = {}) {
   }
   const answer = extractOutputText(body);
   if (!answer) throw new Error('OpenAI 응답에서 텍스트를 찾지 못했습니다.');
-  return parseChatResult(answer);
+  const parsed = parseChatResult(answer);
+  const inferred = inferDocumentCommand(request.message);
+  if (inferred?.action?.type === 'search' && (!parsed.action || parsed.action.type === 'search')) return inferred;
+  return parsed.action ? parsed : (inferred || parsed);
 }

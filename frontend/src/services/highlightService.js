@@ -52,6 +52,83 @@ function findHighlightMatchIndexes(text, keyword, matchMode = 'contains') {
   return indexes;
 }
 
+function compactText(value) {
+  return String(value || '').replace(/\s+/g, '').toLocaleLowerCase();
+}
+
+function getTargetOccurrenceIndex(lineText, keyword, matchMode, matchIndex) {
+  const sourceIndexes = findHighlightMatchIndexes(lineText, keyword, matchMode);
+  const numericIndex = Number(matchIndex);
+  const exactOccurrence = sourceIndexes.indexOf(numericIndex);
+  if (exactOccurrence >= 0) return exactOccurrence;
+  if (!Number.isFinite(numericIndex) || numericIndex < 0) return 0;
+
+  const compactPrefixLength = compactText(String(lineText || '').slice(0, numericIndex)).length;
+  const compactLine = compactText(lineText);
+  const compactKeyword = compactText(keyword);
+  const compactIndexes = [];
+  let startIndex = 0;
+  while (compactKeyword && startIndex <= compactLine.length - compactKeyword.length) {
+    const foundIndex = compactLine.indexOf(compactKeyword, startIndex);
+    if (foundIndex < 0) break;
+    compactIndexes.push(foundIndex);
+    startIndex = foundIndex + compactKeyword.length;
+  }
+  const compactOccurrence = compactIndexes.indexOf(compactPrefixLength);
+  return compactOccurrence >= 0 ? compactOccurrence : 0;
+}
+
+function lineContainsTargetText(lineText, targetLineText) {
+  const line = compactText(lineText);
+  const target = compactText(targetLineText);
+  return Boolean(line && target && (line.includes(target) || target.includes(line)));
+}
+
+function resolveTargetMatchIndexes(lineText, lineNumber, keyword, matchMode, target = {}) {
+  const matchIndexes = findHighlightMatchIndexes(lineText, keyword, matchMode);
+  if (!matchIndexes.length) return [];
+
+  const targetLineText = String(target?.lineText ?? target?.fullText ?? target?.text ?? '');
+  const targetLineNumber = Number(target?.lineNumber ?? target?.line);
+  const targetMatchIndex = Number(target?.matchIndex);
+  const hasLineNumber = Number.isInteger(targetLineNumber) && targetLineNumber > 0;
+  const hasLineText = Boolean(targetLineText.trim());
+  const hasMatchIndex = Number.isFinite(targetMatchIndex) && targetMatchIndex >= 0;
+
+  if (!hasLineNumber && !hasLineText && !hasMatchIndex) return matchIndexes;
+
+  const numberMatches = !hasLineNumber || targetLineNumber === lineNumber;
+  const textMatches = !hasLineText || lineContainsTargetText(lineText, targetLineText);
+  if (!numberMatches) return [];
+  // A known source line must never expand to an unrelated line merely because
+  // the same keyword exists elsewhere on the page.
+  if (hasLineText && !textMatches) return [];
+
+  const occurrenceIndex = getTargetOccurrenceIndex(
+    targetLineText || lineText,
+    keyword,
+    matchMode,
+    targetMatchIndex
+  );
+  return matchIndexes[occurrenceIndex] == null ? [] : [matchIndexes[occurrenceIndex]];
+}
+
+function getSpanPdfSource(span) {
+  try {
+    return JSON.parse(span?.dataset?.pdfSource || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function getTextLayerContentSpans(textLayer) {
+  const spans = Array.from(textLayer?.querySelectorAll('span') || []).filter(
+    (span) => (span.dataset.unicodeText || span.textContent || '').length > 0
+  );
+  const indexedSpans = spans.filter((span) => span.hasAttribute('data-text-item-index'));
+  return indexedSpans.length ? indexedSpans : spans;
+}
+
 export function createViewportTextSpans(textItems, viewport) {
   if (!Array.isArray(textItems) || !viewport) {
     return [];
@@ -88,7 +165,8 @@ export function createViewportTextSpans(textItems, viewport) {
         fontSize: Math.max(height, 8),
         lineHeight: 1,
         itemWidth: Number(item?.width) || 0,
-        expectedWidth
+        expectedWidth,
+        sourceY: Number(item?.transform?.[5])
       };
     })
     .filter(Boolean);
@@ -199,7 +277,10 @@ export function calculateFindBoxesFromPdfText({
   pageNumber,
   textItems: rawTextItems,
   viewport,
-  lineText
+  lineText,
+  lineY,
+  matchIndex,
+  matchMode = 'contains'
 }) {
   const normalizedKeyword = String(keyword || '').trim();
   const normalizedLine = String(lineText || '').replace(/\s+/g, ' ').trim();
@@ -208,15 +289,44 @@ export function calculateFindBoxesFromPdfText({
   const matched = spans.filter((item) => (
     findHighlightMatchIndexes(item.text, normalizedKeyword, 'contains').length > 0
   ));
+  const numericLineY = Number(lineY);
   const exactLineItems = normalizedLine
     ? matched.filter((item) => item.text.replace(/\s+/g, ' ').trim() === normalizedLine)
     : [];
-  const targetItems = exactLineItems.length ? exactLineItems : matched;
+  const textItems = normalizedLine
+    ? matched.filter((item) => lineContainsTargetText(item.text, normalizedLine))
+    : [];
+  const yItems = Number.isFinite(numericLineY)
+    ? matched.filter((item) => Number.isFinite(item.sourceY) && Math.abs(item.sourceY - numericLineY) < 4)
+    : [];
+  const intersectedItems = textItems.length && yItems.length
+    ? textItems.filter((item) => yItems.includes(item))
+    : [];
+  const hasTargetIdentity = Boolean(normalizedLine) || Number.isFinite(numericLineY) || Number.isFinite(Number(matchIndex));
+  const targetItems = exactLineItems.length
+    ? exactLineItems
+    : intersectedItems.length
+      ? intersectedItems
+      : textItems.length
+        ? textItems
+        : yItems.length
+          ? yItems
+          : hasTargetIdentity ? [] : matched;
   const boxes = [];
   targetItems.forEach((item) => {
     const itemLength = Array.from(item.text).length;
     const charWidth = item.width / Math.max(itemLength, 1);
-    findHighlightMatchIndexes(item.text, normalizedKeyword, 'contains').forEach((foundIndex) => {
+    const itemMatchIndexes = findHighlightMatchIndexes(item.text, normalizedKeyword, matchMode);
+    const targetOccurrence = getTargetOccurrenceIndex(
+      normalizedLine || item.text,
+      normalizedKeyword,
+      matchMode,
+      matchIndex
+    );
+    const selectedIndexes = hasTargetIdentity
+      ? (itemMatchIndexes[targetOccurrence] == null ? [] : [itemMatchIndexes[targetOccurrence]])
+      : itemMatchIndexes;
+    selectedIndexes.forEach((foundIndex) => {
       boxes.push({
         page: pageNumber,
         text: item.text.slice(foundIndex, foundIndex + normalizedKeyword.length),
@@ -235,13 +345,6 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword, options 
   const boxes = [];
   const normalizedKeyword = String(keyword || '').trim();
   const matchMode = options?.matchMode === 'exact' ? 'exact' : 'contains';
-  const targetLineNumber = Number(options?.lineNumber);
-  const targetMatchIndex = Number(options?.matchIndex);
-  // PDF content-stream order is not guaranteed to be visual top-to-bottom
-  // order. Use the result's actual line text as the primary identity when it
-  // is available; lineNumber is only a fallback for simple PDFs.
-  const targetLineText = String(options?.lineText || '').replace(/\s+/g, ' ').trim();
-  const LINE_Y_TOLERANCE = 5;
 
   if (!pageElement || !normalizedKeyword) {
     return boxes;
@@ -259,38 +362,11 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword, options 
     return boxes;
   }
 
-  const spans = Array.from(textLayer.querySelectorAll('span')).filter(
-    (span) => (span.textContent || '').length > 0
-  );
+  const spans = getTextLayerContentSpans(textLayer);
 
   console.log('[Highlight] textLayer spans:', spans.map((span) => span.textContent));
 
-  const lineGroups = [];
-
-  spans.forEach((span) => {
-    const rect = span.getBoundingClientRect();
-
-    if (!rect.width && !rect.height) {
-      return;
-    }
-
-    const lineGroup = lineGroups.find((line) => Math.abs(rect.top - line.top) <= LINE_Y_TOLERANCE);
-
-    if (lineGroup) {
-      lineGroup.spans.push({ span, rect, text: span.textContent || '' });
-      return;
-    }
-
-    lineGroups.push({
-      top: rect.top,
-      spans: [{ span, rect, text: span.textContent || '' }]
-    });
-  });
-
-  lineGroups.forEach((line) => {
-    line.spans.sort((a, b) => a.rect.left - b.rect.left);
-    line.text = line.spans.map((entry) => entry.text).join('');
-  });
+  const lineGroups = buildTextLayerLineGroups(spans);
 
   console.log(
     '[Highlight] line groups:',
@@ -300,30 +376,18 @@ export function createHighlightBoxesFromTextLayer(pageElement, keyword, options 
     }))
   );
 
-  // Search extraction and the browser text layer can group a multi-line
-  // title differently. Prefer an exact source-line match, but if that
-  // source line was merged/split during rendering, keep matching the target
-  // keyword rather than dropping the highlight entirely.
-  const hasExactTargetLine = targetLineText && lineGroups.some((line) => (
-    String(line.text || '').replace(/\s+/g, ' ').trim() === targetLineText
-  ));
-
   lineGroups.forEach((lineGroup, lineIndex) => {
     const lineText = lineGroup.text || '';
-    const normalizedLineText = lineText.replace(/\s+/g, ' ').trim();
-    if (targetLineText && hasExactTargetLine && targetLineText !== normalizedLineText) {
-      return;
-    }
-    if (!targetLineText && Number.isFinite(targetLineNumber) && targetLineNumber > 0 && targetLineNumber !== lineIndex + 1) {
-      return;
-    }
     console.log('[Highlight] lineText:', lineText);
 
-    const matchIndexes = findHighlightMatchIndexes(lineText, normalizedKeyword, matchMode);
+    const matchIndexes = resolveTargetMatchIndexes(
+      lineText,
+      lineIndex + 1,
+      normalizedKeyword,
+      matchMode,
+      options
+    );
     matchIndexes.forEach((foundIndex) => {
-      if (Number.isFinite(targetMatchIndex) && targetMatchIndex >= 0 && targetMatchIndex !== foundIndex) {
-        return;
-      }
       const endIndex = foundIndex + normalizedKeyword.length;
 
       console.log('[Highlight] match range:', { foundIndex, endIndex });
@@ -399,25 +463,31 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
     return [];
   }
 
-  const spans = Array.from(textLayer.querySelectorAll('span')).filter(
-    (span) => (span.textContent || '').length > 0
-  );
+  const spans = getTextLayerContentSpans(textLayer);
   const lineGroups = buildTextLayerLineGroups(spans);
   const previewItems = [];
 
   lineGroups.forEach((lineGroup, lineIndex) => {
     const lineText = lineGroup.text || '';
     const matchIndexes = findHighlightMatchIndexes(lineText, originalText, matchMode);
+    const resolvedTargets = selectedTargets?.map((target) => {
+      const raw = target?.raw || target || {};
+      if (Number(raw.pageNumber ?? raw.page) !== pageNumber) return null;
+      return {
+        target: raw,
+        indexes: resolveTargetMatchIndexes(
+          lineText,
+          lineIndex + 1,
+          originalText,
+          matchMode,
+          raw
+        )
+      };
+    }).filter(Boolean) || null;
 
     matchIndexes.forEach((foundIndex) => {
-      if (selectedTargets && !selectedTargets.some((target) => {
-        const raw = target?.raw || target || {};
-        return Number(raw.pageNumber ?? raw.page) === pageNumber
-          && Number(raw.lineNumber ?? raw.line) === lineIndex + 1
-          && Number(raw.matchIndex) === foundIndex;
-      })) {
-        return;
-      }
+      const resolvedTarget = resolvedTargets?.find((entry) => entry.indexes.includes(foundIndex));
+      if (selectedTargets && !resolvedTarget) return;
       const endIndex = foundIndex + originalText.length;
       const matchedRects = [];
       let cursor = 0;
@@ -482,17 +552,7 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
         const descent = metrics.fontBoundingBoxDescent ?? metrics.actualBoundingBoxDescent;
         const baseline = lineBox.y + (lineHeight - ascent - descent) / 2 + ascent;
 
-        const selectedTarget = selectedTargets?.find((target) => {
-          const raw = target?.raw || target || {};
-          return Number(raw.pageNumber ?? raw.page) === pageNumber
-            && Number(raw.lineNumber ?? raw.line) === lineIndex + 1
-            && Number(raw.matchIndex) === foundIndex;
-        })?.raw || selectedTargets?.find((target) => {
-          const raw = target?.raw || target || {};
-          return Number(raw.pageNumber ?? raw.page) === pageNumber
-            && Number(raw.lineNumber ?? raw.line) === lineIndex + 1
-            && Number(raw.matchIndex) === foundIndex;
-        }) || null;
+        const selectedTarget = resolvedTarget?.target || null;
         const sourceItems = lineGroup.spans.filter(({ span, rect }) => matchedRects.some((matchRect) => (
           rect.left <= matchRect.right && rect.right >= matchRect.left
             && Math.abs(rect.top - matchRect.top) <= 4
@@ -554,25 +614,57 @@ export function createReplacementPreviewFromTextLayer(pageElement, replaceState)
 
 function buildTextLayerLineGroups(spans) {
   const LINE_Y_TOLERANCE = 5;
+  const sourceEntries = spans.map((span) => {
+    const rect = span.getBoundingClientRect();
+    const source = getSpanPdfSource(span);
+    return {
+      span,
+      rect,
+      text: span.dataset.unicodeText || source.unicodeText || source.text || span.textContent || '',
+      sourceIndex: Number(source.textItemIndex ?? span.dataset.textItemIndex),
+      sourceY: Number(source?.transform?.[5])
+    };
+  }).filter((entry) => entry.rect.width || entry.rect.height);
+
+  const sourceOrderedEntries = sourceEntries
+    .filter((entry) => Number.isInteger(entry.sourceIndex) && Number.isFinite(entry.sourceY))
+    .sort((first, second) => first.sourceIndex - second.sourceIndex);
+
+  if (sourceOrderedEntries.length === sourceEntries.length && sourceOrderedEntries.length > 0) {
+    const sourceLineGroups = [];
+    sourceOrderedEntries.forEach((entry) => {
+      const lastLine = sourceLineGroups[sourceLineGroups.length - 1];
+      if (lastLine && Math.abs(lastLine.sourceY - entry.sourceY) < 4) {
+        lastLine.spans.push(entry);
+      } else {
+        sourceLineGroups.push({
+          top: entry.rect.top,
+          sourceY: entry.sourceY,
+          spans: [entry]
+        });
+      }
+    });
+    sourceLineGroups.forEach((line) => {
+      line.text = line.spans.map((entry) => entry.text).join('').replace(/\s+/g, ' ').trim();
+    });
+    return sourceLineGroups.filter((line) => line.text);
+  }
+
   const lineGroups = [];
 
-  spans.forEach((span) => {
-    const rect = span.getBoundingClientRect();
-
-    if (!rect.width && !rect.height) {
-      return;
-    }
+  sourceEntries.forEach((entry) => {
+    const { rect } = entry;
 
     const lineGroup = lineGroups.find((line) => Math.abs(rect.top - line.top) <= LINE_Y_TOLERANCE);
 
     if (lineGroup) {
-      lineGroup.spans.push({ span, rect, text: span.textContent || '' });
+      lineGroup.spans.push(entry);
       return;
     }
 
     lineGroups.push({
       top: rect.top,
-      spans: [{ span, rect, text: span.textContent || '' }]
+      spans: [entry]
     });
   });
 

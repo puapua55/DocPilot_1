@@ -19,7 +19,7 @@ function ChatInput({ onSendMessage, loading = false, disabled = false }) {
         className="chat-input"
         value={value}
         rows={3}
-        placeholder={disabled ? '문서를 선택한 뒤 문서 작업 요청을 입력하세요.' : '검색, 하이라이트, 텍스트 교체 요청만 입력할 수 있습니다.'}
+        placeholder={disabled ? '문서를 선택한 뒤 요청사항을 입력하세요.' : '요청사항을 입력하세요.'}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Enter' && !event.shiftKey) {

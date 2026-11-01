@@ -6,12 +6,14 @@ USER root
 
 # Pull the current Bookworm security updates whenever the development image is
 # rebuilt. The JDK assertion prevents a cached pre-eMudhra image from being
-# accepted silently; Microsoft OpenJDK 21.0.12.1 is the first patched build on
-# this release line.
+# accepted silently; Microsoft OpenJDK 21.0.13.0.2 includes the October 2026
+# emergency certificate updates on this release line.
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends git-lfs \
-    && java -version 2>&1 | grep -Eq 'version "21\.0\.(12\.[1-9]|1[3-9]|[2-9][0-9])' \
+    && jdk_version="$(java -version 2>&1 | sed -n 's/.*version "\([0-9.]*\)".*/\1/p' | head -n 1)" \
+    && test -n "$jdk_version" \
+    && dpkg --compare-versions "$jdk_version" ge 21.0.13.0.2 \
     && git lfs install --system \
     && rm -rf /var/lib/apt/lists/*
 

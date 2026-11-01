@@ -281,6 +281,7 @@ function registerAppProtocol() {
 
 function createMainWindow() {
   const mainWindow = new BrowserWindow({
+    icon: path.join(__dirname, 'icon.ico'),
     width: 1440,
     height: 960,
     minWidth: 960,

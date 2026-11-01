@@ -388,7 +388,7 @@ function normalizeFidelityPageLayout(container) {
   });
 }
 
-const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 1, toolbarActions, downloadActions }, ref) {
+const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 1, toolbarActions, downloadActions, onEditModeChange }, ref) {
   const {
     html,
     pageLayout,
@@ -410,6 +410,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false, canReset: false });
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const historyRef = useRef({ snapshots: [], index: -1 });
+  const historyFileRef = useRef(null);
   const imageInputRef = useRef(null);
   const activeParagraphRef = useRef(null);
   const selectionRef = useRef(null);
@@ -539,6 +540,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     if (!file || !root) return;
     try {
       const [source, sourceTables] = await Promise.all([readDocxParagraphs(file), readDocxTables(file)]);
+      if (root !== docxContentRef.current || historyFileRef.current !== file || historyRef.current.snapshots.length > 1) return;
       const rendered = Array.from(root.querySelectorAll('article p, article h1, article h2, article h3, .word-document p, .word-document h1, .word-document h2, .word-document h3'));
       let cursor = 0;
       rendered.forEach((element) => {
@@ -726,7 +728,9 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   }, [html, pages.length, fidelityPageCount, useFidelityRenderer, viewMode, currentPage]);
 
   useLayoutEffect(() => {
+    if (historyFileRef.current === file && historyRef.current.snapshots.length > 1) return;
     const snapshot = captureDocumentSnapshot();
+    historyFileRef.current = file;
     historyRef.current = snapshot.length > 0
       ? { snapshots: [snapshot], index: 0 }
       : { snapshots: [], index: -1 };
@@ -2158,7 +2162,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     commitDocumentChange();
   };
 
-  const downloadEditedDocx = async () => {
+  const downloadEditedDocx = async (fileName = null) => {
     const root = docxContentRef.current;
     const edits = Array.from(root?.querySelectorAll('[data-docx-paragraph-index][data-docx-dirty="true"]') || [])
       .map((element) => ({ index: Number(element.dataset.docxParagraphIndex), element }));
@@ -2194,13 +2198,15 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `${file.name.replace(/\.docx$/i, '')}_edited.docx`;
+    anchor.download = fileName || `${file.name.replace(/\.docx$/i, '')}_edited.docx`;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     return true;
   };
 
   useImperativeHandle(ref, () => ({
+    getCurrentPageNumber() { return currentPage; },
+    getPageCount() { return Math.max(pageCount, 1); },
     async getDocumentText() {
       try {
         return getRenderedDocxText(docxContentRef.current);
@@ -2263,6 +2269,23 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     resetAllDocumentChanges() {
       return resetAllDocumentChanges();
     },
+    executeViewerCommand(operation) {
+      if (operation?.command === 'set-view-mode' && ['scroll', 'page'].includes(operation.mode)) {
+        setViewMode(operation.mode); return { ok: true };
+      }
+      if (operation?.command === 'go-to-page') {
+        const maxPage = Math.max(pageCount, 1);
+        const target = operation.page === 'first' ? 1
+          : operation.page === 'last' ? maxPage
+            : operation.page === 'middle' ? Math.ceil(maxPage / 2)
+              : Number.isFinite(Number(operation.relative)) ? currentPage + Number(operation.relative)
+                : Number(operation.page);
+        if (!Number.isFinite(target)) return { ok: false, message: '이동할 페이지를 확인하지 못했습니다.' };
+        setCurrentPage(Math.min(maxPage, Math.max(1, Math.round(target)))); return { ok: true };
+      }
+      if (operation?.command === 'fit') return { ok: false, message: 'DOCX 뷰어는 PDF 맞춤 모드를 지원하지 않습니다.' };
+      return { ok: false, message: 'DOCX 뷰어에서 요청한 작업을 지원하지 않습니다.' };
+    },
     getModifiedHtml() {
       return serializeModifiedHtml(docxContentRef.current);
     },
@@ -2273,11 +2296,11 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       }));
     },
     downloadEditedDocx,
-    async downloadAsPdf() {
+    async downloadAsPdf(fileName = null) {
       const root = viewerBodyRef.current;
       root?.classList.add('docx-exporting');
       try {
-        return await convertDocxDomToPdf({ root, fileName: file?.name, file });
+        return await convertDocxDomToPdf({ root, fileName: fileName || file?.name, file });
       } finally {
         root?.classList.remove('docx-exporting');
       }
@@ -2310,6 +2333,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       setTableSettingsTab(null);
     }
     setEditingEnabled(nextEditing);
+    onEditModeChange?.(nextEditing);
   };
 
   if (renderError) {

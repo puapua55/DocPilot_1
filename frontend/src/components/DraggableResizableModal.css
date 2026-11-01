@@ -13,6 +13,14 @@
   overflow: hidden;
 }
 
+.draggable-modal-auto-height {
+  resize: horizontal;
+}
+
+.draggable-modal-auto-height .draggable-modal-body {
+  flex: 0 1 auto;
+}
+
 .draggable-modal-header {
   position: relative;
   flex: 0 0 auto;

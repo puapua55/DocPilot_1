@@ -2309,8 +2309,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     return await isPdfEncrypted(file) ? file : null;
   };
 
-  const downloadAsPdf = async (selection = null) => {
-    if (downloadStatus !== 'idle') return;
+  const downloadAsPdf = async (selection = null, options = {}) => {
+    if (downloadStatus !== 'idle') return false;
     let selectedPages;
     if (selection !== null) {
       try {
@@ -2319,7 +2319,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       } catch (error) {
         setDownloadFailed(true);
         setDownloadMessage(error?.message || '페이지 범위를 확인해주세요.');
-        return;
+        return false;
       }
     }
     setDownloadStatus('pdf-preparing');
@@ -2370,12 +2370,14 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         successMessage = `${selectedPages.length}페이지를 PDF로 추출했습니다.`;
       }
       const encryptionSource = await currentEncryptionSource();
-      setDownloadPreview({ bytes: new Uint8Array(sourceBytes), fileName, pageCount: selectedPages?.length || pageNumbers.length, isExtract: Boolean(selectedPages), successMessage, notice: previewNotice, encryptionSource, suggestEncryption: Boolean(encryptionSource || file.docPilotContainsEncryptedSource || previewNotice) });
+      setDownloadPreview({ bytes: new Uint8Array(sourceBytes), fileName: options.fileName || fileName, pageCount: selectedPages?.length || pageNumbers.length, isExtract: Boolean(selectedPages), successMessage, notice: previewNotice, encryptionSource, suggestEncryption: Boolean(encryptionSource || file.docPilotContainsEncryptedSource || previewNotice) });
       setDownloadStatus('pdf-preview');
+      return true;
     } catch (error) {
       setDownloadFailed(true);
       setDownloadStatus('idle');
       setDownloadMessage(`PDF 미리보기를 준비하지 못했습니다. ${error?.message || ''}`.trim());
+      return false;
     }
   };
 
@@ -2634,6 +2636,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
   };
 
   useImperativeHandle(ref, () => ({
+    getCurrentPageNumber() { return getVisiblePageNumber(); },
+    getPageCount() { return pageNumbers.length; },
     async getDocumentText() {
       try {
         const pages = await ensurePdfTextPages();
@@ -2647,7 +2651,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       const pages = await ensurePdfTextPages();
       const documentText = pages.map((page) => ({
         page: page.pageNumber,
-        lines: page.lines.map((line) => line.text)
+        lines: page.lines
       }));
       const sourceResults = searchKeywordInDocument(documentText, keyword, options);
       const replacementResults = getReplacementSearchResults(keyword, options, movableTexts);
@@ -2703,7 +2707,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       const pages = await ensurePdfTextPages();
       const documentText = pages.map((page) => ({
         page: page.pageNumber,
-        lines: page.lines.map((line) => line.text)
+        lines: page.lines
       }));
       const allResults = searchKeywordInDocument(
         documentText,
@@ -2773,7 +2777,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
       const pages = await ensurePdfTextPages();
       const matchMode = options.matchMode === 'exact' ? 'exact' : 'contains';
       const matches = searchKeywordInDocument(pages.map((page) => ({
-        page: page.pageNumber, lines: page.lines.map((line) => line.text)
+        page: page.pageNumber, lines: page.lines
       })), originalText, { matchMode });
       const pageMatchOrdinals = new Map();
       const positionedMatches = matches.map((match) => {
@@ -2939,6 +2943,27 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     },
     resetAllDocumentChanges() {
       return resetAllDocumentChanges();
+    },
+    executeViewerCommand(operation) {
+      if (operation?.command === 'set-view-mode' && ['scroll', 'page'].includes(operation.mode)) {
+        setViewMode(operation.mode); return { ok: true };
+      }
+      if (operation?.command === 'go-to-page') {
+        const maxPage = Math.max(pageNumbers.length, 1);
+        const target = operation.page === 'first' ? 1
+          : operation.page === 'last' ? maxPage
+            : operation.page === 'middle' ? Math.ceil(maxPage / 2)
+              : Number.isFinite(Number(operation.relative)) ? currentPage + Number(operation.relative)
+                : Number(operation.page);
+        if (!Number.isFinite(target)) return { ok: false, message: '이동할 페이지를 확인하지 못했습니다.' };
+        setCurrentPage(Math.min(maxPage, Math.max(1, Math.round(target)))); return { ok: true };
+      }
+      if (operation?.command === 'fit' && ['width', 'page'].includes(operation.mode)) {
+        if (viewMode === 'scroll') fitPageAnchorRef.current = currentPage;
+        onResetZoom?.();
+        setFitMode(operation.mode); return { ok: true };
+      }
+      return { ok: false, message: 'PDF 뷰어에서 요청한 작업을 지원하지 않습니다.' };
     },
     downloadAsPdf,
     scrollToHighlightResult(result) {
@@ -3257,26 +3282,6 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             title={areaTextReplaceMode ? '영역 지정을 종료합니다.' : '마우스로 PDF 페이지의 편집 영역을 지정합니다.'}
           >
             영역지정
-          </button>
-          <button
-            type="button"
-            className={`pdf-text-move-button ${textMoveMode ? 'active' : ''}`}
-            onClick={() => {
-              if (editingMovableText) commitEditMovableText();
-              const next = !textMoveMode;
-              setTextMoveMode(next);
-              setTextAddMode(false);
-              setTableAddMode(false);
-              setTextReplaceMode(false);
-              setAreaTextReplaceMode(false);
-              setSelectedMovableTextId(null);
-              setEditingMovableText(null);
-            }}
-            disabled={!isEditMode}
-            aria-pressed={textMoveMode}
-            title={textMoveMode ? 'PDF 텍스트 이동을 종료합니다.' : 'PDF 본문에서 한 줄의 텍스트를 선택해 이동합니다.'}
-          >
-            텍스트 이동
           </button>
           <button
             type="button"

@@ -2150,7 +2150,10 @@ function PdfPage({
           pageNumber,
           textItems: textContent?.items,
           viewport,
-          lineText: target.lineText ?? target.fullText ?? target.text
+          lineText: target.lineText ?? target.fullText ?? target.text,
+          lineY: target.lineY,
+          matchIndex: target.matchIndex,
+          matchMode: entry.matchMode
           }).map((box) => ({ ...box, color: target.color || entry.color })))
         ];
       }
@@ -2351,7 +2354,10 @@ function PdfPage({
           pageNumber,
           textItems: textContent?.items,
           viewport,
-          lineText: findResult?.lineText ?? findResult?.fullText ?? findResult?.text
+          lineText: findResult?.lineText ?? findResult?.fullText ?? findResult?.text,
+          lineY: findResult?.lineY,
+          matchIndex: findResult?.matchIndex,
+          matchMode: 'contains'
         });
       }
       setFindBoxes(boxes.map((box) => ({ ...box, page: pageNumber })));
@@ -2856,9 +2862,10 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
                     onCancel={onEditCancel}
                   />
                 ) : (
-                  <input
+                  <textarea
                     className="movable-text-edit-input"
                     value={editingMovableText.value}
+                    rows={1}
                     style={{
                       backgroundColor: item.backgroundColor || '#ffffff',
                       fontFamily: item.renderFontFamily || 'DocPilotReplacement',
@@ -2874,8 +2881,10 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
                     onDoubleClick={(event) => event.stopPropagation()}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {
-                        event.preventDefault();
-                        onEditCommit?.();
+                        if (!event.altKey) {
+                          event.preventDefault();
+                          onEditCommit?.();
+                        }
                       } else if (event.key === 'Escape') {
                         event.preventDefault();
                         onEditCancel?.();
@@ -3051,6 +3060,8 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
   const editorRef = useRef(null);
   const baseRunsRef = useRef([]);
   const composingRef = useRef(false);
+  const commitPendingRef = useRef(false);
+  const onCommitRef = useRef(onCommit);
   const [linkMenu, setLinkMenu] = useState(null);
   const runPreviewKey = (item.fontRuns || []).map((run) => run.renderFontFamily || '').join('\u0000');
 
@@ -3114,6 +3125,28 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
     if (selection) onSelectionChange?.(selection);
   };
 
+  const requestCommit = () => {
+    if (commitPendingRef.current) return;
+    commitPendingRef.current = true;
+    onCommitRef.current?.();
+  };
+
+  useEffect(() => {
+    onCommitRef.current = onCommit;
+  }, [onCommit]);
+
+  useEffect(() => {
+    commitPendingRef.current = false;
+    const commitWhenClickingOutside = (event) => {
+      const target = event.target;
+      if (!(target instanceof Element) || editorRef.current?.contains(target)) return;
+      if (target.closest('.pdf-text-edit-toolbar, .docpilot-hyperlink-menu')) return;
+      requestCommit();
+    };
+    document.addEventListener('pointerdown', commitWhenClickingOutside, true);
+    return () => document.removeEventListener('pointerdown', commitWhenClickingOutside, true);
+  }, [editing.id]);
+
   const handleInput = () => {
     const editor = editorRef.current;
     if (!editor || composingRef.current) return;
@@ -3147,7 +3180,7 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
       contentEditable
       suppressContentEditableWarning
       role="textbox"
-      aria-multiline={item.type === 'addedText' ? 'true' : 'false'}
+      aria-multiline="true"
       aria-label="혼합 글꼴 PDF 텍스트 편집"
       spellCheck={false}
       onInput={handleInput}
@@ -3170,10 +3203,10 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
         if (event.isComposing || event.nativeEvent.isComposing) return;
         if (event.key === 'Enter') {
           event.preventDefault();
-          if (item.type === 'addedText' && !event.ctrlKey && !event.metaKey) {
+          if (event.altKey) {
             document.execCommand('insertLineBreak');
             handleInput();
-          } else onCommit?.();
+          } else requestCommit();
         } else if (event.key === 'Escape') {
           event.preventDefault();
           if (linkMenu) setLinkMenu(null);
@@ -3186,7 +3219,7 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
       }}
       onBlur={() => {
         window.setTimeout(() => {
-          if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar, .docpilot-hyperlink-menu')) onCommit?.();
+          if (!document.activeElement?.closest?.('.pdf-text-edit-toolbar, .docpilot-hyperlink-menu')) requestCommit();
         }, 0);
       }}
     />

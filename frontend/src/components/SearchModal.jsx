@@ -152,7 +152,9 @@ function SearchModal({
       titleId="search-modal-title"
       className="search-panel"
       initialWidth={600}
-      initialHeight={670}
+      initialHeight={390}
+      minHeight={360}
+      autoHeight
       onClose={handleClose}
     >
 

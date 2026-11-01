@@ -9,7 +9,7 @@ export const INITIAL_CHAT_MESSAGES = [
   {
     id: 'welcome-ai',
     role: 'assistant',
-    text: '문서 작업 요청만 지원합니다. 정확한 문서 검색 또는 위치 하이라이트를 요청해주세요.'
+    text: '문서 검색, 하이라이트, 텍스트 변경, 보기·이력 명령을 요청할 수 있습니다.'
   }
 ];
 

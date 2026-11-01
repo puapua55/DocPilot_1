@@ -67,6 +67,7 @@ export function searchKeywordInDocument(documentText, keyword, options = {}) {
       const rawLineText = typeof lineValue === 'string'
         ? lineValue
         : String(lineValue?.text ?? '');
+      const lineY = typeof lineValue === 'string' ? NaN : Number(lineValue?.y);
       const seenWordRanges = new Set();
 
       findKeywordMatches(rawLineText, normalizedKeyword, matchMode).forEach((matchIndex, occurrenceIndex) => {
@@ -85,6 +86,7 @@ export function searchKeywordInDocument(documentText, keyword, options = {}) {
           type: 'pdf',
           pageNumber,
           lineNumber: lineIndex + 1,
+          lineY: Number.isFinite(lineY) ? lineY : null,
           text: rawLineText,
           lineText: rawLineText,
           originalText: matchedText,

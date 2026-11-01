@@ -49,15 +49,15 @@ function makeOutputName(fileName = 'document.docx') {
   return `${String(fileName).replace(/\.docx?$/i, '')}_highlighted.docx`;
 }
 
-export async function convertDocxFileWithHighlights(file, highlights = []) {
+export async function convertDocxFileWithHighlights(file, highlights = [], requestedFileName = null) {
   if (!file) throw new Error('DOCX 파일이 선택되지 않았습니다.');
   if (!highlights.length) {
-    downloadBlob(file, file.name);
-    return { outputFileName: file.name, highlightCount: 0 };
+    downloadBlob(file, requestedFileName || file.name);
+    return { outputFileName: requestedFileName || file.name, highlightCount: 0 };
   }
 
   const blob = await makeDocxFileWithHighlights(file, highlights);
-  const outputFileName = makeOutputName(file.name);
+  const outputFileName = requestedFileName || makeOutputName(file.name);
   downloadBlob(blob, outputFileName);
   return { outputFileName, highlightCount: highlights.length };
 }
