@@ -248,11 +248,10 @@ async function capturePage(page, html2canvas, drawingAssets, imageCursor, xmlSha
   const visualElements = getVisualElements(page);
   const captureMarker = `docx-pdf-page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   page.setAttribute('data-docx-pdf-page', captureMarker);
-  const ignoredElements = visualElements.map((element) => {
-    const hadIgnoreAttribute = element.hasAttribute('data-html2canvas-ignore');
-    const previousValue = element.getAttribute('data-html2canvas-ignore');
-    element.setAttribute('data-html2canvas-ignore', 'true');
-    return { element, hadIgnoreAttribute, previousValue };
+  const visualMarkers = visualElements.map((element, index) => {
+    const previousValue = element.getAttribute('data-docx-pdf-visual');
+    element.setAttribute('data-docx-pdf-visual', `${captureMarker}-${index}`);
+    return { element, previousValue };
   });
   try {
     const canvas = await html2canvas(page, {
@@ -266,6 +265,14 @@ async function capturePage(page, html2canvas, drawingAssets, imageCursor, xmlSha
         clonedPage.style.transform = 'none';
         clonedPage.style.width = `${page.offsetWidth}px`;
         clonedPage.style.height = `${page.offsetHeight}px`;
+        // html2canvas-ignore removes the node from its cloned DOM, collapsing
+        // its line/paragraph height and pulling following text/tables upward.
+        // Hide only the paint in the clone; retain each visual's layout box.
+        clonedPage.querySelectorAll('[data-docx-pdf-visual]').forEach((element) => {
+          [element, ...element.querySelectorAll('*')].forEach((node) => {
+            node.style.setProperty('visibility', 'hidden', 'important');
+          });
+        });
         materializeDocxDecorations(clonedPage);
         clonedPage.querySelectorAll('table, td, th').forEach((element) => {
           element.style.boxSizing = 'border-box';
@@ -286,18 +293,14 @@ async function capturePage(page, html2canvas, drawingAssets, imageCursor, xmlSha
         if (isXmlShapeElement(element) && xmlShapes.length) return null;
         if (element.tagName === 'IMG') {
           // Capture the actual rendered image, including added data-URL JPGs.
-          // html2canvas(element) skips it while its ignore attribute is set.
+          // Use the actual loaded source without modifying the live layout.
           if (!element.complete) await element.decode();
           visualCanvas = document.createElement('canvas');
           visualCanvas.width = Math.max(1, Math.round(rect.width * CAPTURE_SCALE));
           visualCanvas.height = Math.max(1, Math.round(rect.height * CAPTURE_SCALE));
           visualCanvas.getContext('2d').drawImage(element, 0, 0, visualCanvas.width, visualCanvas.height);
         } else {
-          const ignore = element.getAttribute('data-html2canvas-ignore');
-          element.removeAttribute('data-html2canvas-ignore');
-          try {
-            visualCanvas = await html2canvas(element, { scale: CAPTURE_SCALE, backgroundColor: null, useCORS: true, ignoreElements: (candidate) => candidate.tagName === 'IFRAME' });
-          } finally { element.setAttribute('data-html2canvas-ignore', ignore || 'true'); }
+          visualCanvas = await html2canvas(element, { scale: CAPTURE_SCALE, backgroundColor: null, useCORS: true, ignoreElements: (candidate) => candidate.tagName === 'IFRAME' });
         }
       } catch (error) {
         if (element.tagName === 'IMG') throw new Error(`이미지를 PDF에 저장하지 못했습니다: ${element.alt || '첨부 이미지'}`, { cause: error });
@@ -326,9 +329,9 @@ async function capturePage(page, html2canvas, drawingAssets, imageCursor, xmlSha
       overlays: [...overlays.filter(Boolean), ...xmlShapeOverlays]
     };
   } finally {
-    ignoredElements.forEach(({ element, hadIgnoreAttribute, previousValue }) => {
-      if (hadIgnoreAttribute) element.setAttribute('data-html2canvas-ignore', previousValue);
-      else element.removeAttribute('data-html2canvas-ignore');
+    visualMarkers.forEach(({ element, previousValue }) => {
+      if (previousValue !== null) element.setAttribute('data-docx-pdf-visual', previousValue);
+      else element.removeAttribute('data-docx-pdf-visual');
     });
     page.removeAttribute('data-docx-pdf-page');
   }
