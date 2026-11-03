@@ -418,6 +418,8 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   const [editingEnabled, setEditingEnabled] = useState(false);
   const [hasActiveParagraph, setHasActiveParagraph] = useState(false);
   const [downloadPreview, setDownloadPreview] = useState(null);
+  const [downloadMessage, setDownloadMessage] = useState('');
+  const [downloadFailed, setDownloadFailed] = useState(false);
   const [fontName, setFontName] = useState('Arial');
   const [availableFonts, setAvailableFonts] = useState([]);
   const [fontSize, setFontSize] = useState('12');
@@ -2205,19 +2207,28 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   };
 
   const openDownloadPreview = async (format, fileName) => {
-    if (format === 'DOCX') {
-      const blob = await prepareEditedDocx();
-      setDownloadPreview({ documentFormat: 'DOCX', bytes: new Uint8Array(await blob.arrayBuffer()),
-        fileName: fileName || `${file.name.replace(/\.docx$/i, '')}_edited.docx`, pageCount: Math.max(pageCount, 1), suggestEncryption: Boolean(file.docPilotWasEncrypted) });
-    } else {
-      const root = viewerBodyRef.current;
-      root?.classList.add('docx-exporting');
-      try {
-        const result = await convertDocxDomToPdf({ root, fileName: fileName || file?.name, file, download: false });
-        setDownloadPreview({ documentFormat: 'PDF', bytes: result.outputBytes, fileName: result.outputFileName, pageCount: result.pages, suggestEncryption: Boolean(file.docPilotWasEncrypted) });
-      } finally { root?.classList.remove('docx-exporting'); }
+    setDownloadMessage('');
+    setDownloadFailed(false);
+    try {
+      if (format === 'DOCX') {
+        const blob = await prepareEditedDocx();
+        setDownloadPreview({ documentFormat: 'DOCX', bytes: new Uint8Array(await blob.arrayBuffer()),
+          fileName: fileName || `${file.name.replace(/\.docx$/i, '')}_edited.docx`, pageCount: Math.max(pageCount, 1), suggestEncryption: Boolean(file.docPilotWasEncrypted) });
+      } else {
+        const root = viewerBodyRef.current;
+        root?.classList.add('docx-exporting');
+        try {
+          const result = await convertDocxDomToPdf({ root, fileName: fileName || file?.name, file, download: false });
+          setDownloadPreview({ documentFormat: 'PDF', bytes: result.outputBytes, fileName: result.outputFileName, pageCount: result.pages, suggestEncryption: Boolean(file.docPilotWasEncrypted) });
+        } finally { root?.classList.remove('docx-exporting'); }
+      }
+      return true;
+    } catch (error) {
+      console.error('[WordViewer] download preparation failed:', error);
+      setDownloadFailed(true);
+      setDownloadMessage('다운로드 실패했습니다');
+      return false;
     }
-    return true;
   };
 
   const confirmDownload = async ({ password }) => {
@@ -2235,6 +2246,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     anchor.download = downloadPreview.fileName;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setDownloadMessage('다운로드 완료되었습니다');
     setDownloadPreview(null);
   };
 
@@ -2726,6 +2738,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
         </div>
       </div>
       {downloadPreview ? <PdfDownloadPreview {...downloadPreview} onCancel={() => setDownloadPreview(null)} onConfirm={confirmDownload} /> : null}
+      {downloadMessage ? <div className={`pdf-visual-convert-message${downloadFailed ? ' is-error' : ''}`} role={downloadFailed ? 'alert' : 'status'}>{downloadMessage}</div> : null}
       {isResetConfirmOpen ? (
         <div className="docx-reset-confirm-backdrop" role="presentation">
           <div className="docx-reset-confirm" role="dialog" aria-modal="true" aria-labelledby="docx-reset-confirm-title">

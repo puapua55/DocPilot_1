@@ -2328,10 +2328,9 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     try {
       await waitForHighlightGeometry();
       const changes = getPendingPdfChanges();
-      const { tablesChanged } = changes;
       let sourceBytes = changes.hasChanges ? null : await file.arrayBuffer();
       let fileName = file.name;
-      let successMessage = '';
+      let successMessage = '다운로드 완료되었습니다';
       let previewNotice = '';
       if (changes.hasChanges) {
         const result = await onVisualConvert?.({ ...changes, download: false });
@@ -2350,12 +2349,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
             matchedCommandCount: item.matchedCommandCount,
             commandRange: item.commandRange
           })));
-          const localFontLabel = result.replacementFontSource === 'local'
-            ? ` · PC 원본 계열 글꼴 적용 ${result.localFontAppliedCount || 0}건${result.replacementFontFamily ? ` (${result.replacementFontFamily})` : ''}`
-            : '';
-          successMessage = `PDF 저장 완료 · 원본 텍스트 제거 ${result.directEditCount}건 · 배경색 덮기 ${result.fallbackCount}건 · 직접 제거 미확인 ${result.noCoverUnresolvedCount || 0}건 · PDF 내부 원본 글꼴 재사용 ${result.fontPreservedCount}건${localFontLabel}`;
         }
-        if (tablesChanged && !result?.movableTextCount) successMessage = `PDF 저장 완료 · 표 ${result?.tableCount ?? tables.length}개 반영`;
       }
       sourceBytes = await applyInternalLinkEdits(sourceBytes, internalLinkEdits);
       if (selectedPages) {
@@ -2367,7 +2361,7 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
         });
         const selectionLabel = selection.replace(/\s+/g, '').replace(/,/g, '_');
         fileName = `${file.name.replace(/\.pdf$/i, '')}_pages_${selectionLabel}.pdf`;
-        successMessage = `${selectedPages.length}페이지를 PDF로 추출했습니다.`;
+        successMessage = '추출 완료되었습니다';
       }
       const encryptionSource = await currentEncryptionSource();
       setDownloadPreview({ bytes: new Uint8Array(sourceBytes), fileName: options.fileName || fileName, pageCount: selectedPages?.length || pageNumbers.length, isExtract: Boolean(selectedPages), successMessage, notice: previewNotice, encryptionSource, suggestEncryption: Boolean(encryptionSource || file.docPilotContainsEncryptedSource || previewNotice) });
@@ -2376,7 +2370,8 @@ const PdfJsViewer = forwardRef(function PdfJsViewer({ file, highlightKeyword, se
     } catch (error) {
       setDownloadFailed(true);
       setDownloadStatus('idle');
-      setDownloadMessage(`PDF 미리보기를 준비하지 못했습니다. ${error?.message || ''}`.trim());
+      console.error('[PdfJsViewer] download preparation failed:', error);
+      setDownloadMessage(selection !== null ? '추출 실패하였습니다.' : '다운로드 실패했습니다');
       return false;
     }
   };

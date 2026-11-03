@@ -71,6 +71,7 @@ export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtra
   const docxPreviewRef = useRef(null);
   const isDocx = documentFormat === 'DOCX';
   const title = isExtract ? '페이지 추출 미리보기' : `${documentFormat} 다운로드 미리보기`;
+  const failureMessage = isExtract ? '추출 실패하였습니다.' : '다운로드 실패했습니다';
 
   useEffect(() => {
     let active = true;
@@ -87,17 +88,23 @@ export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtra
             className: 'docx-download', inWrapper: true, breakPages: true, useBase64URL: true
           });
         }).then(() => { if (active) setPdf({ numPages: container.querySelectorAll('section.docx-download').length }); })
-        .catch(loadError => { if (active) setError(loadError.message || 'DOCX 미리보기를 열지 못했습니다.'); });
+        .catch(loadError => {
+          console.error('[DownloadPreview] DOCX preview failed:', loadError);
+          if (active) setError(failureMessage);
+        });
       return () => { active = false; };
     }
     loadPdfDocument(bytes.slice().buffer, { onLoadingTask: (task) => { loadingTask = task; } })
       .then((result) => { if (active) setPdf(result.pdf); })
-      .catch((loadError) => { if (active) setError(loadError?.message || 'PDF 미리보기를 열지 못했습니다.'); });
+      .catch((loadError) => {
+        console.error('[DownloadPreview] PDF preview failed:', loadError);
+        if (active) setError(failureMessage);
+      });
     return () => {
       active = false;
       loadingTask?.destroy().catch(() => {});
     };
-  }, [bytes, isDocx]);
+  }, [bytes, isDocx, failureMessage]);
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -126,7 +133,7 @@ export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtra
       });
     } catch (saveError) {
       console.error('[DownloadPreview] save failed:', saveError);
-      setEncryptionError(saveError?.message || `${documentFormat} 저장에 실패했습니다.`);
+      setEncryptionError(failureMessage);
       setSaving(false);
     }
   };
@@ -145,7 +152,7 @@ export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtra
       </header>
       <div ref={scrollRef} className="pdf-download-preview-scroll" aria-label={`스크롤 ${documentFormat} 미리보기`}>
         {isDocx ? <div ref={docxPreviewRef} className="docx-download-preview-document" /> : null}
-        {error ? <p role="alert">{error}</p> : pdf ? !isDocx && Array.from({ length: pdf.numPages }, (_, index) => (
+        {error ? <p className="pdf-download-encryption-error" role="alert">{error}</p> : pdf ? !isDocx && Array.from({ length: pdf.numPages }, (_, index) => (
           <PreviewPage key={index + 1} pdf={pdf} pageNumber={index + 1} scrollRoot={scrollRef} />
         )) : <p role="status">{documentFormat} 미리보기를 준비 중입니다...</p>}
       </div>

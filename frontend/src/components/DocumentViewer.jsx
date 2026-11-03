@@ -171,7 +171,7 @@ const DocumentViewer = forwardRef(function DocumentViewer({
   const downloadCurrentDocx = async (fileName = null) => {
     if (!file) return false;
     try {
-      if (await viewerRef.current?.downloadEditedDocx?.(fileName)) return true;
+      if (viewerRef.current?.downloadEditedDocx) return await viewerRef.current.downloadEditedDocx(fileName);
     } catch (error) {
       console.error('[DocumentViewer] DOCX edit download failed:', error);
       window.alert(`DOCX 저장에 실패했습니다. ${error.message || error}`);
