@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-export default function PdfPasswordDialog({ fileName, onConfirm, onCancel }) {
+export default function PdfPasswordDialog({ fileName, documentFormat = 'PDF', onConfirm, onCancel }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [opening, setOpening] = useState(false);
@@ -30,15 +30,15 @@ export default function PdfPasswordDialog({ fileName, onConfirm, onCancel }) {
 
   return createPortal(
     <div className="pdf-download-preview-backdrop">
-      <form className="pdf-password-dialog" role="dialog" aria-modal="true" aria-label="PDF 비밀번호 입력" onSubmit={submit}>
-        <h2>PDF 비밀번호 입력</h2>
+      <form className="pdf-password-dialog" role="dialog" aria-modal="true" aria-label={`${documentFormat} 비밀번호 입력`} onSubmit={submit}>
+        <h2>{documentFormat} 비밀번호 입력</h2>
         <p><strong>{fileName}</strong> 파일을 열려면 비밀번호가 필요합니다.</p>
         <input
           ref={inputRef}
           type="password"
           value={password}
           onChange={(event) => { setPassword(event.target.value); setError(''); }}
-          aria-label="PDF 열기 비밀번호"
+          aria-label={`${documentFormat} 열기 비밀번호`}
           autoComplete="off"
           disabled={opening}
         />

@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { readDocxTextStyle } from './docxTextStyle.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -134,7 +135,7 @@ function replaceParagraph(paragraph, element) {
   });
   while (walker.nextNode()) {
     const node = walker.currentNode;
-    if (node.nodeType === Node.TEXT_NODE) appendRun(paragraph, node.nodeValue, window.getComputedStyle(node.parentElement));
+    if (node.nodeType === Node.TEXT_NODE) appendRun(paragraph, node.nodeValue, readDocxTextStyle(node.parentElement, element));
     else if (node.nodeName === 'BR') {
       const run = create(paragraph.ownerDocument, 'r');
       run.appendChild(create(paragraph.ownerDocument, 'br'));

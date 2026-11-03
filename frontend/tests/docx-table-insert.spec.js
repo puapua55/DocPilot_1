@@ -1,3 +1,4 @@
+import { downloadDocxFromPreview } from './docx-download-helper.mjs';
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import JSZip from 'jszip';
@@ -20,10 +21,7 @@ test('Word 표 추가는 뷰어에 나타나고 DOCX에 저장된다', async ({ 
   await page.locator('.docx-added-table td').first().click();
   await expect(page.locator('.docx-table-toolbar')).toBeVisible();
   await page.keyboard.type('표 값');
-  const [download] = await Promise.all([
-    page.waitForEvent('download'),
-    page.locator('.viewer-download-button.docx').click()
-  ]);
+  const download = await downloadDocxFromPreview(page);
   const zip = await JSZip.loadAsync(await readFile(await download.path()));
   const xml = await zip.file('word/document.xml').async('string');
   expect(xml).toContain('새 문단');

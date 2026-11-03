@@ -3,6 +3,7 @@ import {
   PDFStream, PDFString, decodePDFRawStream, degrees, rgb
 } from 'pdf-lib';
 import { analyzePdfFont } from './pdfFontAnalysis.js';
+import { pdfTextDecorationThickness } from './pdfTextDecoration.js';
 
 // Match complete horizontal text runs by decoded text AND geometry. Native
 // moves reuse the original encoded bytes and font resources without reshaping.
@@ -876,7 +877,7 @@ export function replacePdfTextInContentStream(pdfDocument, replacements, replace
           page.drawLine({
             start: { x, y: lineY },
             end: { x: x + measuredWidth, y: lineY },
-            thickness: Math.max(1, fontSize * 0.06),
+            thickness: pdfTextDecorationThickness(fontSize),
             color: textColor
           });
         }

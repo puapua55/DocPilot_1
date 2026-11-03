@@ -8,6 +8,7 @@ import { autoLinkFontRuns, removeHyperlinkFromRuns, safeHyperlink } from '../ser
 import { tableBorderDashArray, tableBorderSegments, tableCellAt, tablePaste, tableResizeBoundary, tableSizes, tableStyle, tableVisibleCells } from '../services/pdfTableModel.js';
 import { ensureReplacementFont, resolveReplacementPreviewFont } from '../services/pdfReplacementFont';
 import { describePdfTextFonts } from '../services/pdfFontPreview';
+import { pdfTextDecorationThickness } from '../services/pdfTextDecoration.js';
 import {
   calculateHighlightBoxes,
   calculateFindBoxesFromPdfText,
@@ -2824,6 +2825,7 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
               fontWeight: item.fontWeight === 'bold' ? 700 : (item.fontWeight || 'normal'),
               fontStyle: item.fontStyle || 'normal',
               textDecoration: item.textDecoration || 'none',
+              textDecorationThickness: `${pdfTextDecorationThickness(item.fontSize) * scale}px`,
               letterSpacing: `${(Number(item.letterSpacing) || 0) * scale}px`,
               textAlign: editingMovableText?.id === item.id ? (editingMovableText.textAlign || 'left') : (item.textAlign || 'left'),
               textShadow: 'none'
@@ -2872,6 +2874,7 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
                       fontWeight: editingMovableText.fontWeight === 'bold' ? 700 : (editingMovableText.fontWeight || 'normal'),
                       fontStyle: editingMovableText.fontStyle || 'normal',
                       textDecoration: editingMovableText.textDecoration || 'none',
+                      textDecorationThickness: `${pdfTextDecorationThickness(editingMovableText.fontSize) * scale}px`,
                       color: editingMovableText.color || '#111111',
                       letterSpacing: `${Number(editingMovableText.letterSpacing) || 0}px`,
                       textAlign: editingMovableText.textAlign || 'left',
@@ -2933,6 +2936,8 @@ function MovableTextLayer({ items, scale, selectedId, editingMovableText, textMo
                       fontStyle: run.fontStyle || 'normal',
                       lineHeight: '1',
                       textDecoration: run.textDecoration || item.textDecoration || 'none',
+                      textDecorationThickness: `${pdfTextDecorationThickness(Math.max(1, Number(run.fontSize || item.fontSize) || 10)
+                        * (Number(item.fontSize) || 10) / Math.max(1, Number(item.autoFitBaseFontSize || item.fontSize) || 10)) * scale}px`,
                       color: run.color || item.color,
                       letterSpacing: `${Number(item.letterSpacing || run.letterSpacing) * scale}px`,
                       whiteSpace: item.type === 'addedText' ? 'pre-wrap' : 'pre'
@@ -3094,6 +3099,7 @@ function RichMovableTextEditor({ editing, item, scale, onChange, onSelectionChan
       span.style.fontStyle = run.fontStyle || 'normal';
       span.style.lineHeight = '1';
       span.style.textDecoration = run.textDecoration || editing.textDecoration || 'none';
+      span.style.textDecorationThickness = `${pdfTextDecorationThickness(Number.parseFloat(span.style.fontSize) / scale) * scale}px`;
       span.style.color = run.color || editing.color || '#111111';
       editor.append(span);
     });

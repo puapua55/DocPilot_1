@@ -1,5 +1,5 @@
-import fontkit from '@pdf-lib/fontkit';
-import { PDFDocument, PDFHexString, PDFName, PDFString, TextRenderingMode, degrees, rgb, setLineWidth, setStrokingRgbColor, setTextRenderingMode } from 'pdf-lib';
+import { PDFDocument, PDFHexString, PDFName, PDFString, degrees, rgb } from 'pdf-lib';
+import { embedPdfFont } from './pdfFontEmbedService.js';
 import { tableBorderDashArray, tableBorderSegments, tableSizes, tableSpans, tableStyle, tableVisibleCells } from './pdfTableModel.js';
 
 const TABLE_KEY = PDFName.of('DocPilotTablesV1');
@@ -118,7 +118,7 @@ function offsets(sizes, dimension) {
   return positions;
 }
 
-function drawTable(page, table, font) {
+function drawTable(page, table, fonts) {
   const { x, y, width, height } = table.currentRect;
   const xs = offsets(table.columnWidths, width);
   const ys = offsets(table.rowHeights, height);
@@ -134,12 +134,13 @@ function drawTable(page, table, font) {
     rectangle(page, table, left, top, right - left, bottom - top, fill);
   });
   tableBorderSegments(table).forEach((edge) => line(page, table, edge));
-  if (!font) return;
+  if (!fonts) return;
   const pageRotation = ((Number(page.getRotation()?.angle) || 0) % 360 + 360) % 360;
   for (const cell of visibleCells) {
       const value = table.cells[cell.index];
       if (!value) continue;
       const style = table.cellStyles[cell.index];
+      const font = style.bold ? fonts.bold : fonts.regular;
       const cellWidth = xs[cell.column + cell.colSpan] - xs[cell.column];
       const cellHeight = ys[cell.row + cell.rowSpan] - ys[cell.row];
       const availableWidth = Math.max(1, cellWidth - 8);
@@ -155,24 +156,24 @@ function drawTable(page, table, font) {
         const textWidth = font.widthOfTextAtSize(text, size);
         const leftOffset = style.align === 'right' ? cellWidth - textWidth - 4 : style.align === 'center' ? (cellWidth - textWidth) / 2 : 4;
         const origin = point(x + xs[cell.column] + leftOffset, y + ys[cell.row] + topOffset + size + lineIndex * lineHeight, page, table);
-        if (style.bold) {
-          const color = pdfColor(style.color);
-          page.pushOperators(setTextRenderingMode(TextRenderingMode.FillAndOutline), setLineWidth(size * 0.025), setStrokingRgbColor(color.red, color.green, color.blue));
-        }
         page.drawText(text, { x: origin.x, y: origin.y, font, size, color: pdfColor(style.color), rotate: degrees(pageRotation) });
-        if (style.bold) page.pushOperators(setTextRenderingMode(TextRenderingMode.Fill));
       });
   }
 }
 
-async function tableFont(pdfDocument) {
+async function tableFonts(pdfDocument, tables) {
   const response = await fetch(FONT_URL);
   if (!response.ok) throw new Error('표 텍스트 글꼴을 불러올 수 없습니다.');
   const base64 = (await response.text()).trim();
   const binary = atob(base64);
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  pdfDocument.registerFontkit(fontkit);
-  return pdfDocument.embedFont(bytes, { subset: true });
+  const fonts = {};
+  for (const bold of [false, true]) {
+    if (tables.some((table) => table.cells.some((text, index) => text && table.cellStyles[index].bold === bold))) {
+      fonts[bold ? 'bold' : 'regular'] = await embedPdfFont(pdfDocument, bytes, { bold });
+    }
+  }
+  return fonts;
 }
 
 export async function writePdfTables(pdfDocument, inputTables = []) {
@@ -187,12 +188,12 @@ export async function writePdfTables(pdfDocument, inputTables = []) {
     }
   });
   const tables = inputTables.map((item) => normalizedTable(item, pages.length)).filter(Boolean);
-  const font = tables.some((table) => table.cells.some(Boolean)) ? await tableFont(pdfDocument) : null;
+  const fonts = tables.some((table) => table.cells.some(Boolean)) ? await tableFonts(pdfDocument, tables) : null;
   const stored = [];
   for (const table of tables) {
     const page = pages[table.pageNumber - 1];
     page.getContentStream(false);
-    drawTable(page, table, font);
+    drawTable(page, table, fonts);
     stored.push({ ...table, streamObjectNumber: page.contentStreamRef.objectNumber });
   }
   pdfDocument.catalog.set(TABLE_KEY, PDFHexString.fromText(JSON.stringify({ version: 1, tables: stored })));

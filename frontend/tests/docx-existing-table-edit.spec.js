@@ -1,3 +1,4 @@
+import { downloadDocxFromPreview } from './docx-download-helper.mjs';
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import JSZip from 'jszip';
@@ -21,9 +22,7 @@ test('existing Word table remains selected and its cell can be edited', async ({
   const first = table.locator('td, th').first();
   await first.click();
   await page.keyboard.type('수정');
-  const [download] = await Promise.all([
-    page.waitForEvent('download'), page.locator('.viewer-download-button.docx').click()
-  ]);
+  const download = await downloadDocxFromPreview(page);
   const zip = await JSZip.loadAsync(await readFile(await download.path()));
   const xml = await zip.file('word/document.xml').async('string');
   expect(xml).toContain('수정');

@@ -421,7 +421,8 @@ test('Korean fallback embeds the complete font and preserves every display chara
   assert.equal(debug.drawnText, fallbackText);
   assert.equal(debug.drawnTextLength, [...fallbackText].length);
   const saved = (await inspect(result.outputBytes)).items;
-  assert.ok(saved.some((entry) => entry.str === fallbackText));
+  // PDF.js may split a valid embedded-font line at its spaces.
+  assert.ok(saved.map((entry) => entry.str).join(' ').includes(fallbackText));
 });
 
 test('all fallback covers are painted before moved text at another source position', async () => {

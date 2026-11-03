@@ -10,6 +10,8 @@ import {
 // loadPdfDocument is imported dynamically when browser DOM is available
 import { describePdfTextFonts } from './pdfFontPreview.js';
 import { writePdfTables } from './pdfTableService.js';
+import { createPdfFont, embedPdfFont } from './pdfFontEmbedService.js';
+import { pdfTextDecorationThickness } from './pdfTextDecoration.js';
 
 const FONT_URL = '/fonts/NotoSansKR-Regular.base64.txt';
 const TEXT_BASELINE_RATIO = 0.84;
@@ -44,9 +46,13 @@ function parseHighlightPaint(value) {
   };
 }
 
-function measurePdfText(font, text, size) {
+function measurePdfText(font, text, size, perCharacter = false) {
   try {
-    const width = font?.widthOfTextAtSize?.(text, size);
+    // Match drawPdfTextWithLetterSpacing: shaping the complete line can use
+    // a different space glyph/advance than shaping each character separately.
+    const width = perCharacter
+      ? Array.from(String(text || '')).reduce((sum, character) => sum + font.widthOfTextAtSize(character, size), 0)
+      : font?.widthOfTextAtSize?.(text, size);
     return Number.isFinite(width) ? width : null;
   } catch {
     return null;
@@ -182,11 +188,8 @@ function drawPdfFontRuns(page, replacement, mapped) {
   const measureRun = (run) => {
     const size = mapped.fontSize * (Number(run.fontSize) || replacement.fontSize) / Math.max(1, Number(replacement.fontSize) || 1);
     const spacing = (Number(run.letterSpacing) || 0) * mapped.fontSize / Math.max(1, Number(replacement.fontSize) || 1);
-    const width = run.autoLetterSpacing
-      ? [...String(run.text || '')].reduce((sum, character) => (
-        sum + (measurePdfText(run.replacementFont, character, size) || 0)
-      ), 0)
-      : measurePdfText(run.replacementFont, run.text, size);
+    const width = measurePdfText(run.replacementFont, run.text, size,
+      run.autoLetterSpacing || (spacing !== 0 && mapped.rotation === 0));
     return { size, spacing, width: width == null ? 0 : width + spacing * Math.max(0, [...run.text].length - 1) };
   };
   const sourceLines = getRichRunLines(replacement.fontRuns || []);
@@ -238,7 +241,6 @@ function drawPdfFontRuns(page, replacement, mapped) {
       const metrics = measureRun(run);
       writeTextLink(page, replacement, run, mapped, cursorX, cursorY, metrics.width * horizontalScale, metrics.size);
       const runColor = toPdfColor(parseCssColor(run.color, replacement.textColor));
-      const runMapped = { ...mapped, textX: cursorX, textY: cursorY, fontSize: metrics.size };
       drawPdfTextWithLetterSpacing(page, run.text, {
         x: cursorX,
         y: cursorY,
@@ -248,10 +250,8 @@ function drawPdfFontRuns(page, replacement, mapped) {
         rotate: getTextRotation(mapped.rotation),
         ySkew: run.fontStyle === 'italic' ? degrees(12) : degrees(0)
       }, metrics.spacing, horizontalScale);
-      if (run.fontSource?.source !== 'local') {
-        drawFallbackTextOutlines(page, run.replacementOutlineFont, run.text, runMapped, runColor,
-          metrics.spacing, horizontalScale, run.fontStyle === 'italic');
-      }
+      // The embedded font supplies the visible glyphs and searchable text.
+      // A second outline pass reshapes spaces differently and causes overlap.
       const decoration = run.textDecoration || replacement.textDecoration || 'none';
       if (decoration === 'underline' || decoration === 'line-through') {
         const distance = decoration === 'underline' ? metrics.size * 0.12 : -metrics.size * 0.32;
@@ -260,7 +260,7 @@ function drawPdfFontRuns(page, replacement, mapped) {
         page.drawLine({
           start: { x: cursorX + offset.x, y: cursorY + offset.y },
           end: { x: cursorX + offset.x + decoratedAdvance.x, y: cursorY + offset.y + decoratedAdvance.y },
-          thickness: Math.max(0.5, metrics.size * 0.055),
+          thickness: pdfTextDecorationThickness(metrics.size),
           color: runColor
         });
       }
@@ -270,46 +270,6 @@ function drawPdfFontRuns(page, replacement, mapped) {
     });
   });
   return { width: fittedWidth, horizontalScale };
-}
-
-function glyphPathToSvg(path, horizontalScale = 1, italic = false) {
-  const number = (value) => Number(value.toFixed(3));
-  return path.commands.map(({ command, args }) => {
-    const x = (value, y) => number((value + (italic ? Math.tan(Math.PI / 15) * y : 0)) * horizontalScale);
-    if (command === 'moveTo') return `M ${x(args[0], args[1])} ${number(-args[1])}`;
-    if (command === 'lineTo') return `L ${x(args[0], args[1])} ${number(-args[1])}`;
-    if (command === 'quadraticCurveTo') return `Q ${x(args[0], args[1])} ${number(-args[1])} ${x(args[2], args[3])} ${number(-args[3])}`;
-    if (command === 'bezierCurveTo') return `C ${x(args[0], args[1])} ${number(-args[1])} ${x(args[2], args[3])} ${number(-args[3])} ${x(args[4], args[5])} ${number(-args[5])}`;
-    return command === 'closePath' ? 'Z' : '';
-  }).join(' ');
-}
-
-function drawFallbackTextOutlines(page, font, text, mapped, color, letterSpacing = 0, horizontalScale = 1, italic = false) {
-  if (!font || !text) return;
-  const scale = mapped.fontSize / font.unitsPerEm;
-  if (!Number.isFinite(scale) || scale <= 0) return;
-  const layout = font.layout(text);
-  let cursorX = mapped.textX;
-  let cursorY = mapped.textY;
-  layout.glyphs.forEach((glyph, index) => {
-    const position = layout.positions[index];
-    const path = glyphPathToSvg(glyph.path, horizontalScale, italic);
-    if (path) {
-      page.drawSvgPath(path, {
-        x: cursorX + position.xOffset * scale * horizontalScale,
-        y: cursorY + position.yOffset * scale,
-        scale,
-        color,
-        rotate: getTextRotation(mapped.rotation)
-      });
-    }
-    cursorX += position.xAdvance * scale * horizontalScale;
-    // The selectable text is drawn one character at a time when a user sets
-    // letter spacing. The bold outline pass must advance by the same amount;
-    // otherwise both passes begin at different positions and overlap.
-    if (index < layout.glyphs.length - 1) cursorX += (Number(letterSpacing) || 0) * horizontalScale;
-    cursorY += position.yAdvance * scale;
-  });
 }
 
 function collectMovableTextReplacements(movableTexts = []) {
@@ -415,7 +375,7 @@ function collectMovableTextReplacements(movableTexts = []) {
       text,
       fontWeight: item.fontWeight || 'normal',
       fontStyle: item.fontStyle || 'normal',
-      preferBoldFont: item.preferBoldFont === true,
+      preferBoldFont: item.preferBoldFont === true || item.fontWeight === 'bold' || Number(item.fontWeight) >= 600,
       textDecoration: item.textDecoration || 'none',
       letterSpacing: Number(item.letterSpacing) || 0,
       fitToBoxByLetterSpacing: item.fitToBoxByLetterSpacing === true,
@@ -1056,12 +1016,6 @@ export async function buildPdfWithTextEdits({
   // Cache only identical candidate sets, then bind the resulting embedded
   // font to the individual replacement.
   if (replacements.some((item) => item.type === 'pdf' || !item.fontPreserved)) {
-    pdfDocument.registerFontkit({
-      create: (bytes) => {
-        const font = fontkit.create(bytes);
-        return font.variationAxes?.wght ? font.getVariation({ wght: 400 }) : font;
-      }
-    });
     const assignFontAsset = async (target, candidates, preferBold, text) => {
       // Font coverage differs by replacement text. Do not reuse an earlier
       // ASCII-only local font asset for a later Korean replacement that has
@@ -1069,8 +1023,8 @@ export async function buildPdfWithTextEdits({
       const coverageKey = [...new Set(Array.from(String(text || '')).map((character) => character.codePointAt(0)))].sort((a, b) => a - b).join(',');
       const useBundledFallback = forcedBundledFontIds.has(target.id);
       const cacheKey = fontBytes
-        ? '__provided-font__'
-        : `${useBundledFallback ? 'forced-bundled' : (preferBold ? 'bold' : 'normal')}\u0000${candidates.join('\u0000') || '__bundled-font__'}\u0000${coverageKey}`;
+        ? `__provided-font__:${preferBold ? 'bold' : 'normal'}`
+        : `${useBundledFallback ? 'forced-bundled' : 'resolved'}\u0000${preferBold ? 'bold' : 'normal'}\u0000${candidates.join('\u0000') || '__bundled-font__'}\u0000${coverageKey}`;
       let asset = replacementFontAssets.get(cacheKey);
       if (!asset) {
         if (fontBytes && !fontSupportsText(fontBytes, text)) {
@@ -1083,12 +1037,11 @@ export async function buildPdfWithTextEdits({
             text,
             skipLocal: useBundledFallback
           });
-        const embeddedFont = await pdfDocument.embedFont(source.bytes, { subset: true });
-        const outlineSource = fontkit.create(source.bytes);
+        const fontOptions = { bold: preferBold };
+        const embeddedFont = await embedPdfFont(pdfDocument, source.bytes, fontOptions);
         asset = {
           font: embeddedFont,
-          outlineFont: outlineSource.variationAxes?.wght
-            ? outlineSource.getVariation({ wght: 400 }) : outlineSource,
+          outlineFont: createPdfFont(source.bytes, fontOptions),
           source
         };
         replacementFontAssets.set(cacheKey, asset);
@@ -1206,8 +1159,6 @@ export async function buildPdfWithTextEdits({
     const mapped = mapReplacementToPage(replacement, page);
     if (![mapped.textX, mapped.textY, mapped.fontSize].every(Number.isFinite)) return;
     const itemReplacementFont = replacement.replacementFont || replacementFont;
-    const itemReplacementOutlineFont = replacement.replacementOutlineFont || replacementOutlineFont;
-    const itemFontSource = replacement.fontSource || fontSource;
     if (!itemReplacementFont) return;
     if (replacement.fontRuns?.length > 0) {
       if (replacement.contentOrderAnchor) resetPageDrawingStream(page);
@@ -1218,7 +1169,8 @@ export async function buildPdfWithTextEdits({
     const pdfLetterSpacing = Number(replacement.letterSpacing) && Number(replacement.fontSize)
       ? Number(replacement.letterSpacing) * mapped.fontSize / Number(replacement.fontSize)
       : 0;
-    const baseMeasuredWidth = measurePdfText(itemReplacementFont, replacement.text, mapped.fontSize);
+    const baseMeasuredWidth = measurePdfText(itemReplacementFont, replacement.text, mapped.fontSize,
+      pdfLetterSpacing !== 0 && mapped.rotation === 0);
     const measuredWidth = baseMeasuredWidth == null ? null
       : baseMeasuredWidth + pdfLetterSpacing * Math.max(0, Array.from(String(replacement.text || '')).length - 1);
     // Canvas metrics used by the editor can differ from the embedded PDF font
@@ -1254,12 +1206,8 @@ export async function buildPdfWithTextEdits({
       // Italic needs a Y-axis skew so only the glyph outline leans right.
       ySkew: isItalic ? degrees(12) : degrees(0)
     }, pdfLetterSpacing, horizontalScale);
-    if (itemFontSource.source !== 'local') {
-      drawFallbackTextOutlines(page, itemReplacementOutlineFont, replacement.text, mapped, textColor,
-        pdfLetterSpacing, horizontalScale, isItalic);
-    }
     if (replacement.textDecoration === 'underline' || replacement.textDecoration === 'line-through') {
-      const lineWidth = Math.max(1, mapped.fontSize * 0.06);
+      const lineWidth = pdfTextDecorationThickness(mapped.fontSize);
       const lineY = replacement.textDecoration === 'underline'
         ? mapped.textY - mapped.fontSize * 0.1
         : mapped.textY + mapped.fontSize * 0.35;

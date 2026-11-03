@@ -132,10 +132,12 @@ test('moved text snaps to source PDF horizontal and vertical guides at saved coo
   const reference = beforeItems.find((item) => item.str === 'REFERENCE');
   expect(before).toBeTruthy();
   expect(reference).toBeTruthy();
-  await page.getByRole('button', { name: '텍스트 이동' }).click();
+  await page.getByRole('button', { name: '텍스트 추가', exact: true }).click();
   const box = pdfPage.locator('.movable-text-object.is-added-text');
-  const boxBounds = await box.boundingBox();
-  const startX = boxBounds.x + boxBounds.width / 2;
+  await box.click();
+  const moveEdge = box.locator('.movable-text-move-edge.is-top');
+  const boxBounds = await moveEdge.boundingBox();
+  const startX = boxBounds.x + boxBounds.width / 4;
   const startY = boxBounds.y + boxBounds.height / 2;
   const dx = 25;
   const dy = before.transform[5] - reference.transform[5] + 2;
@@ -150,8 +152,8 @@ test('moved text snaps to source PDF horizontal and vertical guides at saved coo
   expect(moved).toBeTruthy();
   expect(Math.abs(moved.transform[4] - (before.transform[4] + dx))).toBeLessThan(0.2);
   expect(Math.abs(moved.transform[5] - reference.transform[5])).toBeLessThan(0.2);
-  const movedBounds = await box.boundingBox();
-  const nextX = movedBounds.x + movedBounds.width / 2;
+  const movedBounds = await moveEdge.boundingBox();
+  const nextX = movedBounds.x + movedBounds.width / 4;
   const nextY = movedBounds.y + movedBounds.height / 2;
   const nearLeft = reference.transform[4] - moved.transform[4] + 2;
   await page.mouse.move(nextX, nextY);

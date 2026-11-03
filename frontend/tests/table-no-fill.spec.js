@@ -1,3 +1,4 @@
+import { downloadDocxFromPreview } from './docx-download-helper.mjs';
 import { test, expect } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
@@ -59,8 +60,7 @@ test('DOCX table cells can be saved without a background color', async ({ page }
   await expect(cell).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expect(page.locator('.docx-table-toolbar').getByLabel('셀 배경색')).toBeDisabled();
 
-  const downloadEvent = page.waitForEvent('download');
-  await page.locator('.viewer-download-button.docx').click();
+  const downloadEvent = Promise.resolve(await downloadDocxFromPreview(page));
   const savedZip = await JSZip.loadAsync(await readFile(await (await downloadEvent).path()));
   const xml = await savedZip.file('word/document.xml').async('string');
   expect(xml).toMatch(/w:shd[^>]*w:val="nil"/);

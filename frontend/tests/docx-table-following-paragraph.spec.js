@@ -1,3 +1,4 @@
+import { downloadDocxFromPreview } from './docx-download-helper.mjs';
 import { test, expect } from '@playwright/test';
 import JSZip from 'jszip';
 import { readFile } from 'node:fs/promises';
@@ -31,9 +32,7 @@ test('document margins and paragraph after a table remain editable', async ({ pa
   await paragraph.click();
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
   await paragraph.fill('Text after table updated');
-  const [download] = await Promise.all([
-    page.waitForEvent('download'), page.locator('.viewer-download-button.docx').click()
-  ]);
+  const download = await downloadDocxFromPreview(page);
   const saved = await JSZip.loadAsync(await readFile(await download.path()));
   const documentXml = await saved.file('word/document.xml').async('string');
   expect(documentXml).toContain('Text after table updated');
@@ -89,9 +88,7 @@ test('a table can be moved after a paragraph and resized before saving', async (
   expect(afterResize.width).toBeGreaterThan(beforeResize.width + 40);
   expect(afterResize.height).toBeGreaterThan(beforeResize.height + 10);
 
-  const [download] = await Promise.all([
-    page.waitForEvent('download'), page.locator('.viewer-download-button.docx').click()
-  ]);
+  const download = await downloadDocxFromPreview(page);
   const savedBytes = await readFile(await download.path());
   const saved = await JSZip.loadAsync(savedBytes);
   const xml = await saved.file('word/document.xml').async('string');
@@ -152,12 +149,19 @@ test('an attached image can move between document blocks and keeps that position
     buffer: await makeDocx(2)
   });
   const paragraph = page.locator('.docx-content section.docx article > p').filter({ hasText: 'Text after table' }).first();
+  await expect(paragraph).toHaveAttribute('data-docx-paragraph-index', /\d+/);
   await page.locator('.docx-edit-toggle').getByRole('button', { name: '편집' }).click();
   await paragraph.click();
+  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+  const png = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 40;
+    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#4477cc'; ctx.fillRect(0, 0, 40, 40);
+    return canvas.toDataURL('image/png').split(',')[1];
+  });
   await page.locator('input[type=file][accept*="image/png"]').setInputFiles({
     name: 'pixel.png',
     mimeType: 'image/png',
-    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2ZQAAAABJRU5ErkJggg==', 'base64')
+    buffer: Buffer.from(png, 'base64')
   });
   const imageBlock = page.locator('.docx-added-image[data-docx-image-id]').first();
   await expect(imageBlock).toBeVisible();
@@ -175,9 +179,7 @@ test('an attached image can move between document blocks and keeps that position
   await page.mouse.up();
   expect(await imageBlock.evaluate((element) => element.previousElementSibling?.textContent)).toContain('Text after table');
 
-  const [download] = await Promise.all([
-    page.waitForEvent('download'), page.locator('.viewer-download-button.docx').click()
-  ]);
+  const download = await downloadDocxFromPreview(page);
   const saved = await JSZip.loadAsync(await readFile(await download.path()));
   const xml = await saved.file('word/document.xml').async('string');
   expect(xml.indexOf('<w:tbl>')).toBeLessThan(xml.indexOf('Text after table'));

@@ -6,6 +6,7 @@ import { makeDocxFileWithHighlights } from '../services/docxHighlightService';
 import TextAlignmentIcon from './TextAlignmentIcon';
 import DocxTableBorderEditor from './DocxTableBorderEditor';
 import DocxTableActionIcon from './DocxTableActionIcon';
+import PdfDownloadPreview from './PdfDownloadPreview';
 import { applyWordTableBorders, readWordCellBorder } from '../services/docxTableBorderModel';
 import './WordViewer.css';
 
@@ -416,6 +417,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
   const selectionRef = useRef(null);
   const [editingEnabled, setEditingEnabled] = useState(false);
   const [hasActiveParagraph, setHasActiveParagraph] = useState(false);
+  const [downloadPreview, setDownloadPreview] = useState(null);
   const [fontName, setFontName] = useState('Arial');
   const [availableFonts, setAvailableFonts] = useState([]);
   const [fontSize, setFontSize] = useState('12');
@@ -1972,6 +1974,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     if (!editingEnabled) return;
     const paragraph = event.target.closest('[data-docx-paragraph-index], [data-docx-added-paragraph]');
     if (!paragraph || !docxContentRef.current?.contains(paragraph)) return;
+    const currentSelection = window.getSelection();
+    const preservedRange = currentSelection?.rangeCount && !currentSelection.isCollapsed
+      && paragraph.contains(currentSelection.anchorNode) && paragraph.contains(currentSelection.focusNode)
+      ? currentSelection.getRangeAt(0).cloneRange() : null;
     if (activeParagraphRef.current && activeParagraphRef.current !== paragraph) {
       activeParagraphRef.current.removeAttribute('contenteditable');
       commitDocumentChange();
@@ -1982,10 +1988,10 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     setHasActiveParagraph(true);
     const clickRange = document.caretRangeFromPoint?.(event.clientX, event.clientY);
     paragraph.focus({ preventScroll: true });
-    if (clickRange && paragraph.contains(clickRange.startContainer)) {
+    if (preservedRange || (clickRange && paragraph.contains(clickRange.startContainer))) {
       const selection = window.getSelection();
       selection.removeAllRanges();
-      selection.addRange(clickRange);
+      selection.addRange(preservedRange || clickRange);
     }
     requestAnimationFrame(rememberSelection);
   };
@@ -2162,7 +2168,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
     commitDocumentChange();
   };
 
-  const downloadEditedDocx = async (fileName = null) => {
+  const prepareEditedDocx = async () => {
     const root = docxContentRef.current;
     const edits = Array.from(root?.querySelectorAll('[data-docx-paragraph-index][data-docx-dirty="true"]') || [])
       .map((element) => ({ index: Number(element.dataset.docxParagraphIndex), element }));
@@ -2191,17 +2197,45 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
       .map((element) => ({ afterIndex: Number(element.dataset.docxInsertAfter),
         afterTableIndex: element.dataset.docxInsertAfterTable === undefined ? null : Number(element.dataset.docxInsertAfterTable),
         kind: element.dataset.docxAddedTable === 'true' ? 'table' : 'paragraph', element }));
-    if (!edits.length && !images.length && !tables.length && !addedBlocks.length && !tableMoves.length) return false;
-    let blob = await makeEditedDocx(file, edits, images, tables, addedBlocks, tableMoves);
+    let blob = edits.length || images.length || tables.length || addedBlocks.length || tableMoves.length
+      ? await makeEditedDocx(file, edits, images, tables, addedBlocks, tableMoves) : file;
     const highlights = Array.from(root.querySelectorAll('.docx-highlight')).map((element) => ({ text: element.textContent || '', color: element.dataset.highlightColor || 'yellow' }));
     if (highlights.length) blob = await makeDocxFileWithHighlights(blob, highlights);
-    const url = URL.createObjectURL(blob);
+    return blob;
+  };
+
+  const openDownloadPreview = async (format, fileName) => {
+    if (format === 'DOCX') {
+      const blob = await prepareEditedDocx();
+      setDownloadPreview({ documentFormat: 'DOCX', bytes: new Uint8Array(await blob.arrayBuffer()),
+        fileName: fileName || `${file.name.replace(/\.docx$/i, '')}_edited.docx`, pageCount: Math.max(pageCount, 1), suggestEncryption: Boolean(file.docPilotWasEncrypted) });
+    } else {
+      const root = viewerBodyRef.current;
+      root?.classList.add('docx-exporting');
+      try {
+        const result = await convertDocxDomToPdf({ root, fileName: fileName || file?.name, file, download: false });
+        setDownloadPreview({ documentFormat: 'PDF', bytes: result.outputBytes, fileName: result.outputFileName, pageCount: result.pages, suggestEncryption: Boolean(file.docPilotWasEncrypted) });
+      } finally { root?.classList.remove('docx-exporting'); }
+    }
+    return true;
+  };
+
+  const confirmDownload = async ({ password }) => {
+    let bytes = downloadPreview.bytes;
+    if (password) {
+      bytes = downloadPreview.documentFormat === 'DOCX'
+        ? await import('../services/docxEncryption.js').then(({ encryptDocxBytes }) => encryptDocxBytes(bytes, password))
+        : await import('../services/pdfEncryption.js').then(({ encryptPdfBytes }) => encryptPdfBytes(bytes, password));
+    }
+    const mime = downloadPreview.documentFormat === 'DOCX'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'application/pdf';
+    const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = fileName || `${file.name.replace(/\.docx$/i, '')}_edited.docx`;
+    anchor.download = downloadPreview.fileName;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    return true;
+    setDownloadPreview(null);
   };
 
   useImperativeHandle(ref, () => ({
@@ -2295,15 +2329,9 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
         color: element.dataset.highlightColor || 'yellow'
       }));
     },
-    downloadEditedDocx,
+    downloadEditedDocx: (fileName = null) => openDownloadPreview('DOCX', fileName),
     async downloadAsPdf(fileName = null) {
-      const root = viewerBodyRef.current;
-      root?.classList.add('docx-exporting');
-      try {
-        return await convertDocxDomToPdf({ root, fileName: fileName || file?.name, file });
-      } finally {
-        root?.classList.remove('docx-exporting');
-      }
+      return openDownloadPreview('PDF', fileName);
     }
   }));
 
@@ -2697,6 +2725,7 @@ const WordViewer = forwardRef(function WordViewer({ previewModel, file, scale = 
           </div>
         </div>
       </div>
+      {downloadPreview ? <PdfDownloadPreview {...downloadPreview} onCancel={() => setDownloadPreview(null)} onConfirm={confirmDownload} /> : null}
       {isResetConfirmOpen ? (
         <div className="docx-reset-confirm-backdrop" role="presentation">
           <div className="docx-reset-confirm" role="dialog" aria-modal="true" aria-labelledby="docx-reset-confirm-title">

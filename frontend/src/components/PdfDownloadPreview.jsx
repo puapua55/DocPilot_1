@@ -57,7 +57,7 @@ function PreviewPage({ pdf, pageNumber, scrollRoot }) {
   </div>;
 }
 
-export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtract, notice, suggestEncryption = false, encryptionSource = null, onCancel, onConfirm }) {
+export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtract, notice, documentFormat = 'PDF', suggestEncryption = false, encryptionSource = null, onCancel, onConfirm }) {
   const [pdf, setPdf] = useState(null);
   const [error, setError] = useState('');
   const [encryptDownload, setEncryptDownload] = useState(suggestEncryption);
@@ -68,10 +68,28 @@ export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtra
   const [saving, setSaving] = useState(false);
   const scrollRef = useRef(null);
   const cancelRef = useRef(null);
+  const docxPreviewRef = useRef(null);
+  const isDocx = documentFormat === 'DOCX';
+  const title = isExtract ? '페이지 추출 미리보기' : `${documentFormat} 다운로드 미리보기`;
 
   useEffect(() => {
     let active = true;
     let loadingTask;
+    setPdf(null);
+    setError('');
+    if (isDocx) {
+      const container = docxPreviewRef.current;
+      Promise.all([import('docx-preview'), import('../services/docxDirectEditService.js')])
+        .then(async ([{ renderAsync }, { makeDocxPageBreakPreview }]) => {
+          const previewFile = await makeDocxPageBreakPreview(new Blob([bytes]));
+          if (!active) return;
+          await renderAsync(previewFile, container, container, {
+            className: 'docx-download', inWrapper: true, breakPages: true, useBase64URL: true
+          });
+        }).then(() => { if (active) setPdf({ numPages: container.querySelectorAll('section.docx-download').length }); })
+        .catch(loadError => { if (active) setError(loadError.message || 'DOCX 미리보기를 열지 못했습니다.'); });
+      return () => { active = false; };
+    }
     loadPdfDocument(bytes.slice().buffer, { onLoadingTask: (task) => { loadingTask = task; } })
       .then((result) => { if (active) setPdf(result.pdf); })
       .catch((loadError) => { if (active) setError(loadError?.message || 'PDF 미리보기를 열지 못했습니다.'); });
@@ -79,20 +97,20 @@ export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtra
       active = false;
       loadingTask?.destroy().catch(() => {});
     };
-  }, [bytes]);
+  }, [bytes, isDocx]);
 
   useEffect(() => {
     cancelRef.current?.focus();
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') onCancel();
+      if (event.key === 'Escape' && !saving) onCancel();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onCancel]);
+  }, [onCancel, saving]);
 
   const confirmDownload = async () => {
-    if (encryptDownload && !inheritEncryption && password.length < 4) {
-      setEncryptionError('비밀번호를 4자 이상 입력해주세요.');
+    if (encryptDownload && !inheritEncryption && (password.length < 4 || (isDocx && password.length > 255))) {
+      setEncryptionError(isDocx ? '비밀번호는 4~255자로 입력해주세요.' : '비밀번호를 4자 이상 입력해주세요.');
       return;
     }
     if (encryptDownload && !inheritEncryption && password !== passwordConfirmation) {
@@ -107,28 +125,29 @@ export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtra
         inheritSource: encryptDownload && inheritEncryption ? encryptionSource : undefined
       });
     } catch (saveError) {
-      console.error('[PdfDownloadPreview] PDF save failed:', saveError);
-      setEncryptionError(saveError?.message || 'PDF 암호화에 실패했습니다.');
+      console.error('[DownloadPreview] save failed:', saveError);
+      setEncryptionError(saveError?.message || `${documentFormat} 저장에 실패했습니다.`);
       setSaving(false);
     }
   };
 
   return createPortal(<div className="pdf-download-preview-backdrop" onMouseDown={(event) => {
-    if (event.target === event.currentTarget) onCancel();
+    if (event.target === event.currentTarget && !saving) onCancel();
   }}>
-    <section className="pdf-download-preview-dialog" role="dialog" aria-modal="true" aria-label={isExtract ? '페이지 추출 미리보기' : 'PDF 다운로드 미리보기'}>
+    <section className="pdf-download-preview-dialog" role="dialog" aria-modal="true" aria-label={title}>
       <header className="pdf-download-preview-header">
         <div>
-          <strong>{isExtract ? '페이지 추출 미리보기' : 'PDF 다운로드 미리보기'}</strong>
-          <span>{fileName} · {pageCount}페이지</span>
+          <strong>{title}</strong>
+          <span>{fileName} · {isDocx && pdf ? pdf.numPages : pageCount}페이지</span>
           {notice ? <span className="pdf-download-preview-notice">{notice}</span> : null}
         </div>
-        <button type="button" onClick={onCancel} aria-label="미리보기 닫기">×</button>
+        <button type="button" onClick={onCancel} aria-label="미리보기 닫기" disabled={saving}>×</button>
       </header>
-      <div ref={scrollRef} className="pdf-download-preview-scroll" aria-label="스크롤 PDF 미리보기">
-        {error ? <p role="alert">{error}</p> : pdf ? Array.from({ length: pdf.numPages }, (_, index) => (
+      <div ref={scrollRef} className="pdf-download-preview-scroll" aria-label={`스크롤 ${documentFormat} 미리보기`}>
+        {isDocx ? <div ref={docxPreviewRef} className="docx-download-preview-document" /> : null}
+        {error ? <p role="alert">{error}</p> : pdf ? !isDocx && Array.from({ length: pdf.numPages }, (_, index) => (
           <PreviewPage key={index + 1} pdf={pdf} pageNumber={index + 1} scrollRoot={scrollRef} />
-        )) : <p role="status">PDF 미리보기를 준비 중입니다...</p>}
+        )) : <p role="status">{documentFormat} 미리보기를 준비 중입니다...</p>}
       </div>
       <div className="pdf-download-encryption-settings">
         <label className="pdf-download-encryption-toggle">
@@ -140,8 +159,8 @@ export default function PdfDownloadPreview({ bytes, fileName, pageCount, isExtra
           <label><input type="radio" name="pdf-encryption-mode" checked={!inheritEncryption} onChange={() => setInheritEncryption(false)} disabled={saving} /> 새 비밀번호 설정</label>
         </div> : null}
         {encryptDownload && !inheritEncryption ? <div className="pdf-download-encryption-fields">
-          <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setEncryptionError(''); }} placeholder="새 비밀번호 (4자 이상)" aria-label="PDF 새 비밀번호" autoComplete="new-password" disabled={saving} />
-          <input type="password" value={passwordConfirmation} onChange={(event) => { setPasswordConfirmation(event.target.value); setEncryptionError(''); }} placeholder="비밀번호 확인" aria-label="PDF 비밀번호 확인" autoComplete="new-password" disabled={saving} />
+          <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setEncryptionError(''); }} placeholder="새 비밀번호 (4자 이상)" aria-label={`${documentFormat} 새 비밀번호`} autoComplete="new-password" disabled={saving} />
+          <input type="password" value={passwordConfirmation} onChange={(event) => { setPasswordConfirmation(event.target.value); setEncryptionError(''); }} placeholder="비밀번호 확인" aria-label={`${documentFormat} 비밀번호 확인`} autoComplete="new-password" disabled={saving} />
         </div> : null}
         {encryptionError ? <span className="pdf-download-encryption-error" role="alert">{encryptionError}</span> : null}
       </div>

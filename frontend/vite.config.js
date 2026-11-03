@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { cpSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,7 +46,7 @@ function fixQpdfResizableMemoryDecode() {
 }
 
 export default defineConfig(({ command }) => ({
-  plugins: [fixQpdfResizableMemoryDecode(), react(), copyPdfJsSupportAssets()],
+  plugins: [nodePolyfills({ include: ['buffer', 'crypto', 'stream', 'events', 'util', 'process', 'assert', 'string_decoder'], globals: { Buffer: true, global: true, process: true } }), fixQpdfResizableMemoryDecode(), react(), copyPdfJsSupportAssets()],
   // Vite dev keeps the normal web root; packaged Electron loads file:// URLs.
   base: command === 'build' ? './' : '/',
   // Load the API directly, just like its worker URL, to avoid stale prebundles

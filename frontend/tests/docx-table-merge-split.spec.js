@@ -1,3 +1,4 @@
+import { downloadDocxFromPreview } from './docx-download-helper.mjs';
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import JSZip from 'jszip';
@@ -36,10 +37,7 @@ async function openTable(page, merged = false) {
 }
 
 async function downloadTable(page) {
-  const [download] = await Promise.all([
-    page.waitForEvent('download'),
-    page.locator('.viewer-download-button.docx').click()
-  ]);
+  const download = await downloadDocxFromPreview(page);
   const bytes = await readFile(await download.path());
   const zip = await JSZip.loadAsync(bytes);
   return { bytes, xml: await zip.file('word/document.xml').async('string') };

@@ -164,6 +164,10 @@ function App() {
     setIsHighlightModalOpen(false);
     setIsBatchReplaceModalOpen(false);
     setIsEditMode(false);
+    if (file?.name?.toLowerCase().endsWith('.docx')) {
+      const { isEncryptedDocx } = await import('./services/docxEncryption.js');
+      if (await isEncryptedDocx(file)) { setProtectedPdfFile(file); return; }
+    }
     if (file?.name?.toLowerCase().endsWith('.pdf')) {
       try {
         const { requiresPdfPassword, isPdfEncrypted } = await import('./services/pdfEncryption.js');
@@ -182,8 +186,9 @@ function App() {
 
   const openProtectedPdf = async (password) => {
     if (!protectedPdfFile) return;
-    const { unlockPdfForViewing } = await import('./services/pdfEncryption.js');
-    const unlockedFile = await unlockPdfForViewing(protectedPdfFile, password);
+    const unlockedFile = protectedPdfFile.name.toLowerCase().endsWith('.docx')
+      ? await import('./services/docxEncryption.js').then(({ unlockDocxForViewing }) => unlockDocxForViewing(protectedPdfFile, password))
+      : await import('./services/pdfEncryption.js').then(({ unlockPdfForViewing }) => unlockPdfForViewing(protectedPdfFile, password));
     await handleDocumentSelect(unlockedFile);
     setProtectedPdfFile(null);
   };
@@ -740,6 +745,7 @@ function App() {
     />
     {protectedPdfFile ? <PdfPasswordDialog
       fileName={protectedPdfFile.name}
+      documentFormat={protectedPdfFile.name.toLowerCase().endsWith('.docx') ? 'DOCX' : 'PDF'}
       onConfirm={openProtectedPdf}
       onCancel={resetDocumentViewState}
     /> : null}

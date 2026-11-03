@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { materializeDocxDecorations } from './docxTextStyle.js';
 
 const PDF_MIME = 'application/pdf';
 const CSS_DPI = 96;
@@ -265,6 +266,7 @@ async function capturePage(page, html2canvas, drawingAssets, imageCursor, xmlSha
         clonedPage.style.transform = 'none';
         clonedPage.style.width = `${page.offsetWidth}px`;
         clonedPage.style.height = `${page.offsetHeight}px`;
+        materializeDocxDecorations(clonedPage);
         clonedPage.querySelectorAll('table, td, th').forEach((element) => {
           element.style.boxSizing = 'border-box';
         });
@@ -281,12 +283,24 @@ async function capturePage(page, html2canvas, drawingAssets, imageCursor, xmlSha
       if (!rect.width || !rect.height) return null;
       let visualCanvas;
       try {
-        const originalImage = element.tagName === 'IMG' ? drawingAssets.images[imageCursor.value++] : null;
         if (isXmlShapeElement(element) && xmlShapes.length) return null;
-        visualCanvas = originalImage
-          ? await captureOriginalImage(originalImage.blob, rect.width, rect.height)
-          : await html2canvas(element, { scale: CAPTURE_SCALE, backgroundColor: null, useCORS: true, ignoreElements: (candidate) => candidate.tagName === 'IFRAME' });
+        if (element.tagName === 'IMG') {
+          // Capture the actual rendered image, including added data-URL JPGs.
+          // html2canvas(element) skips it while its ignore attribute is set.
+          if (!element.complete) await element.decode();
+          visualCanvas = document.createElement('canvas');
+          visualCanvas.width = Math.max(1, Math.round(rect.width * CAPTURE_SCALE));
+          visualCanvas.height = Math.max(1, Math.round(rect.height * CAPTURE_SCALE));
+          visualCanvas.getContext('2d').drawImage(element, 0, 0, visualCanvas.width, visualCanvas.height);
+        } else {
+          const ignore = element.getAttribute('data-html2canvas-ignore');
+          element.removeAttribute('data-html2canvas-ignore');
+          try {
+            visualCanvas = await html2canvas(element, { scale: CAPTURE_SCALE, backgroundColor: null, useCORS: true, ignoreElements: (candidate) => candidate.tagName === 'IFRAME' });
+          } finally { element.setAttribute('data-html2canvas-ignore', ignore || 'true'); }
+        }
       } catch (error) {
+        if (element.tagName === 'IMG') throw new Error(`이미지를 PDF에 저장하지 못했습니다: ${element.alt || '첨부 이미지'}`, { cause: error });
         console.warn('[DocxPdfConvert] visual element capture skipped:', error);
         return null;
       }
@@ -320,7 +334,7 @@ async function capturePage(page, html2canvas, drawingAssets, imageCursor, xmlSha
   }
 }
 
-export async function convertDocxDomToPdf({ root, fileName, file }) {
+export async function convertDocxDomToPdf({ root, fileName, file, download = true }) {
   if (!root) throw new Error('DOCX 뷰어가 아직 준비되지 않았습니다.');
   const pages = getVisiblePages(root);
   if (!pages.length) throw new Error('PDF로 변환할 DOCX 내용이 없습니다.');
@@ -352,6 +366,7 @@ export async function convertDocxDomToPdf({ root, fileName, file }) {
     });
   });
   const outputFileName = makeFileName(fileName);
-  downloadBlob(pdf.output('blob', { type: PDF_MIME }), outputFileName);
-  return { outputFileName, fileName: outputFileName, pages: canvases.length, separatedVisuals: canvases.reduce((count, page) => count + page.overlays.length, 0) };
+  const outputBytes = new Uint8Array(pdf.output('arraybuffer'));
+  if (download) downloadBlob(new Blob([outputBytes], { type: PDF_MIME }), outputFileName);
+  return { outputBytes, outputFileName, fileName: outputFileName, pages: canvases.length, separatedVisuals: canvases.reduce((count, page) => count + page.overlays.length, 0) };
 }
